@@ -1,0 +1,73 @@
+{
+  "sidebar": {
+    "conversations": "Conversations",
+    "explorer": "Explorer",
+    "search": "Search",
+    "sourceControl": "Source Control",
+    "plugins": "Plugins",
+    "community": "Community",
+    "settings": "Settings",
+    "gettingStarted": "Getting started",
+    "welcomeAgent": "Welcome to ZaoWu Agent",
+    "projectSetup": "Project setup",
+    "configureWorkspace": "Configure your workspace",
+    "changes": "Changes",
+    "3uncommitted": "3 uncommitted",
+    "history": "History",
+    "12commits": "12 commits",
+    "installed": "Installed",
+    "2pluginsActive": "2 plugins active",
+    "marketplace": "Marketplace",
+    "browsePlugins": "Browse plugins",
+    "communityHub": "Community Hub",
+    "connectWithOthers": "Connect with others",
+    "mainBranch": "main",
+    "currentBranch": "Current branch"
+  },
+  "activityBar": {
+    "chat": "Chat",
+    "files": "Files",
+    "search": "Search",
+    "git": "Git",
+    "plugins": "Plugins",
+    "community": "Community",
+    "settings": "Settings",
+    "lightMode": "Light mode",
+    "darkMode": "Dark mode"
+  },
+  "titleBar": {
+    "minimize": "Minimize",
+    "maximize": "Maximize",
+    "restore": "Restore",
+    "close": "Close",
+    "closing": "Closing..."
+  },
+  "statusBar": {
+    "ready": "Ready",
+    "model": "Claude 3.5 Sonnet"
+  },
+  "loading": {
+    "title": "ZaoWu",
+    "subtitle": "Agent Desktop"
+  },
+  "chat": {
+    "placeholder": "Send a message...",
+    "shortcutHint": "Enter to send · Shift+Enter for new line",
+    "helloMessage": "Hello! I'm ZaoWu Agent. How can I help you today?",
+    "userMessage": "Can you help me set up a new Vue project?",
+    "assistantMessage": "Sure! I'd be happy to help you set up a Vue 3 project. We can use Vite for the build tool. Would you like me to walk you through the steps?"
+  },
+  "calculator": {
+    "ac": "AC",
+    "error": "Error"
+  },
+  "settings": {
+    "background": "Background",
+    "effect": "Effect",
+    "language": "Language"
+  },
+  "backgrounds": {
+    "linewaves": "Line Waves",
+    "silk": "Silk"
+  }
+}

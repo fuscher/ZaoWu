@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+*.so
+.env
+.venv
+venv/
+env/
+*.db
+*.sqlite3
+instance/
+*.pid
+*.seed
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+log.json
+
+# Vue (covered in ZaoWu/.gitignore too)
+node_modules/
+.DS_Store
+*.local
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Docs
+docs/
+
+# Temp
+tempCodeRunnerFile.py

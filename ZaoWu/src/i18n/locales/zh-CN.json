@@ -1,0 +1,73 @@
+{
+  "sidebar": {
+    "conversations": "对话",
+    "explorer": "资源管理器",
+    "search": "搜索",
+    "sourceControl": "源代码管理",
+    "plugins": "插件",
+    "community": "社区",
+    "settings": "设置",
+    "gettingStarted": "快速入门",
+    "welcomeAgent": "欢迎使用 ZaoWu Agent",
+    "projectSetup": "项目配置",
+    "configureWorkspace": "配置您的工作区",
+    "changes": "更改",
+    "3uncommitted": "3 个未提交",
+    "history": "历史记录",
+    "12commits": "12 个提交",
+    "installed": "已安装",
+    "2pluginsActive": "2 个插件已启用",
+    "marketplace": "市场",
+    "browsePlugins": "浏览插件",
+    "communityHub": "社区中心",
+    "connectWithOthers": "与他人交流",
+    "mainBranch": "main",
+    "currentBranch": "当前分支"
+  },
+  "activityBar": {
+    "chat": "聊天",
+    "files": "文件",
+    "search": "搜索",
+    "git": "Git",
+    "plugins": "插件",
+    "community": "社区",
+    "settings": "设置",
+    "lightMode": "浅色模式",
+    "darkMode": "深色模式"
+  },
+  "titleBar": {
+    "minimize": "最小化",
+    "maximize": "最大化",
+    "restore": "还原",
+    "close": "关闭",
+    "closing": "正在关闭..."
+  },
+  "statusBar": {
+    "ready": "就绪",
+    "model": "Claude 3.5 Sonnet"
+  },
+  "loading": {
+    "title": "ZaoWu",
+    "subtitle": "Agent Desktop"
+  },
+  "chat": {
+    "placeholder": "发送消息...",
+    "shortcutHint": "Enter 发送 · Shift+Enter 换行",
+    "helloMessage": "你好！我是 ZaoWu Agent，有什么可以帮助你的？",
+    "userMessage": "你能帮我创建一个新的 Vue 项目吗？",
+    "assistantMessage": "当然！我很乐意帮你搭建 Vue 3 项目。我们可以使用 Vite 作为构建工具。需要我详细说明步骤吗？"
+  },
+  "calculator": {
+    "ac": "AC",
+    "error": "错误"
+  },
+  "settings": {
+    "background": "背景",
+    "effect": "特效",
+    "language": "语言"
+  },
+  "backgrounds": {
+    "linewaves": "线波",
+    "silk": "丝绸"
+  }
+}
