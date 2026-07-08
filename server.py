@@ -1,6 +1,8 @@
 import os
 import json
+import locale
 from flask import Flask, send_from_directory, request, jsonify
+from routes import explorer_bp, search_bp, log_bp
 
 app = Flask(__name__)
 
@@ -14,22 +16,45 @@ DEFAULTS = {
     'persist': False,
     'language': 'zh-CN',
     'theme': 'dark',
+    'searchMaxFileSizeKB': 1024,
+    'searchResultLimit': 500,
 }
+
+
+def detect_language():
+    try:
+        system_lang = locale.getdefaultlocale()[0]
+    except Exception:
+        system_lang = None
+    if system_lang and system_lang.startswith('zh'):
+        return 'zh-CN'
+    return 'en'
 
 
 def read_settings():
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                saved = json.load(f)
+                if 'language' not in saved:
+                    saved['language'] = detect_language()
+                for key, val in DEFAULTS.items():
+                    if key not in saved:
+                        saved[key] = val
+                return saved
         except (json.JSONDecodeError, IOError):
             pass
-    return {**DEFAULTS}
+    return {**DEFAULTS, 'language': detect_language()}
 
 
 def write_settings(data):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+app.register_blueprint(explorer_bp, url_prefix='/api/explorer')
+app.register_blueprint(search_bp, url_prefix='/api/search')
+app.register_blueprint(log_bp, url_prefix='/api/log')
 
 
 @app.route('/')
@@ -72,7 +97,7 @@ def fallback(path):
 
 
 def run_server(port=5000):
-    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False, threaded=True)
 
 
 if __name__ == '__main__':

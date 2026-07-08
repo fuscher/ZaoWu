@@ -1,0 +1,205 @@
+import { ref, computed } from 'vue'
+import { defineStore } from 'pinia'
+import type { Project } from '@/types'
+
+export const useProjectsStore = defineStore('projects', () => {
+  const projects = ref<Project[]>([])
+  const batchMode = ref(false)
+  const batchSelected = ref<Set<string>>(new Set())
+
+  const activeProjects = computed(() =>
+    projects.value.filter(p => !p.archived)
+  )
+
+  const archivedProjects = computed(() =>
+    projects.value.filter(p => p.archived)
+  )
+
+  async function fetchProjects() {
+    try {
+      const res = await fetch('/api/explorer/projects')
+      const data = await res.json()
+      if (data.projects) {
+        projects.value = data.projects
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function addProject(path: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/explorer/add-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchProjects()
+        return { ok: true }
+      }
+      return { ok: false, error: data.error }
+    } catch {
+      return { ok: false, error: 'network error' }
+    }
+  }
+
+  async function archiveProject(projectId: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/explorer/archive-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchProjects()
+        return true
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  async function unarchiveProject(projectId: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/explorer/unarchive-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchProjects()
+        return true
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  async function unloadProject(projectId: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/explorer/unload-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchProjects()
+        return true
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  async function deleteProject(projectId: string): Promise<boolean> {
+    try {
+      const res = await fetch('/api/explorer/delete-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        await fetchProjects()
+        return true
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  async function batchArchive(): Promise<{ ok: boolean; results: any[] }> {
+    const ids = Array.from(batchSelected.value)
+    try {
+      const res = await fetch('/api/explorer/batch-archive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectIds: ids }),
+      })
+      const data = await res.json()
+      await fetchProjects()
+      return { ok: data.ok, results: data.results || [] }
+    } catch {
+      return { ok: false, results: [] }
+    }
+  }
+
+  async function batchUnload(): Promise<{ ok: boolean; results: any[] }> {
+    const ids = Array.from(batchSelected.value)
+    try {
+      const res = await fetch('/api/explorer/batch-unload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectIds: ids }),
+      })
+      const data = await res.json()
+      await fetchProjects()
+      return { ok: data.ok, results: data.results || [] }
+    } catch {
+      return { ok: false, results: [] }
+    }
+  }
+
+  async function batchDelete(): Promise<{ ok: boolean; results: any[] }> {
+    const ids = Array.from(batchSelected.value)
+    try {
+      const res = await fetch('/api/explorer/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectIds: ids }),
+      })
+      const data = await res.json()
+      await fetchProjects()
+      return { ok: data.ok, results: data.results || [] }
+    } catch {
+      return { ok: false, results: [] }
+    }
+  }
+
+  function enterBatchMode() {
+    batchMode.value = true
+    batchSelected.value = new Set()
+  }
+
+  function exitBatchMode() {
+    batchMode.value = false
+    batchSelected.value = new Set()
+  }
+
+  function toggleBatchSelect(projectId: string) {
+    if (batchSelected.value.has(projectId)) {
+      batchSelected.value.delete(projectId)
+    } else {
+      batchSelected.value.add(projectId)
+    }
+  }
+
+  return {
+    projects,
+    batchMode,
+    batchSelected,
+    activeProjects,
+    archivedProjects,
+    fetchProjects,
+    addProject,
+    archiveProject,
+    unarchiveProject,
+    unloadProject,
+    deleteProject,
+    batchArchive,
+    batchUnload,
+    batchDelete,
+    enterBatchMode,
+    exitBatchMode,
+    toggleBatchSelect,
+  }
+})

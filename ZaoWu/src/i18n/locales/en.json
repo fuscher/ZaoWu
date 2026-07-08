@@ -69,5 +69,58 @@
   "backgrounds": {
     "linewaves": "Line Waves",
     "silk": "Silk"
+  },
+  "explorer": {
+    "title": "Explorer",
+    "addProject": "Add project",
+    "noProjects": "No projects yet",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "unload": "Unload",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "batchMode": "Batch mode",
+    "batchArchive": "Batch archive",
+    "batchUnload": "Batch unload",
+    "batchDelete": "Batch delete",
+    "confirmTitle": "Confirm action",
+    "confirmArchive": "Are you sure you want to archive {count} project(s)?",
+    "confirmUnload": "Are you sure you want to unload {count} project(s)?",
+    "confirmDelete": "Are you sure you want to delete {count} project(s)? This action cannot be undone.",
+    "projectAdded": "Project added",
+    "projectArchived": "Project archived",
+    "projectUnarchived": "Project unarchived",
+    "projectUnloaded": "Project unloaded",
+    "projectDeleted": "Project deleted",
+    "operationFailed": "Operation failed",
+    "retrying": "Retrying...",
+    "archivedProjects": "Archived projects",
+    "processing": "Processing {current}/{total}..."
+  },
+  "search": {
+    "title": "Search",
+    "placeholder": "Search filenames and contents...",
+    "searching": "Searching...",
+    "cancel": "Cancel",
+    "noResults": "No results found",
+    "resultCount": "Found {matches} results in {files} files",
+    "searchAll": "Search all projects",
+    "fileContent": "File content",
+    "fileName": "Filename"
+  },
+  "fileTree": {
+    "empty": "This folder is empty",
+    "loading": "Loading..."
+  },
+  "projectCard": {
+    "lastModified": "Last modified: {time}",
+    "archived": "Archived"
+  },
+  "error": {
+    "retryExhausted": "Operation failed after 3 retries",
+    "permissionDenied": "Permission denied to access this path",
+    "projectNotFound": "Project not found or has been removed",
+    "duplicateProject": "This project has already been added"
   }
 }

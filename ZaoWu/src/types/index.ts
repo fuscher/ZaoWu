@@ -21,4 +21,58 @@ export interface BackgroundSettings {
   persist: boolean
   language: string
   theme: string
+  searchMaxFileSizeKB: number
+  searchResultLimit: number
+}
+
+export interface Project {
+  id: string
+  path: string
+  name: string
+  addedAt: string
+  archived: boolean
+  lastModified: string | null
+}
+
+export interface TreeNode {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  children?: TreeNode[]
+}
+
+export interface SearchResult {
+  path: string
+  name: string
+  matches: SearchMatch[]
+}
+
+export type SearchMatch = ContentMatch | FilenameMatch
+
+export interface ContentMatch {
+  type: 'content'
+  line: number
+  content: string
+  startIndex: number
+  endIndex: number
+}
+
+export interface FilenameMatch {
+  type: 'filename'
+}
+
+declare global {
+  interface Window {
+    pywebview?: {
+      api: {
+        minimize: () => void
+        maximize: () => void
+        restore: () => void
+        move: (x: number, y: number) => void
+        shutdown: () => void
+        select_folder: () => Promise<string | null>
+      }
+    }
+    __SETTINGS__?: Record<string, unknown>
+  }
 }

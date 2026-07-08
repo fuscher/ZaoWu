@@ -3,5 +3,7 @@
   "effect": "silk",
   "persist": false,
   "language": "zh-CN",
-  "theme": "dark"
+  "theme": "dark",
+  "searchMaxFileSizeKB": 1024,
+  "searchResultLimit": 500
 }

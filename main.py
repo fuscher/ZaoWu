@@ -31,6 +31,15 @@ class Api:
     def shutdown(self):
         os._exit(0)
 
+    def select_folder(self):
+        result = webview.windows[0].create_file_dialog(
+            webview.FOLDER_DIALOG,
+            allow_multiple=False,
+        )
+        if result and len(result) > 0:
+            return result[0]
+        return None
+
 
 def start_server():
     run_server(port=PORT)

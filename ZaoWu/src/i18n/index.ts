@@ -10,7 +10,7 @@ const locales: Record<string, Record<string, unknown>> = {
 export function useI18n() {
   const store = useSettingsStore()
 
-  function t(key: string): string {
+  function t(key: string, params?: Record<string, string | number>): string {
     const locale = locales[store.background.language] ?? locales['en']
     const keys = key.split('.')
     let value: unknown = locale
@@ -21,7 +21,13 @@ export function useI18n() {
         return key
       }
     }
-    return typeof value === 'string' ? value : key
+    if (typeof value !== 'string') return key
+
+    if (!params) return value
+
+    return value.replace(/\{(\w+)\}/g, (_, name) => {
+      return params[name] !== undefined ? String(params[name]) : `{${name}}`
+    })
   }
 
   return { t }

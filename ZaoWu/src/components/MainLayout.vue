@@ -30,7 +30,7 @@ function selectView(view: ViewType) {
     <div class="body">
       <ActivityBar :active-view="activeView" :theme="theme" @select="selectView" @toggle-theme="emit('toggleTheme')" />
       <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" />
-      <div class="content-area">
+      <div v-if="activeView === 'chat'" class="content-area">
         <ChatMessages />
         <ChatInput />
       </div>

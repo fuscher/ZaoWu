@@ -2,13 +2,20 @@ import { reactive } from 'vue'
 import { defineStore } from 'pinia'
 import type { BackgroundSettings } from '@/types'
 
+function detectLanguage(): string {
+  const lang = navigator.language || 'en'
+  return lang.startsWith('zh') ? 'zh-CN' : 'en'
+}
+
 export const useSettingsStore = defineStore('settings', () => {
   const defaults: BackgroundSettings = {
     enabled: true,
     effect: 'linewaves',
     persist: false,
-    language: 'zh-CN',
+    language: detectLanguage(),
     theme: 'dark',
+    searchMaxFileSizeKB: 1024,
+    searchResultLimit: 500,
   }
 
   const background = reactive<BackgroundSettings>({

@@ -2,6 +2,8 @@
 import { useSettingsStore } from '@/stores/settings'
 import { backgroundRegistry } from './backgrounds/index'
 import { useI18n } from '@/i18n'
+import ExplorerPanel from './ExplorerPanel.vue'
+import SearchPanel from './SearchPanel.vue'
 import type { ViewType } from '@/types'
 
 defineProps<{ view: ViewType; collapsed: boolean }>()
@@ -50,30 +52,10 @@ const { t } = useI18n()
         </div>
       </template>
       <template v-else-if="view === 'files'">
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3h4l1.5 1.5H12v7H2V3z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
-          </div>
-          <div class="list-text">
-            <div class="list-title">src/</div>
-            <div class="list-desc">3 files</div>
-          </div>
-        </div>
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3h4l1.5 1.5H12v7H2V3z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
-          </div>
-          <div class="list-text">
-            <div class="list-title">components/</div>
-            <div class="list-desc">5 files</div>
-          </div>
-        </div>
+        <ExplorerPanel />
       </template>
       <template v-else-if="view === 'search'">
-        <div class="search-box">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" class="search-icon"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 9.5l3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-          <input type="text" :placeholder="t('sidebar.search') + '...'" class="search-input" />
-        </div>
+        <SearchPanel />
       </template>
       <template v-else-if="view === 'git'">
         <div class="list-item">

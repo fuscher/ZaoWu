@@ -69,5 +69,58 @@
   "backgrounds": {
     "linewaves": "线波",
     "silk": "丝绸"
+  },
+  "explorer": {
+    "title": "资源管理器",
+    "addProject": "添加项目",
+    "noProjects": "暂无项目",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "unload": "卸载",
+    "delete": "删除",
+    "cancel": "取消",
+    "confirm": "确认",
+    "batchMode": "批量模式",
+    "batchArchive": "批量归档",
+    "batchUnload": "批量卸载",
+    "batchDelete": "批量删除",
+    "confirmTitle": "确认操作",
+    "confirmArchive": "确定要归档 {count} 个项目吗？",
+    "confirmUnload": "确定要卸载 {count} 个项目吗？",
+    "confirmDelete": "确定要删除 {count} 个项目吗？此操作不可恢复。",
+    "projectAdded": "项目已添加",
+    "projectArchived": "项目已归档",
+    "projectUnarchived": "项目已取消归档",
+    "projectUnloaded": "项目已卸载",
+    "projectDeleted": "项目已删除",
+    "operationFailed": "操作失败",
+    "retrying": "重试中...",
+    "archivedProjects": "已归档项目",
+    "processing": "处理中 {current}/{total}..."
+  },
+  "search": {
+    "title": "搜索",
+    "placeholder": "搜索文件名和内容...",
+    "searching": "搜索中...",
+    "cancel": "取消",
+    "noResults": "未找到结果",
+    "resultCount": "在 {files} 个文件中找到 {matches} 个结果",
+    "searchAll": "搜索所有项目",
+    "fileContent": "文件内容",
+    "fileName": "文件名"
+  },
+  "fileTree": {
+    "empty": "此文件夹为空",
+    "loading": "加载中..."
+  },
+  "projectCard": {
+    "lastModified": "最后修改：{time}",
+    "archived": "已归档"
+  },
+  "error": {
+    "retryExhausted": "操作失败，已重试 3 次",
+    "permissionDenied": "权限不足，无法访问该路径",
+    "projectNotFound": "项目不存在或已被移除",
+    "duplicateProject": "该项目已添加"
   }
 }
