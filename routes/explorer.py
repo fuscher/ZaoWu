@@ -409,7 +409,8 @@ def _build_tree(dir_path, depth):
             'type': 'directory' if entry.is_dir(follow_symlinks=False) else 'file',
         }
         if entry.is_dir(follow_symlinks=False) and depth > 0:
-            node['children'] = _build_tree(entry.path, depth - 1) if depth > 1 else []
+            if depth > 1:
+                node['children'] = _build_tree(entry.path, depth - 1)
         tree.append(node)
 
     return tree

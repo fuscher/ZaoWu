@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { Folder, FolderOpen, File } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import type { TreeNode } from '@/types'
@@ -14,20 +14,31 @@ const { t } = useI18n()
 const expanded = ref(false)
 const loading = ref(false)
 
-function toggle() {
-  if (props.node.type !== 'directory') return
+const isExpandable = computed(() => props.node.type === 'directory')
 
-  if (!expanded.value && props.node.children === undefined) {
-    loading.value = true
-    emit('load-children', props.node.path)
-    setTimeout(() => {
-      loading.value = false
-      expanded.value = true
-    }, 100)
+watch(() => props.node.children, (newChildren) => {
+  if (loading.value && newChildren !== undefined) {
+    loading.value = false
+    expanded.value = true
+  }
+})
+
+function toggle() {
+  if (!isExpandable.value) return
+
+  if (props.node.children !== undefined) {
+    expanded.value = !expanded.value
     return
   }
 
-  expanded.value = !expanded.value
+  if (loading.value) return
+
+  if (!expanded.value) {
+    loading.value = true
+    emit('load-children', props.node.path)
+  } else {
+    expanded.value = false
+  }
 }
 
 function onChildLoad(path: string) {
@@ -40,16 +51,16 @@ function onChildLoad(path: string) {
     <div
       class="node-row"
       :style="{ paddingLeft: level * 16 + 'px' }"
-      @click="toggle"
+      @click.stop="toggle"
     >
-      <span class="node-arrow" :class="{ expanded, visible: node.type === 'directory' }">
+      <span class="node-arrow" :class="{ expanded, visible: isExpandable }">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
           <path d="M4 3l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </span>
       <span class="node-icon">
-        <FolderOpen v-if="node.type === 'directory' && expanded" :size="14" />
-        <Folder v-else-if="node.type === 'directory'" :size="14" />
+        <FolderOpen v-if="isExpandable && expanded" :size="14" />
+        <Folder v-else-if="isExpandable" :size="14" />
         <File v-else :size="14" />
       </span>
       <span class="node-name" :title="node.path">{{ node.name }}</span>
@@ -59,7 +70,7 @@ function onChildLoad(path: string) {
         </svg>
       </span>
     </div>
-    <div v-if="node.type === 'directory' && expanded && node.children" class="node-children">
+    <div v-if="isExpandable && expanded && node.children" class="node-children">
       <div v-if="node.children.length === 0" class="empty-hint" :style="{ paddingLeft: (level + 1) * 16 + 28 + 'px' }">
         {{ t('fileTree.empty') }}
       </div>
