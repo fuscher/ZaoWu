@@ -122,7 +122,8 @@
   },
   "backgrounds": {
     "linewaves": "线波",
-    "silk": "丝绸"
+    "silk": "丝绸",
+    "bends": "折光"
   },
   "explorer": {
     "title": "资源管理器",

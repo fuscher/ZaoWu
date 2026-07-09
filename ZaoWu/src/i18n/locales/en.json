@@ -122,7 +122,8 @@
   },
   "backgrounds": {
     "linewaves": "Line Waves",
-    "silk": "Silk"
+    "silk": "Silk",
+    "bends": "Bends"
   },
   "explorer": {
     "title": "Explorer",

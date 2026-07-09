@@ -72,7 +72,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 .input-wrapper {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
   background: var(--bg-glass);
   border: 1px solid var(--border-glass);
