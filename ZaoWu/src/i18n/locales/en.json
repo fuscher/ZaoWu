@@ -121,7 +121,12 @@
     "clickHint": "Click a file to preview",
     "save": "Save (Ctrl+S)",
     "revert": "Revert",
-    "close": "Close"
+    "close": "Close",
+    "loading": "Loading...",
+    "error": {
+      "format": "Cannot parse this file format",
+      "unknown": "Editor initialization failed"
+    }
   },
   "error": {
     "retryExhausted": "Operation failed after 3 retries",

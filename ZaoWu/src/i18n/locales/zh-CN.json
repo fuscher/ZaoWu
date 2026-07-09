@@ -121,7 +121,12 @@
     "clickHint": "点击文件即可预览",
     "save": "保存 (Ctrl+S)",
     "revert": "还原",
-    "close": "关闭"
+    "close": "关闭",
+    "loading": "加载中...",
+    "error": {
+      "format": "无法解析该文件格式",
+      "unknown": "编辑器初始化失败"
+    }
   },
   "error": {
     "retryExhausted": "操作失败，已重试 3 次",

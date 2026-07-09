@@ -1,35 +1,34 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed } from 'vue'
 import { X, Save, RotateCcw } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useEditorStore } from '@/stores/editor'
+import { useTheme } from '@/composables/useTheme'
+import CodeEditor from './CodeEditor.vue'
 
 const store = useEditorStore()
 const { t } = useI18n()
+const { theme } = useTheme()
 const revertTitle = computed(() => t('filePreview.revert'))
 const saveTitle = computed(() => t('filePreview.save'))
 const closeTitle = computed(() => t('filePreview.close'))
-const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const editorFailed = ref(false)
 
-function handleInput(e: Event) {
+function handleEditorError() {
+  editorFailed.value = true
+}
+
+function handleFallbackInput(e: Event) {
   const target = e.target as HTMLTextAreaElement
   store.updateContent(target.value)
 }
 
-function handleKeydown(e: KeyboardEvent) {
+function handleFallbackKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     store.saveFile()
   }
 }
-
-onMounted(() => {
-  document.addEventListener('keydown', handleKeydown)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
 </script>
 
 <template>
@@ -58,14 +57,24 @@ onUnmounted(() => {
         </svg>
       </div>
       <div v-else-if="store.error" class="preview-error">{{ store.error }}</div>
-      <textarea
-        v-else
-        ref="textareaRef"
-        class="editor"
-        :value="store.fileContent"
-        spellcheck="false"
-        @input="handleInput"
-      />
+      <template v-else>
+        <CodeEditor
+          v-if="!editorFailed"
+          v-model="store.fileContent"
+          :file-name="store.fileName"
+          :theme="theme"
+          @save="store.saveFile()"
+          @error="handleEditorError"
+        />
+        <textarea
+          v-else
+          class="editor"
+          :value="store.fileContent"
+          spellcheck="false"
+          @input="handleFallbackInput"
+          @keydown="handleFallbackKeydown"
+        />
+      </template>
     </div>
   </div>
 </template>
