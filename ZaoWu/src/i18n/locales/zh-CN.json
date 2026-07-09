@@ -43,7 +43,9 @@
     "closing": "正在关闭..."
   },
   "statusBar": {
+    "checking": "检测中...",
     "ready": "就绪",
+    "offline": "离线",
     "model": "ZaoWu v0.1.0-小暑"
   },
   "loading": {

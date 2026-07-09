@@ -1,15 +1,94 @@
 <script setup lang="ts">
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
 const model = 'ZaoWu v0.1.0-xiaoshu'
+
+type ServerStatus = 'checking' | 'ready' | 'offline'
+
+const status = ref<ServerStatus>('checking')
+const BACKOFF_MAX = 60
+const RETRY_BASE = 10
+let failCount = 0
+let timerId: ReturnType<typeof setTimeout> | null = null
+let abortController: AbortController | null = null
+
+function interval(): number {
+  if (status.value === 'ready') return RETRY_BASE * 1000
+  const seconds = Math.min(RETRY_BASE * 2 ** failCount, BACKOFF_MAX)
+  return seconds * 1000
+}
+
+async function check() {
+  abortController = new AbortController()
+  const timeoutId = setTimeout(() => abortController?.abort(), 5000)
+
+  try {
+    const res = await fetch('/api/health', { signal: abortController.signal })
+    if (res.ok) {
+      status.value = 'ready'
+      failCount = 0
+    } else {
+      status.value = 'offline'
+      failCount++
+    }
+  } catch {
+    status.value = 'offline'
+    failCount++
+  } finally {
+    clearTimeout(timeoutId)
+    abortController = null
+  }
+}
+
+function scheduleNext() {
+  timerId = setTimeout(async () => {
+    await check()
+    scheduleNext()
+  }, interval())
+}
+
+function stop() {
+  if (timerId !== null) {
+    clearTimeout(timerId)
+    timerId = null
+  }
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+}
+
+function start() {
+  stop()
+  check().then(() => scheduleNext())
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    stop()
+  } else {
+    start()
+  }
+}
+
+onMounted(() => {
+  start()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
+onUnmounted(() => {
+  stop()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 </script>
 
 <template>
   <div class="status-bar">
     <div class="status-left">
-      <span class="status-indicator ready"></span>
-      <span class="status-text">{{ t('statusBar.ready') }}</span>
+      <span class="status-indicator" :class="status"></span>
+      <span class="status-text">{{ t(`statusBar.${status}`) }}</span>
     </div>
     <div class="status-right">
       <span class="model-badge">{{ model }}</span>
@@ -45,6 +124,16 @@ const model = 'ZaoWu v0.1.0-xiaoshu'
 .status-indicator.ready {
   background: var(--success);
   box-shadow: 0 0 4px var(--success);
+}
+
+.status-indicator.offline {
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
+}
+
+.status-indicator.checking {
+  background: var(--warning);
+  box-shadow: 0 0 4px var(--warning);
 }
 
 .status-text {

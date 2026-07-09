@@ -73,6 +73,13 @@ export const useChatStore = defineStore('chat', () => {
   async function loadConversations() {
     try {
       conversations.value = await ai.fetchConversations()
+      if (currentConversation.value) {
+        const updated = conversations.value.find((c) => c.id === currentConversation.value!.id)
+        if (updated) {
+          currentConversation.value.title = updated.title
+          currentConversation.value.messageCount = updated.messageCount
+        }
+      }
     } catch {
       // silent
     }
@@ -93,7 +100,7 @@ export const useChatStore = defineStore('chat', () => {
       })
       conversations.value.unshift(conv)
       currentConversation.value = conv
-      return conv
+      return currentConversation.value
     } catch {
       return null
     }

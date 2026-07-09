@@ -43,7 +43,9 @@
     "closing": "Closing..."
   },
   "statusBar": {
+    "checking": "Checking...",
     "ready": "Ready",
+    "offline": "Offline",
     "model": "ZaoWu v0.1.0-xiaoshu"
   },
   "loading": {

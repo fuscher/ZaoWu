@@ -79,6 +79,11 @@ def assets(path):
     return send_from_directory(os.path.join(DIST_DIR, 'assets'), path)
 
 
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'ok'})
+
+
 @app.route('/api/settings', methods=['GET', 'POST'])
 def settings():
     if request.method == 'GET':
