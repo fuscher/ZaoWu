@@ -7,6 +7,7 @@ import SidePanel from './SidePanel.vue'
 import ChatPanel from './ChatPanel.vue'
 import FilePreview from './FilePreview.vue'
 import SettingsPanel from './SettingsPanel.vue'
+import GitPanel from './GitPanel.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useI18n } from '@/i18n'
@@ -50,6 +51,9 @@ function selectView(view: ViewType) {
       </div>
       <div v-else-if="activeView === 'settings'" class="content-area">
         <SettingsPanel :theme="theme" @toggle-theme="emit('toggleTheme')" />
+      </div>
+      <div v-else-if="activeView === 'git'" class="content-area">
+        <GitPanel />
       </div>
     </div>
     <StatusBar />

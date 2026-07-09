@@ -2,7 +2,7 @@ import os
 import json
 import locale
 from flask import Flask, send_from_directory, request, jsonify
-from routes import explorer_bp, search_bp, log_bp, chat_bp
+from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp
 
 app = Flask(__name__)
 
@@ -56,6 +56,8 @@ app.register_blueprint(explorer_bp, url_prefix='/api/explorer')
 app.register_blueprint(search_bp, url_prefix='/api/search')
 app.register_blueprint(log_bp, url_prefix='/api/log')
 app.register_blueprint(chat_bp, url_prefix='/api/chat')
+app.register_blueprint(git_bp, url_prefix='/api/git')
+app.register_blueprint(terminal_bp, url_prefix='/api/terminal')
 
 
 @app.route('/')

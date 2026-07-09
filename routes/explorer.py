@@ -453,6 +453,17 @@ def save_file():
         return jsonify({'ok': False, 'error': 'failed to save file'}), 500
 
 
+def is_path_in_projects(target_path):
+    """检查路径是否属于已注册的项目路径范围内"""
+    real_target = os.path.realpath(target_path)
+    projects = read_projects()
+    for p in projects:
+        real_root = os.path.realpath(p['path'])
+        if real_target == real_root or real_target.startswith(real_root + os.sep):
+            return True
+    return False
+
+
 def _build_tree(dir_path, depth):
     tree = []
     try:

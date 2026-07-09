@@ -107,6 +107,35 @@ export interface FilenameMatch {
   type: 'filename'
 }
 
+export type GitAvailability = 'unchecked' | 'available' | 'unavailable'
+
+export type GitChangeType = 'untracked' | 'modified' | 'added' | 'deleted' | 'renamed'
+
+export type GitChangeStatus = 'unstaged' | 'staged'
+
+export interface GitChange {
+  path: string
+  type: GitChangeType
+  status: GitChangeStatus
+  oldPath?: string
+}
+
+export interface GitBranch {
+  name: string
+  isCurrent: boolean
+  isRemote: boolean
+}
+
+export interface GitCommit {
+  hash: string
+  shortHash: string
+  message: string
+  author: string
+  date: string
+  isLocalTip: boolean
+  isRemoteTip: boolean
+}
+
 declare global {
   interface Window {
     pywebview?: {

@@ -1,13 +1,84 @@
 <script setup lang="ts">
+import { ref, computed, watch } from 'vue'
 import { useI18n } from '@/i18n'
+import { useGitStore } from '@/stores/git'
 import ExplorerPanel from './ExplorerPanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import ConversationList from './ConversationList.vue'
-import type { ViewType } from '@/types'
+import GitCommitGraph from './GitCommitGraph.vue'
+import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
+import GitBranchDialog from './GitBranchDialog.vue'
+import GitMissingDialog from './GitMissingDialog.vue'
+import GitNoRepoDialog from './GitNoRepoDialog.vue'
+import type { ViewType, Project } from '@/types'
 
 defineProps<{ view: ViewType; collapsed: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
 const { t } = useI18n()
+const gitStore = useGitStore()
+
+const showProjectDialog = ref(false)
+const showBranchDialog = ref(false)
+const showMissingDialog = ref(false)
+const showNoRepoDialog = ref(false)
+const historyExpanded = ref(false)
+
+const canManageBranch = computed(() => gitStore.selectedProject !== null)
+const canViewHistory = computed(() => gitStore.selectedProject !== null && gitStore.hasGitRepo)
+
+async function handleGitTabEnter() {
+  if (gitStore.gitAvailable === 'unchecked') {
+    const ok = await gitStore.checkGit()
+    if (!ok) {
+      showMissingDialog.value = true
+      return
+    }
+  } else if (gitStore.gitAvailable === 'unavailable') {
+    showMissingDialog.value = true
+    return
+  }
+}
+
+async function handleProjectClick() {
+  await gitStore.ensureProjectsLoaded()
+  showProjectDialog.value = true
+}
+
+function handleProjectSelected(project: Project) {
+  showProjectDialog.value = false
+  gitStore.selectProject(project)
+}
+
+function handleBranchClick() {
+  if (!gitStore.selectedProject) return
+  if (!gitStore.hasGitRepo) {
+    showNoRepoDialog.value = true
+    return
+  }
+  showBranchDialog.value = true
+}
+
+function handleBranchSelected(branch: string) {
+  showBranchDialog.value = false
+  gitStore.switchBranch(branch)
+}
+
+function handleHistoryClick() {
+  if (!canViewHistory.value) return
+  historyExpanded.value = !historyExpanded.value
+  if (historyExpanded.value && gitStore.commits.length === 0) {
+    gitStore.fetchCommits(0)
+  }
+}
+
+async function handleInitRepo() {
+  showNoRepoDialog.value = false
+  await gitStore.initRepo()
+}
+
+watch(() => gitStore.gitAvailable, (val) => {
+  if (val === 'unchecked' && showMissingDialog.value) return
+})
 </script>
 
 <template>
@@ -39,32 +110,66 @@ const { t } = useI18n()
         <SearchPanel />
       </template>
       <template v-else-if="view === 'git'">
-        <div class="list-item">
+        <!-- Card 1: Manage Project -->
+        <div
+          class="list-item git-card"
+          :class="{ disabled: false }"
+          @click="handleProjectClick"
+          :title="t('git.manageProject')"
+        >
+          <div class="list-icon">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3h4l2 2h4v7H2V3z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="list-text">
+            <div class="list-title">{{ t('git.manageProject') }}</div>
+            <div class="list-desc">{{ gitStore.selectedProject ? t('git.selectedProject', { name: gitStore.selectedProject.name }) : t('git.selectedProject', { name: '--' }) }}</div>
+          </div>
+        </div>
+
+        <!-- Card 2: Manage Branch -->
+        <div
+          class="list-item git-card"
+          :class="{ disabled: !canManageBranch }"
+          @click="handleBranchClick"
+          :title="!canManageBranch ? t('git.noProject') : t('git.manageBranch')"
+        >
           <div class="list-icon">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v7M7 8l-2-2M7 8l2-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="3.5" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="10.5" cy="11.5" r="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
           </div>
           <div class="list-text">
-            <div class="list-title">{{ t('sidebar.mainBranch') }}</div>
-            <div class="list-desc">{{ t('sidebar.currentBranch') }}</div>
+            <div class="list-title">{{ t('git.manageBranch') }}</div>
+            <div class="list-desc">{{ gitStore.currentBranch ? t('git.currentBranch', { name: gitStore.currentBranch }) : '--' }}</div>
           </div>
         </div>
-        <div class="list-item">
+
+        <!-- Card 3: History -->
+        <div
+          class="list-item git-card"
+          :class="{ disabled: !canViewHistory }"
+          @click="handleHistoryClick"
+          :title="!gitStore.selectedProject ? t('git.noProject') : (!gitStore.hasGitRepo ? t('git.noGitRepo') : t('git.history'))"
+        >
           <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M4 7h6M7 4v6" stroke="currentColor" stroke-width="1.2"/></svg>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 3v4l3 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           </div>
           <div class="list-text">
-            <div class="list-title">{{ t('sidebar.changes') }}</div>
-            <div class="list-desc">{{ t('sidebar.3uncommitted') }}</div>
+            <div class="list-title">{{ t('git.history') }}</div>
+            <div class="list-desc">{{ gitStore.commitCount > 0 ? t('git.commitCount', { count: gitStore.commitCount }) : (gitStore.hasGitRepo ? t('git.commitCount', { count: 0 }) : '--') }}</div>
           </div>
         </div>
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 12V3h5l2 2v7H3z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+
+        <!-- Expanded Commit Graph -->
+        <div v-if="historyExpanded && canViewHistory" class="git-history-container">
+          <div class="git-history-header">
+            <button class="git-refresh-btn" :title="t('git.refresh')" @click.stop="gitStore.reloadCommits()">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 6a4 4 0 11-1-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M9 2v3H6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
           </div>
-          <div class="list-text">
-            <div class="list-title">{{ t('sidebar.history') }}</div>
-            <div class="list-desc">{{ t('sidebar.12commits') }}</div>
-          </div>
+          <GitCommitGraph
+            :commits="gitStore.commits"
+            :has-more="gitStore.commitsHasMore"
+            @load-more="gitStore.loadMoreCommits()"
+          />
         </div>
       </template>
       <template v-else-if="view === 'plugins'">
@@ -120,6 +225,26 @@ const { t } = useI18n()
       </template>
     </div>
   </div>
+
+  <GitProjectSelectDialog
+    v-if="showProjectDialog"
+    @close="showProjectDialog = false"
+    @select="handleProjectSelected"
+  />
+  <GitBranchDialog
+    v-if="showBranchDialog"
+    @close="showBranchDialog = false"
+    @select="handleBranchSelected"
+  />
+  <GitMissingDialog
+    v-if="showMissingDialog"
+    @close="showMissingDialog = false"
+  />
+  <GitNoRepoDialog
+    v-if="showNoRepoDialog"
+    @close="showNoRepoDialog = false"
+    @init="handleInitRepo"
+  />
 </template>
 
 <style scoped>
@@ -213,5 +338,46 @@ const { t } = useI18n()
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.git-card {
+  cursor: pointer;
+}
+
+.git-card.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.git-history-container {
+  margin: 4px 8px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.git-history-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.git-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.git-refresh-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
 }
 </style>
