@@ -44,7 +44,7 @@
   },
   "statusBar": {
     "ready": "Ready",
-    "model": "Claude 3.5 Sonnet"
+    "model": "ZaoWu v0.1.0-xiaoshu"
   },
   "loading": {
     "title": "ZaoWu",

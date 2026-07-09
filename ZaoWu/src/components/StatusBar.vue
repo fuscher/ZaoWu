@@ -2,7 +2,7 @@
 import { useI18n } from '@/i18n'
 
 const { t } = useI18n()
-const model = 'Claude 3.5 Sonnet'
+const model = 'ZaoWu v0.1.0-xiaoshu'
 </script>
 
 <template>

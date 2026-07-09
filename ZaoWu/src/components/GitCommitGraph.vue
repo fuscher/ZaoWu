@@ -98,7 +98,7 @@ function copyHash(hash: string) {
 
 <style scoped>
 .graph-container {
-  max-height: 240px;
+  max-height: 360px;
   overflow-y: auto;
   padding: 4px 0;
 }

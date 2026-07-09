@@ -44,7 +44,7 @@
   },
   "statusBar": {
     "ready": "就绪",
-    "model": "Claude 3.5 Sonnet"
+    "model": "ZaoWu v0.1.0-小暑"
   },
   "loading": {
     "title": "ZaoWu",

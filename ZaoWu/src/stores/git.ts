@@ -230,6 +230,20 @@ export const useGitStore = defineStore('git', () => {
     }
   }
 
+  function clearProject() {
+    selectedProject.value = null
+    currentBranch.value = ''
+    branches.value = []
+    untrackedChanges.value = []
+    stagedChanges.value = []
+    commits.value = []
+    commitsOffset.value = 0
+    commitsHasMore.value = false
+    commitCount.value = 0
+    hasRepo.value = false
+    terminalCwd.value = ''
+  }
+
   return {
     gitAvailable,
     selectedProject,
@@ -266,5 +280,6 @@ export const useGitStore = defineStore('git', () => {
     undoCommit,
     resetFile,
     execTerminalCmd,
+    clearProject,
   }
 })

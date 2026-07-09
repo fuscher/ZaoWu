@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
+import { useProjectsStore } from '@/stores/projects'
 import ExplorerPanel from './ExplorerPanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import ConversationList from './ConversationList.vue'
@@ -16,6 +17,7 @@ defineProps<{ view: ViewType; collapsed: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
 const { t } = useI18n()
 const gitStore = useGitStore()
+const projectsStore = useProjectsStore()
 
 const showProjectDialog = ref(false)
 const showBranchDialog = ref(false)
@@ -79,6 +81,21 @@ async function handleInitRepo() {
 watch(() => gitStore.gitAvailable, (val) => {
   if (val === 'unchecked' && showMissingDialog.value) return
 })
+
+watch(
+  () => projectsStore.projects,
+  () => {
+    if (!gitStore.selectedProject) return
+    const stillExists = projectsStore.activeProjects.find(
+      (p) => p.id === gitStore.selectedProject!.id,
+    )
+    if (!stillExists) {
+      gitStore.clearProject()
+      historyExpanded.value = false
+    }
+  },
+  { deep: true },
+)
 </script>
 
 <template>
