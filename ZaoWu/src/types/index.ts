@@ -4,9 +4,55 @@ export type ViewType = 'chat' | 'files' | 'search' | 'git' | 'plugins' | 'commun
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: number
+  model?: string
+  tokens?: number
+}
+
+export interface Conversation {
+  id: string
+  title: string
+  providerId: string
+  modelId: string
+  systemPrompt: string
+  messages: Message[]
+  createdAt: string
+  updatedAt: string
+  messageCount?: number
+}
+
+export interface LLMProvider {
+  id: string
+  name: string
+  apiBase: string
+  apiKey: string
+  models: LLMModel[]
+}
+
+export interface LLMModel {
+  id: string
+  name: string
+  contextLength?: number
+}
+
+export interface LLMConfig {
+  defaultProviderId: string
+  defaultModelId: string
+  temperature: number
+  maxTokens: number
+  topP: number
+  systemPrompt: string
+}
+
+export interface LLMPreset {
+  id: string
+  name: string
+  systemPrompt: string
+  temperature: number
+  maxTokens: number
+  topP: number
 }
 
 export interface ViewItem {

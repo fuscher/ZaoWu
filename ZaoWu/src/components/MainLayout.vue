@@ -4,9 +4,9 @@ import type { Theme, ViewType } from '@/types'
 import CustomTitleBar from './CustomTitleBar.vue'
 import ActivityBar from './ActivityBar.vue'
 import SidePanel from './SidePanel.vue'
-import ChatMessages from './ChatMessages.vue'
-import ChatInput from './ChatInput.vue'
+import ChatPanel from './ChatPanel.vue'
 import FilePreview from './FilePreview.vue'
+import SettingsPanel from './SettingsPanel.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useI18n } from '@/i18n'
@@ -37,8 +37,7 @@ function selectView(view: ViewType) {
       <ActivityBar :active-view="activeView" :theme="theme" @select="selectView" @toggle-theme="emit('toggleTheme')" />
       <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" />
       <div v-if="activeView === 'chat'" class="content-area">
-        <ChatMessages />
-        <ChatInput />
+        <ChatPanel />
       </div>
       <div v-else-if="activeView === 'files' || activeView === 'search'" class="content-area">
         <FilePreview v-if="editorStore.openFilePath" />
@@ -48,6 +47,9 @@ function selectView(view: ViewType) {
           </svg>
           <span>{{ clickHint }}</span>
         </div>
+      </div>
+      <div v-else-if="activeView === 'settings'" class="content-area">
+        <SettingsPanel :theme="theme" @toggle-theme="emit('toggleTheme')" />
       </div>
     </div>
     <StatusBar />

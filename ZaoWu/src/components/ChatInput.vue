@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { Send, Square } from '@lucide/vue'
+import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
+import ModelSwitcher from './ModelSwitcher.vue'
+import ParameterPanel from './ParameterPanel.vue'
 
+const chatStore = useChatStore()
 const { t } = useI18n()
 const input = ref('')
 const isComposing = ref(false)
 
 function handleSend() {
   if (!input.value.trim() || isComposing.value) return
+  chatStore.sendMessage(input.value.trim())
   input.value = ''
+}
+
+function handleStop() {
+  chatStore.stopStreaming()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -32,11 +41,23 @@ function handleKeydown(e: KeyboardEvent) {
         @compositionend="isComposing = false"
         @input="isComposing = false"
       />
-      <button class="send-btn" :class="{ active: input.trim() }" @click="handleSend">
+      <button
+        v-if="chatStore.isStreaming"
+        class="stop-btn"
+        :title="t('chat.stopGeneration')"
+        @click="handleStop"
+      >
+        <Square :size="14" />
+      </button>
+      <button v-else class="send-btn" :class="{ active: input.trim() }" @click="handleSend">
         <Send :size="16" />
       </button>
     </div>
     <div class="input-footer">
+      <div class="footer-left">
+        <ModelSwitcher />
+        <ParameterPanel />
+      </div>
       <span class="hint">{{ t('chat.shortcutHint') }}</span>
     </div>
   </div>
@@ -105,10 +126,42 @@ textarea::placeholder {
   background: var(--accent-hover);
 }
 
+.stop-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: none;
+  background: #ef4444;
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--transition);
+  animation: pulse-red 1.5s infinite;
+}
+
+.stop-btn:hover {
+  background: #dc2626;
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); }
+}
+
 .input-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   margin-top: 6px;
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .hint {
