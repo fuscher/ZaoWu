@@ -1,3 +1,4 @@
+import { computed } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import zhCN from './locales/zh-CN.json'
 import en from './locales/en.json'
@@ -10,10 +11,12 @@ const locales: Record<string, Record<string, unknown>> = {
 export function useI18n() {
   const store = useSettingsStore()
 
+  const locale = computed(() => locales[store.background.language] ?? locales['en'])
+
   function t(key: string, params?: Record<string, string | number>): string {
-    const locale = locales[store.background.language] ?? locales['en']
+    const currentLocale = locale.value
     const keys = key.split('.')
-    let value: unknown = locale
+    let value: unknown = currentLocale
     for (const k of keys) {
       if (value && typeof value === 'object') {
         value = (value as Record<string, unknown>)[k]

@@ -117,6 +117,12 @@
     "lastModified": "Last modified: {time}",
     "archived": "Archived"
   },
+  "filePreview": {
+    "clickHint": "Click a file to preview",
+    "save": "Save (Ctrl+S)",
+    "revert": "Revert",
+    "close": "Close"
+  },
   "error": {
     "retryExhausted": "Operation failed after 3 retries",
     "permissionDenied": "Permission denied to access this path",

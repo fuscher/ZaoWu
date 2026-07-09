@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from '@/i18n'
+import { useEditorStore } from '@/stores/editor'
 import type { SearchResult, ContentMatch, FilenameMatch } from '@/types'
 
 const props = defineProps<{
@@ -9,6 +10,11 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+const editorStore = useEditorStore()
+
+function openFile(path: string) {
+  editorStore.openFile(path)
+}
 
 function getFileName(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/')
@@ -53,7 +59,7 @@ function getContentSnippet(match: ContentMatch, query: string): string {
 <template>
   <div class="search-results">
     <div v-for="result in results" :key="result.path" class="result-file">
-      <div class="result-file-header">
+      <div class="result-file-header" @click="openFile(result.path)">
         <span class="file-name">{{ getFileName(result.path) }}</span>
         <span class="file-path" :title="result.path">{{ getDirPath(result.path) }}</span>
       </div>

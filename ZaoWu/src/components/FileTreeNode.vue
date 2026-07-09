@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { Folder, FolderOpen, File } from '@lucide/vue'
 import { useI18n } from '@/i18n'
+import { useEditorStore } from '@/stores/editor'
 import type { TreeNode } from '@/types'
 
 const props = defineProps<{
@@ -11,6 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'load-children': [path: string] }>()
 const { t } = useI18n()
+const editorStore = useEditorStore()
 const expanded = ref(false)
 const loading = ref(false)
 
@@ -24,7 +26,10 @@ watch(() => props.node.children, (newChildren) => {
 })
 
 function toggle() {
-  if (!isExpandable.value) return
+  if (props.node.type === 'file') {
+    editorStore.openFile(props.node.path)
+    return
+  }
 
   if (props.node.children !== undefined) {
     expanded.value = !expanded.value

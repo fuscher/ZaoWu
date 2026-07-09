@@ -117,6 +117,12 @@
     "lastModified": "最后修改：{time}",
     "archived": "已归档"
   },
+  "filePreview": {
+    "clickHint": "点击文件即可预览",
+    "save": "保存 (Ctrl+S)",
+    "revert": "还原",
+    "close": "关闭"
+  },
   "error": {
     "retryExhausted": "操作失败，已重试 3 次",
     "permissionDenied": "权限不足，无法访问该路径",

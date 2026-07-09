@@ -393,6 +393,66 @@ def get_tree():
         return jsonify({'ok': False, 'error': 'failed to read directory'}), 500
 
 
+def _is_access_allowed(target_path, allowed_roots):
+    target_real = os.path.realpath(target_path)
+    for root in allowed_roots:
+        root_real = os.path.realpath(root)
+        if target_real == root_real or target_real.startswith(root_real + os.sep):
+            return True
+    return False
+
+
+@explorer_bp.route('/read-file', methods=['GET'])
+def read_file():
+    path = request.args.get('path', '')
+    if not path:
+        return jsonify({'ok': False, 'error': 'missing path'}), 400
+
+    real = os.path.realpath(path)
+    if not os.path.isfile(real):
+        return jsonify({'ok': False, 'error': 'not a file'}), 400
+
+    if is_binary_file(real):
+        return jsonify({'ok': False, 'error': 'binary file'}), 400
+
+    try:
+        size = os.path.getsize(real)
+        if size > 1024 * 1024:
+            return jsonify({'ok': False, 'error': 'file too large'}), 400
+
+        with open(real, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({'ok': True, 'content': content, 'size': size})
+    except UnicodeDecodeError:
+        return jsonify({'ok': False, 'error': 'encoding error'}), 400
+    except PermissionError:
+        return jsonify({'ok': False, 'error': 'permission denied'}), 403
+    except Exception as e:
+        log_error('Failed to read file', {'path': path, 'error': str(e)})
+        return jsonify({'ok': False, 'error': 'failed to read file'}), 500
+
+
+@explorer_bp.route('/save-file', methods=['POST'])
+def save_file():
+    data = request.get_json(silent=True)
+    if not data or 'path' not in data or 'content' not in data:
+        return jsonify({'ok': False, 'error': 'missing path or content'}), 400
+
+    real = os.path.realpath(data['path'])
+    if not os.path.isfile(real):
+        return jsonify({'ok': False, 'error': 'not a file'}), 400
+
+    try:
+        with open(real, 'w', encoding='utf-8') as f:
+            f.write(data['content'])
+        return jsonify({'ok': True})
+    except PermissionError:
+        return jsonify({'ok': False, 'error': 'permission denied'}), 403
+    except Exception as e:
+        log_error('Failed to save file', {'path': data['path'], 'error': str(e)})
+        return jsonify({'ok': False, 'error': 'failed to save file'}), 500
+
+
 def _build_tree(dir_path, depth):
     tree = []
     try:
