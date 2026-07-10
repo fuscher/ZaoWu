@@ -1,10 +1,20 @@
 <script setup lang="ts">
-import { Plus, Eraser } from '@lucide/vue'
+import { computed } from 'vue'
+import { Plus, Eraser, Users, Wifi, WifiOff } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
+import { useCommunityStore } from '@/stores/community'
 import { useI18n } from '@/i18n'
 
 const chatStore = useChatStore()
+const communityStore = useCommunityStore()
 const { t } = useI18n()
+
+const connectionLabel = computed(() => {
+  if (communityStore.connectionStatus === 'connected') {
+    return communityStore.users.filter((u) => u.status === 'online').length
+  }
+  return 0
+})
 
 async function handleNew() {
   await chatStore.createNewConversation()
@@ -29,6 +39,18 @@ function handleClear() {
       >
         <Eraser :size="14" />
       </button>
+      <template v-if="communityStore.isInRoom">
+        <span class="toolbar-sep" />
+        <button class="tool-btn" :title="t('community.collaborators')">
+          <Users :size="14" />
+          <span v-if="connectionLabel" class="collab-count">{{ connectionLabel }}</span>
+        </button>
+        <span
+          class="connection-dot"
+          :class="communityStore.connectionStatus"
+          :title="t(`community.status${communityStore.connectionStatus}`)"
+        />
+      </template>
     </div>
     <div class="toolbar-center">
       <span v-if="chatStore.currentConversation" class="conv-title">
@@ -97,5 +119,45 @@ function handleClear() {
 .tool-btn:disabled {
   opacity: 0.3;
   cursor: default;
+}
+
+.toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  margin: 0 4px;
+}
+
+.collab-count {
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+.connection-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: background var(--transition);
+}
+
+.connection-dot.connected {
+  background: #4ade80;
+}
+
+.connection-dot.connecting,
+.connection-dot.reconnecting {
+  background: #facc15;
+  animation: pulse 1s infinite;
+}
+
+.connection-dot.error {
+  background: #f87171;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 </style>

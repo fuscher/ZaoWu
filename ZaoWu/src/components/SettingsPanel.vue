@@ -1,19 +1,34 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server } from '@lucide/vue'
+import { ref, onMounted, watch } from 'vue'
+import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
 import { backgroundRegistry } from './backgrounds/index'
 import { saveProviders } from '@/services/ai'
 import { useI18n } from '@/i18n'
+import NumberInput from './NumberInput.vue'
 import type { Theme, LLMProvider } from '@/types'
 
-defineProps<{ theme: Theme }>()
-const emit = defineEmits<{ toggleTheme: [] }>()
+const props = defineProps<{ theme: Theme; highlightSection?: string | null }>()
+const emit = defineEmits<{ toggleTheme: []; highlight: [section: string | null] }>()
 
 const settingsStore = useSettingsStore()
 const chatStore = useChatStore()
 const { t } = useI18n()
+
+watch(() => props.highlightSection, (val) => {
+  if (val) {
+    const element = document.getElementById(`sec-${val}`)
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      element.classList.add('highlighted')
+      setTimeout(() => {
+        element.classList.remove('highlighted')
+      }, 3000)
+      emit('highlight', null)
+    }
+  }
+})
 
 // ── Provider editing state ────────────────────────────────
 const editingProvider = ref<LLMProvider | null>(null)
@@ -330,6 +345,83 @@ onMounted(() => {
         </button>
       </section>
 
+      <!-- ── Community Section ───────────────────────────── -->
+      <section class="settings-section" id="sec-community">
+        <div class="section-header">
+          <Users :size="16" />
+          <h2 class="section-title">{{ t('settings.community') }}</h2>
+        </div>
+
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.communityMaxUsers') }}</span>
+              <span class="setting-desc">1–10</span>
+            </div>
+            <NumberInput
+              :model-value="settingsStore.background.communityMaxUsers"
+              @update:model-value="settingsStore.updateBg({ communityMaxUsers: $event })"
+              :min="1"
+              :max="10"
+              :step="1"
+              variant="stepper"
+            />
+          </div>
+
+          <div class="setting-divider" />
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.communityDefaultRole') }}</span>
+            </div>
+            <select
+              class="setting-select"
+              :value="settingsStore.background.communityDefaultRole"
+              @change="settingsStore.updateBg({ communityDefaultRole: ($event.target as HTMLSelectElement).value })"
+            >
+              <option value="collaborator">{{ t('community.roleCollaborator') }}</option>
+              <option value="observer">{{ t('community.roleObserver') }}</option>
+            </select>
+          </div>
+
+          <div class="setting-divider" />
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.communityFileSizeLimitKB') }}</span>
+              <span class="setting-desc">512 KB recommended</span>
+            </div>
+            <NumberInput
+              :model-value="settingsStore.background.communityFileSizeLimitKB"
+              @update:model-value="settingsStore.updateBg({ communityFileSizeLimitKB: $event })"
+              :min="64"
+              :max="2048"
+              :step="64"
+              unit="KB"
+              variant="input"
+            />
+          </div>
+
+          <div class="setting-divider" />
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.communityInactiveTimeoutMinutes') }}</span>
+              <span class="setting-desc">Default 120 min</span>
+            </div>
+            <NumberInput
+              :model-value="settingsStore.background.communityInactiveTimeoutMinutes"
+              @update:model-value="settingsStore.updateBg({ communityInactiveTimeoutMinutes: $event })"
+              :min="10"
+              :max="1440"
+              :step="10"
+              unit="min"
+              variant="input"
+            />
+          </div>
+        </div>
+      </section>
+
     </div>
   </div>
 </template>
@@ -475,6 +567,30 @@ onMounted(() => {
 .setting-select option {
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+/* ── Number input ─────────────────────────────────────── */
+
+.setting-input {
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 6px;
+  padding: 5px 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  outline: none;
+  min-width: 80px;
+  text-align: right;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+.setting-input:focus {
+  border-color: var(--accent);
+}
+
+.setting-input.number::-webkit-inner-spin-button,
+.setting-input.number::-webkit-outer-spin-button {
+  opacity: 1;
 }
 
 /* ── Provider Card ────────────────────────────────────── */
@@ -792,5 +908,23 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-tertiary);
   margin: 0;
+}
+
+/* ── Highlight Animation ──────────────────────────────── */
+
+.settings-section.highlighted {
+  animation: highlight-pulse 1.5s ease-out;
+}
+
+@keyframes highlight-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-muted);
+  }
+  50% {
+    box-shadow: 0 0 0 8px var(--accent-muted);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 </style>

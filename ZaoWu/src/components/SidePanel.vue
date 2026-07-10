@@ -6,6 +6,7 @@ import { useProjectsStore } from '@/stores/projects'
 import ExplorerPanel from './ExplorerPanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import ConversationList from './ConversationList.vue'
+import RoomPanel from './RoomPanel.vue'
 import GitCommitGraph from './GitCommitGraph.vue'
 import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
 import GitBranchDialog from './GitBranchDialog.vue'
@@ -14,10 +15,14 @@ import GitNoRepoDialog from './GitNoRepoDialog.vue'
 import type { ViewType, Project } from '@/types'
 
 defineProps<{ view: ViewType; collapsed: boolean }>()
-const emit = defineEmits<{ toggle: [] }>()
+const emit = defineEmits<{ toggle: []; highlightSection: [section: string] }>()
 const { t } = useI18n()
 const gitStore = useGitStore()
 const projectsStore = useProjectsStore()
+
+function handleBannerClick(section: string) {
+  emit('highlightSection', section)
+}
 
 const showProjectDialog = ref(false)
 const showBranchDialog = ref(false)
@@ -210,33 +215,34 @@ watch(
         </div>
       </template>
       <template v-else-if="view === 'community'">
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="5" cy="5" r="2.5" stroke="currentColor" stroke-width="1.2"/><path d="M1 12c0-2.5 2-4 4-4s4 1.5 4 4" stroke="currentColor" stroke-width="1.2" fill="none"/><circle cx="10" cy="5" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M9 12c0-2 1.5-3 3-3" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
-          </div>
-          <div class="list-text">
-            <div class="list-title">{{ t('sidebar.communityHub') }}</div>
-            <div class="list-desc">{{ t('sidebar.connectWithOthers') }}</div>
-          </div>
-        </div>
+        <RoomPanel />
       </template>
       <template v-else-if="view === 'settings'">
-        <div class="list-item">
+        <div class="list-item" @click="handleBannerClick('appearance')">
           <div class="list-icon">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 4v2l1.5 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           </div>
           <div class="list-text">
-            <div class="list-title">{{ t('settings.appearance') }}</div>
-            <div class="list-desc">{{ t('settings.theme') }}、{{ t('settings.background') }}、{{ t('settings.language') }}</div>
+            <div class="list-title">{{ t('settings.appearanceBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.appearanceBannerDesc') }}</div>
           </div>
         </div>
-        <div class="list-item">
+        <div class="list-item" @click="handleBannerClick('ai-models')">
           <div class="list-icon">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="2" y="3" width="10" height="8" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M5 7h4M7 5v4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
           </div>
           <div class="list-text">
-            <div class="list-title">{{ t('settings.aiModels') }}</div>
-            <div class="list-desc">{{ t('settings.providerManagement') }}</div>
+            <div class="list-title">{{ t('settings.aiModelsBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.aiModelsBannerDesc') }}</div>
+          </div>
+        </div>
+        <div class="list-item" @click="handleBannerClick('community')">
+          <div class="list-icon">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 3.5a2 2 0 100 4 2 2 0 000-4zM10 3.5a2 2 0 100 4 2 2 0 000-4zM4 8.5a2 2 0 100 4 2 2 0 000-4z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="list-text">
+            <div class="list-title">{{ t('settings.communityBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.communityBannerDesc') }}</div>
           </div>
         </div>
       </template>
@@ -397,4 +403,5 @@ watch(
   background: var(--bg-glass-hover);
   color: var(--text-primary);
 }
+
 </style>

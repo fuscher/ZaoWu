@@ -52,3 +52,18 @@ tempCodeRunnerFile.py
 
 # Project config
 projects.json
+
+# Collaboration runtime data (ephemeral, not tracked)
+data/collaboration/
+community_rooms.json
+.host_id
+
+# User runtime data (auto-generated on startup, device-specific)
+chat_config.json
+chat_presets.json
+conversations.json
+providers.json
+settings.json
+
+# Test cache
+tests/__pycache__/

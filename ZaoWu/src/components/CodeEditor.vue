@@ -20,10 +20,12 @@ const props = withDefaults(defineProps<{
   fileName?: string
   readonly?: boolean
   theme?: 'dark' | 'light'
+  extraExtensions?: any[]
 }>(), {
   fileName: '',
   readonly: false,
   theme: 'dark',
+  extraExtensions: () => [],
 })
 
 const emit = defineEmits<{
@@ -220,6 +222,10 @@ function createExtensions() {
 
   if (lang) {
     exts.push(lang)
+  }
+
+  for (const ext of props.extraExtensions) {
+    if (ext) exts.push(ext)
   }
 
   return exts

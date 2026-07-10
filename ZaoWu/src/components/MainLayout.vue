@@ -8,6 +8,7 @@ import ChatPanel from './ChatPanel.vue'
 import FilePreview from './FilePreview.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import GitPanel from './GitPanel.vue'
+import CommunityPanel from './CommunityPanel.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useI18n } from '@/i18n'
@@ -17,6 +18,7 @@ const emit = defineEmits<{ toggleTheme: [] }>()
 
 const activeView = ref<ViewType>('chat')
 const sideCollapsed = ref(false)
+const highlightSection = ref<string | null>(null)
 const editorStore = useEditorStore()
 const { t } = useI18n()
 const clickHint = computed(() => t('filePreview.clickHint'))
@@ -29,6 +31,10 @@ function selectView(view: ViewType) {
     sideCollapsed.value = false
   }
 }
+
+function handleHighlightSection(section: string | null) {
+  highlightSection.value = section
+}
 </script>
 
 <template>
@@ -36,7 +42,7 @@ function selectView(view: ViewType) {
     <CustomTitleBar />
     <div class="body">
       <ActivityBar :active-view="activeView" :theme="theme" @select="selectView" @toggle-theme="emit('toggleTheme')" />
-      <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" />
+      <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" @highlight-section="handleHighlightSection" />
       <div v-if="activeView === 'chat'" class="content-area">
         <ChatPanel />
       </div>
@@ -50,10 +56,13 @@ function selectView(view: ViewType) {
         </div>
       </div>
       <div v-else-if="activeView === 'settings'" class="content-area">
-        <SettingsPanel :theme="theme" @toggle-theme="emit('toggleTheme')" />
+        <SettingsPanel :theme="theme" :highlight-section="highlightSection" @toggle-theme="emit('toggleTheme')" @highlight="handleHighlightSection" />
       </div>
       <div v-else-if="activeView === 'git'" class="content-area">
         <GitPanel />
+      </div>
+      <div v-else-if="activeView === 'community'" class="content-area">
+        <CommunityPanel />
       </div>
     </div>
     <StatusBar />

@@ -2,9 +2,17 @@
 import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { User, Bot } from '@lucide/vue'
+import { useCommunityStore } from '@/stores/community'
 import type { Message } from '@/types'
 
-const props = defineProps<{ message: Message; isStreaming?: boolean }>()
+const props = defineProps<{
+  message: Message
+  isStreaming?: boolean
+  /** Optional collaboration sender name */
+  senderName?: string
+}>()
+
+const communityStore = useCommunityStore()
 
 const md = new MarkdownIt({
   html: false,
@@ -22,6 +30,15 @@ const timeStr = computed(() => {
   const d = new Date(props.message.timestamp)
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 })
+
+/** Display name for messages from other collaboration users */
+const displayName = computed(() => {
+  if (isUser.value && props.senderName) return props.senderName
+  if (isUser.value && communityStore.isInRoom && props.message.role === 'user') {
+    return communityStore.currentUser?.name ?? 'You'
+  }
+  return isUser.value ? 'You' : 'AI'
+})
 </script>
 
 <template>
@@ -32,7 +49,7 @@ const timeStr = computed(() => {
     </div>
     <div class="bubble-body">
       <div class="bubble-header">
-        <span class="role-name">{{ isUser ? 'You' : 'AI' }}</span>
+        <span class="role-name">{{ displayName }}</span>
         <span class="time">{{ timeStr }}</span>
         <span v-if="message.model && !isUser" class="model-tag">{{ message.model }}</span>
       </div>

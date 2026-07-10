@@ -16,6 +16,10 @@ export const useSettingsStore = defineStore('settings', () => {
     theme: 'dark',
     searchMaxFileSizeKB: 1024,
     searchResultLimit: 500,
+    communityMaxUsers: 5,
+    communityDefaultRole: 'collaborator',
+    communityFileSizeLimitKB: 512,
+    communityInactiveTimeoutMinutes: 120,
   }
 
   const background = reactive<BackgroundSettings>({

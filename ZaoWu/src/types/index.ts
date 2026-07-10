@@ -2,6 +2,89 @@ export type Theme = 'dark' | 'light'
 
 export type ViewType = 'chat' | 'files' | 'search' | 'git' | 'plugins' | 'community' | 'settings'
 
+// ── Community / Collaboration types ─────────────────────────────
+
+export type CollaborationRole = 'host' | 'collaborator' | 'observer'
+
+export type CollaborationRoomStatus = 'active' | 'paused' | 'closed'
+
+export type CollaborationUserStatus = 'online' | 'away' | 'offline'
+
+export interface CollaborationCursor {
+  filePath: string
+  line: number
+  column: number
+}
+
+export interface CollaborationRoom {
+  id: string
+  name: string
+  projectId: string
+  hostId: string
+  hostAddress: string
+  status: CollaborationRoomStatus
+  inviteCode: string
+  maxUsers: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CollaborationUser {
+  id: string
+  name: string
+  color: string
+  role: CollaborationRole
+  status: CollaborationUserStatus
+  cursor?: CollaborationCursor
+  permissions?: PermissionMatrix
+}
+
+export interface PermissionMatrix {
+  edit: boolean
+  chat: boolean
+  terminal: boolean
+  invite: boolean
+  kick: boolean
+  manageFiles: boolean
+}
+
+export const DEFAULT_PERMISSIONS: Record<CollaborationRole, PermissionMatrix> = {
+  host: { edit: true, chat: true, terminal: true, invite: true, kick: true, manageFiles: true },
+  collaborator: { edit: true, chat: true, terminal: false, invite: false, kick: false, manageFiles: false },
+  observer: { edit: false, chat: true, terminal: false, invite: false, kick: false, manageFiles: false },
+}
+
+export type WSMessageType =
+  | 'join_room'
+  | 'leave_room'
+  | 'yjs_update'
+  | 'awareness_update'
+  | 'chat_message'
+  | 'file_diff'
+  | 'user_joined'
+  | 'user_left'
+  | 'permission_change'
+  | 'room_state'
+  | 'ping'
+  | 'pong'
+  | 'error'
+
+export interface WSMessage<T = unknown> {
+  type: WSMessageType
+  roomId: string
+  userId: string
+  payload: T
+  timestamp: number
+}
+
+export interface CollaborationChatMessage {
+  id: string
+  content: string
+  timestamp: number
+}
+
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -69,6 +152,10 @@ export interface BackgroundSettings {
   theme: string
   searchMaxFileSizeKB: number
   searchResultLimit: number
+  communityMaxUsers: number
+  communityDefaultRole: string
+  communityFileSizeLimitKB: number
+  communityInactiveTimeoutMinutes: number
 }
 
 export interface Project {

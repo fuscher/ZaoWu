@@ -1,0 +1,11 @@
+flask>=3.0
+requests>=2.31
+pywebview>=5.0
+GitPython>=3.1
+gevent>=24.0
+gevent-websocket>=0.10
+
+# Optional (features degrade gracefully without these)
+send2trash>=1.8
+y-py>=0.6
+simple-websocket>=1.0
