@@ -1,6 +1,7 @@
-import { ref, computed, watch, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import * as Y from 'yjs'
-import { YjsProvider } from '@/services/yjsProvider'
+import { WebsocketProvider } from 'y-websocket'
+import { Awareness } from 'y-protocols/awareness'
 import type {
   CollaborationUser,
   CollaborationCursor,
@@ -16,37 +17,173 @@ export interface UseCollaborationOptions {
   userColor: string
 }
 
+/** Magic prefix byte that marks ZaoWu custom JSON messages. */
+const ZAOWU_PREFIX = 0xf0
+
+/** Encode a WSMessage-like payload as a 0xF0-prefixed binary frame. */
+function encodeCustomMessage(payload: Record<string, unknown>): Uint8Array<ArrayBuffer> {
+  const json = JSON.stringify(payload)
+  const encoder = new TextEncoder()
+  const data = encoder.encode(json)
+  const msg = new Uint8Array(1 + data.length)
+  msg[0] = ZAOWU_PREFIX
+  msg.set(data, 1)
+  return msg as Uint8Array<ArrayBuffer>
+}
+
+function decodeCustomMessage(data: Uint8Array | ArrayBuffer): WSMessage | null {
+  const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data
+  if (bytes.length < 2 || bytes[0] !== ZAOWU_PREFIX) return null
+  try {
+    const decoder = new TextDecoder()
+    const json = decoder.decode(bytes.slice(1))
+    return JSON.parse(json) as WSMessage
+  } catch {
+    return null
+  }
+}
+
 export function useCollaboration(options: UseCollaborationOptions) {
   const status = ref<'connecting' | 'connected' | 'disconnected' | 'reconnecting' | 'error'>('disconnected')
-  const synced = ref(false)
+  const _synced = ref(false)  // y-websocket sync marker (internal, not consumed by UI yet)
   const users = ref<CollaborationUser[]>([])
   const chatMessages = ref<{ userId: string; content: string; timestamp: number }[]>([])
   const fileDiffs = ref<{ userId: string; operation: string; path: string; timestamp: number }[]>([])
   const permissions = ref<PermissionMatrix | null>(null)
   const error = ref('')
+  let _initialSyncSent = false
 
-  const provider = new YjsProvider({
-    roomId: options.roomId,
-    wsUrl: options.wsUrl,
-    userId: options.userId,
-    onMessage: handleMessage,
-    onStatusChange: (s) => {
-      status.value = s
-      if (s === 'connected') {
-        error.value = ''
-        publishAwareness()
-      }
+  const doc = new Y.Doc()
+  const awareness = new Awareness(doc)
+
+  // y-websocket constructs the WebSocket URL as:
+  //   serverUrl + '/' + roomname + '?' + urlParams
+  // Our wsUrl from the REST API has the form:
+  //   ws://host:port/api/community/ws/<roomId>?token=<token>
+  //
+  // We need to split this into:
+  //   serverUrl = ws://host:port/api/community/ws    (path without roomId)
+  //   roomname  = <roomId>                            (will be appended by y-websocket)
+  //   params    = { token: <token> }                  (y-websocket appends as query string)
+  const parser = new URL(options.wsUrl)
+  const wsPath = parser.pathname
+  // The path is /api/community/ws/<roomId> — split off the roomId
+  const lastSlash = wsPath.lastIndexOf('/')
+  const basePath = wsPath.slice(0, lastSlash)           // /api/community/ws
+  const token = parser.searchParams.get('token') || ''
+
+  // Build the clean server base URL: ws://host:port/api/community/ws
+  const serverUrl = `ws://${parser.host}${basePath}`
+
+  const provider = new WebsocketProvider(
+    serverUrl,
+    options.roomId,
+    doc,
+    {
+      awareness,
+      params: token ? { token } : {},
     },
-    onSync: (s) => {
-      synced.value = s
-    },
+  )
+
+  // ── y-websocket status mapping ──────────────────────────────
+
+  function mapProviderStatus(s: string): typeof status.value {
+    switch (s) {
+      case 'connected':
+        return 'connected'
+      case 'connecting':
+        return 'connecting'
+      case 'disconnected':
+        return 'disconnected'
+      default:
+        return 'error'
+    }
+  }
+
+  provider.on('status', (event: { status: string }) => {
+    status.value = mapProviderStatus(event.status)
+    if (event.status === 'connected') {
+      error.value = ''
+    }
   })
+
+  provider.on('sync', (isSynced: boolean) => {
+    _synced.value = isSynced
+    if (isSynced && !_initialSyncSent) {
+      _initialSyncSent = true
+      sendCustomMessage({
+        type: 'awareness_update',
+        roomId: options.roomId,
+        userId: options.userId,
+        payload: {
+          id: options.userId,
+          name: options.userName,
+          color: options.userColor,
+          status: 'online',
+        },
+        timestamp: Date.now(),
+      })
+    }
+  })
+
+  provider.on('connection-close', (event: CloseEvent | null, _provider: WebsocketProvider) => {
+    error.value = 'connection closed'
+    status.value = 'disconnected'
+  })
+
+  provider.on('connection-error', (event: Event, _provider: WebsocketProvider) => {
+    error.value = 'connection error'
+    status.value = 'error'
+  })
+
+  // ── Custom message listener on the raw WebSocket ────────────
+  // y-websocket handles Yjs binary messages (0x00/0x01) automatically.
+  // We intercept 0xF0 messages from the same WebSocket for chat, file diff, etc.
+
+  function attachCustomListener() {
+    const ws = provider.ws
+    if (!ws) return
+    const rawOnMessage = ws.onmessage
+
+    ws.onmessage = (event: MessageEvent) => {
+      const raw = event.data
+
+      // Try to decode as ZaoWu custom message first
+      if (raw instanceof ArrayBuffer || raw instanceof Uint8Array) {
+        const custom = decodeCustomMessage(raw)
+        if (custom) {
+          handleMessage(custom)
+          return
+        }
+      }
+
+      // Fall through to y-websocket's handler for Yjs binary messages
+      if (typeof rawOnMessage === 'function') {
+        rawOnMessage.call(ws, event)
+      }
+    }
+  }
+
+  // Attach once the provider opens the WebSocket
+  provider.on('status', (event: { status: string }) => {
+    if (event.status === 'connected') {
+      attachCustomListener()
+    }
+  })
+
+  // ── Computed user state ─────────────────────────────────────
 
   const currentUser = computed<CollaborationUser>(() => ({
     id: options.userId,
     name: options.userName,
     color: options.userColor,
-    role: permissions.value ? (permissions.value.kick ? 'host' : permissions.value.edit ? 'collaborator' : 'observer') : 'collaborator',
+    role: permissions.value
+      ? permissions.value.kick
+        ? 'host'
+        : permissions.value.edit
+          ? 'collaborator'
+          : 'observer'
+      : 'collaborator',
     status: status.value === 'connected' ? 'online' : 'offline',
     permissions: permissions.value || undefined,
   }))
@@ -54,6 +191,8 @@ export function useCollaboration(options: UseCollaborationOptions) {
   const onlineUsers = computed(() =>
     [currentUser.value, ...users.value].filter((u) => u.status === 'online'),
   )
+
+  // ── Incoming message router ─────────────────────────────────
 
   function handleMessage(message: WSMessage) {
     switch (message.type) {
@@ -121,7 +260,13 @@ export function useCollaboration(options: UseCollaborationOptions) {
         break
       }
       case 'chat_message': {
-        const payload = message.payload as { content?: string; timestamp?: number }
+        const payload = message.payload as { id?: string; content?: string; timestamp?: number }
+        // Deduplicate: skip if this is our own message echoing back from the server.
+        // The server broadcasts chat to ALL clients (including sender), and we
+        // already pushed optimistically in sendChatMessage.
+        if (message.userId === options.userId && payload.id) {
+          break
+        }
         chatMessages.value.push({
           userId: message.userId,
           content: payload.content || '',
@@ -159,29 +304,38 @@ export function useCollaboration(options: UseCollaborationOptions) {
     }
   }
 
-  function publishAwareness() {
-    const awarenessPayload = {
-      id: options.userId,
-      name: options.userName,
-      color: options.userColor,
-      status: 'online',
-    }
-    provider.send('awareness_update', awarenessPayload)
+  // ── Outgoing message helpers ────────────────────────────────
+
+  /** Send a 0xF0-prefixed custom message through the WebSocket. */
+  function sendCustomMessage(payload: Record<string, unknown>) {
+    const ws = provider.ws
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    ws.send(encodeCustomMessage(payload))
   }
 
   function updateCursor(cursor: CollaborationCursor) {
-    provider.send('awareness_update', {
-      id: options.userId,
-      cursor,
+    sendCustomMessage({
+      type: 'awareness_update',
+      roomId: options.roomId,
+      userId: options.userId,
+      payload: { id: options.userId, cursor },
+      timestamp: Date.now(),
     })
   }
 
   function sendChatMessage(content: string) {
-    provider.send('chat_message', {
-      id: `${options.userId}-${Date.now()}`,
-      content,
+    const msgId = `${options.userId}-${Date.now()}`
+    const payload = {
+      type: 'chat_message',
+      roomId: options.roomId,
+      userId: options.userId,
+      payload: { id: msgId, content, timestamp: Date.now() },
       timestamp: Date.now(),
-    })
+    }
+    sendCustomMessage(payload)
+    // Optimistic local echo so the sender sees the bubble immediately.
+    // The server also broadcasts back a copy; handleMessage deduplicates
+    // on payload.id so we don't get double bubbles.
     chatMessages.value.push({
       userId: options.userId,
       content,
@@ -190,11 +344,20 @@ export function useCollaboration(options: UseCollaborationOptions) {
   }
 
   function sendFileDiff(path: string, content: string, operation: 'write' | 'delete' = 'write') {
-    const payload: Record<string, unknown> = { path, operation, timestamp: Date.now() }
+    const diffPayload: Record<string, unknown> = { path, operation, timestamp: Date.now() }
     if (operation === 'write') {
-      payload.content = content
+      diffPayload.content = content
+    } else if (operation === 'delete') {
+      diffPayload.delete = true
     }
-    provider.send('file_diff', payload)
+    sendCustomMessage({
+      type: 'file_diff',
+      roomId: options.roomId,
+      userId: options.userId,
+      payload: diffPayload,
+      timestamp: Date.now(),
+    })
+    // Optimistic local update
     fileDiffs.value.push({
       userId: options.userId,
       operation,
@@ -204,11 +367,13 @@ export function useCollaboration(options: UseCollaborationOptions) {
   }
 
   function connect() {
+    if (provider.ws && provider.ws.readyState === WebSocket.OPEN) return
     provider.connect()
   }
 
   function disconnect() {
     provider.disconnect()
+    doc.destroy()
   }
 
   onUnmounted(() => {
@@ -217,10 +382,9 @@ export function useCollaboration(options: UseCollaborationOptions) {
 
   return {
     provider,
-    doc: provider.doc,
-    awareness: provider.awareness,
+    doc,
+    awareness,
     status,
-    synced,
     users,
     onlineUsers,
     chatMessages,

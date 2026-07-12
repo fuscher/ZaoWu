@@ -1,11 +1,11 @@
-flask>=3.0
+quart>=0.20
+pycrdt-websocket>=0.16.0
+pycrdt-store>=0.1.5
+hypercorn>=0.17
 requests>=2.31
 pywebview>=5.0
 GitPython>=3.1
-gevent>=24.0
-gevent-websocket>=0.10
 
 # Optional (features degrade gracefully without these)
 send2trash>=1.8
 y-py>=0.6
-simple-websocket>=1.0

@@ -117,6 +117,7 @@
     "inviteLink": "邀请链接",
     "inviteLinkOrCode": "邀请链接或房间代码",
     "inviteLinkPlaceholder": "粘贴邀请链接或输入 房间ID:邀请码",
+    "invalidInviteLink": "请输入有效的邀请链接或 房间ID:邀请码",
     "hostAddress": "房主地址",
     "copy": "复制",
     "copyInviteCode": "复制邀请码",

@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Blueprint, jsonify
+from quart import Blueprint, jsonify
 
 log_bp = Blueprint('log', __name__)
 

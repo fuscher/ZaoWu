@@ -24,7 +24,7 @@ const messageList = computed(() =>
     const user = props.users.find((u) => u.id === m.userId) || {
       id: m.userId,
       name: t('community.unknownUser'),
-      color: '#999',
+      color: 'var(--text-tertiary)',
       role: 'observer',
       status: 'offline',
     }
@@ -131,12 +131,15 @@ function formatTime(ts: number) {
 .chat-bubble {
   max-width: calc(100% - 36px);
   background: var(--bg-glass);
-  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
   padding: 8px 10px;
+  box-shadow: var(--shadow-sm);
 }
 
 .chat-message.self .chat-bubble {
   background: var(--accent-muted);
+  border-color: transparent;
 }
 
 .chat-meta {
@@ -175,33 +178,44 @@ function formatTime(ts: number) {
 .chat-input-row input {
   flex: 1;
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: 12px;
   outline: none;
+  transition: border-color var(--transition);
 }
 
 .chat-input-row input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-muted);
 }
 
 .chat-input-row button {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--accent);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: all var(--transition);
+}
+
+.chat-input-row button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.chat-input-row button:active:not(:disabled) {
+  transform: scale(0.95);
 }
 
 .chat-input-row button:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 </style>

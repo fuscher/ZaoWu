@@ -17,7 +17,7 @@ const emit = defineEmits<{
   save: []
 }>()
 
-const collabExtension = computed(() => yCollab(props.ytext, props.awareness))
+const collabExtension = computed(() => yCollab(props.ytext, props.awareness, { undoManager: false }))
 </script>
 
 <template>

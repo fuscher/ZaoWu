@@ -1,6 +1,6 @@
 """Community collaboration REST API blueprint."""
 import uuid
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 
 from services.room_service import (
     RoomServiceError,
@@ -19,14 +19,7 @@ from services.room_service import (
     cleanup_inactive_rooms,
 )
 from services.permission_service import PermissionServiceError
-from collaboration.ws_server import _build_ws_url, handle_websocket
-
-
-try:
-    from simple_websocket import Server
-    HAS_WS = True
-except Exception:
-    HAS_WS = False
+from community_ws import build_ws_url_for_room
 
 
 community_bp = Blueprint('community', __name__)
@@ -38,7 +31,7 @@ def _now_ms() -> int:
 
 
 def _host_id() -> str:
-    """Return a stable host user id for this Flask instance."""
+    """Return a stable host user id for this server instance."""
     import os
     marker = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.host_id')
     try:
@@ -84,8 +77,8 @@ def _to_camel(obj):
 
 
 @community_bp.route('/rooms', methods=['POST'])
-def api_create_room():
-    body = request.get_json(silent=True)
+async def api_create_room():
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
 
@@ -115,13 +108,22 @@ def api_create_room():
     # Auto-join the host as first participant so they get credentials immediately
     user_name = body.get('userName', 'Host')
     try:
+        host_user_id = _host_id()
         host_user, token = join_room(room['id'], room['invite_code'], user_name)
-        # Override the auto-assigned role to 'host'
+        # Override the auto-assigned role and id to match room.host_id
         host_user = update_user(room['id'], host_user['id'], role='host')
+        # Store a mapping so leave_room can match host_user.id to room.host_id
+        # (host_id = machine UUID, user.id = random UUID, they differ by design)
+        import services.room_service as _svc
+        _svc._host_user_map[room['id']] = host_user['id']
     except RoomServiceError:
         return jsonify({'ok': False, 'error': 'failed to join host to room'}), 500
 
-    ws_url = _build_ws_url(room['id'], room.get('host_address') or request.host, token)
+    ws_url = build_ws_url_for_room(
+        room['id'],
+        room.get('host_address') or request.host,
+        token,
+    )
 
     return jsonify({
         'ok': True,
@@ -134,13 +136,13 @@ def api_create_room():
 
 
 @community_bp.route('/rooms', methods=['GET'])
-def api_list_rooms():
+async def api_list_rooms():
     rooms = list_rooms()
     return jsonify({'ok': True, 'rooms': _to_camel(rooms)})
 
 
 @community_bp.route('/rooms/<room_id>', methods=['GET'])
-def api_get_room(room_id):
+async def api_get_room(room_id):
     room = get_room(room_id)
     if not room:
         return jsonify({'ok': False, 'error': 'room not found'}), 404
@@ -154,8 +156,8 @@ def api_get_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>', methods=['PATCH'])
-def api_update_room(room_id):
-    body = request.get_json(silent=True)
+async def api_update_room(room_id):
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
     try:
@@ -168,7 +170,7 @@ def api_update_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>', methods=['DELETE'])
-def api_close_room(room_id):
+async def api_close_room(room_id):
     try:
         close_room(room_id)
     except RoomServiceError as e:
@@ -177,8 +179,8 @@ def api_close_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>/join', methods=['POST'])
-def api_join_room(room_id):
-    body = request.get_json(silent=True)
+async def api_join_room(room_id):
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
 
@@ -193,7 +195,7 @@ def api_join_room(room_id):
         return jsonify({'ok': False, 'error': str(e)}), 400
 
     room = get_room(room_id)
-    ws_url = _build_ws_url(room_id, room.get('host_address', request.host), token)
+    ws_url = build_ws_url_for_room(room_id, room.get('host_address', request.host), token)
     room_state = {
         'users': get_room_users(room_id),
         'permissions': user.get('permissions', {}),
@@ -208,24 +210,32 @@ def api_join_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>/leave', methods=['POST'])
-def api_leave_room(room_id):
-    body = request.get_json(silent=True) or {}
+async def api_leave_room(room_id):
+    body = await request.get_json(silent=True) or {}
     user_id = body.get('userId')
-    if user_id:
-        leave_room(room_id, user_id)
+    if not user_id:
+        return jsonify({'ok': False, 'error': 'missing userId'}), 400
+
+    import services.room_service as _svc
+
+    # The host_id stored in the room is a machine UUID (from _host_id()).
+    # The user_id passed from the frontend is the *host user's* assigned
+    # UUID.  We need to check _host_user_map so that when the host-user
+    # leaves, the entire room is closed.
+    leave_room(room_id, user_id)
     return jsonify({'ok': True})
 
 
 @community_bp.route('/rooms/<room_id>/users', methods=['GET'])
-def api_get_users(room_id):
+async def api_get_users(room_id):
     if not get_room(room_id):
         return jsonify({'ok': False, 'error': 'room not found'}), 404
     return jsonify({'ok': True, 'users': _to_camel(get_room_users(room_id))})
 
 
 @community_bp.route('/rooms/<room_id>/users/<user_id>', methods=['PATCH'])
-def api_update_user(room_id, user_id):
-    body = request.get_json(silent=True)
+async def api_update_user(room_id, user_id):
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
     try:
@@ -243,7 +253,7 @@ def api_update_user(room_id, user_id):
 
 
 @community_bp.route('/rooms/<room_id>/users/<user_id>', methods=['DELETE'])
-def api_remove_user(room_id, user_id):
+async def api_remove_user(room_id, user_id):
     try:
         remove_user(room_id, user_id)
     except RoomServiceError as e:
@@ -252,7 +262,7 @@ def api_remove_user(room_id, user_id):
 
 
 @community_bp.route('/rooms/<room_id>/invite', methods=['POST'])
-def api_generate_invite(room_id):
+async def api_generate_invite(room_id):
     try:
         invite_code = generate_invite_code(room_id)
     except RoomServiceError as e:
@@ -261,7 +271,7 @@ def api_generate_invite(room_id):
 
 
 @community_bp.route('/rooms/<room_id>/ws-url', methods=['GET'])
-def api_get_ws_url(room_id):
+async def api_get_ws_url(room_id):
     token = request.args.get('token', '')
     session = validate_token(token)
     if not session or session['room_id'] != room_id:
@@ -269,16 +279,11 @@ def api_get_ws_url(room_id):
     room = get_room(room_id)
     if not room:
         return jsonify({'ok': False, 'error': 'room not found'}), 404
-    ws_url = _build_ws_url(room_id, room.get('host_address', request.host), token)
+    ws_url = build_ws_url_for_room(room_id, room.get('host_address', request.host), token)
     return jsonify({'ok': True, 'wsUrl': ws_url})
 
 
 @community_bp.route('/cleanup', methods=['POST'])
-def api_cleanup():
+async def api_cleanup():
     closed = cleanup_inactive_rooms()
     return jsonify({'ok': True, 'closed': closed})
-
-
-@community_bp.route('/ws/<room_id>')
-def api_websocket(room_id):
-    return ''

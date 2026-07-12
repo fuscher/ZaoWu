@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { Users, Plus, LogIn, Copy, Trash2 } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
@@ -26,8 +26,29 @@ function openCreate() {
   showCreate.value = true
 }
 
+const joinDialog = ref<InstanceType<typeof JoinDialog> | null>(null)
+
 function openJoin() {
   showJoin.value = true
+}
+
+function openJoinForRoom(room: CollaborationRoom) {
+  selectedRoom.value = room
+  showJoin.value = true
+  // After the dialog mounts, tell it which room was selected
+  setTimeout(() => {
+    if (joinDialog.value) {
+      joinDialog.value.selectRoom(room)
+    }
+  }, 0)
+}
+
+function onRoomCardClick(room: CollaborationRoom) {
+  if (store.currentRoom?.id === room.id) {
+    store.currentRoom = null
+    return
+  }
+  selectedRoom.value = room
 }
 
 function openInvite(room: CollaborationRoom) {
@@ -44,6 +65,26 @@ async function handleJoined() {
   showJoin.value = false
   await store.loadRooms()
 }
+
+// Re-fetch the room list whenever the side panel gains focus.
+// This keeps the active room list in sync after the host leaves
+// (which triggers close_room on the backend) or rooms timeout.
+let _visibilityInterval: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  store.loadRooms()
+  // Poll every 5 seconds so stale rooms disappear from the list
+  _visibilityInterval = setInterval(() => {
+    store.loadRooms()
+  }, 5000)
+})
+
+onUnmounted(() => {
+  if (_visibilityInterval) {
+    clearInterval(_visibilityInterval)
+    _visibilityInterval = null
+  }
+})
 
 async function handleClose(room: CollaborationRoom) {
   confirmTarget.value = room
@@ -99,7 +140,10 @@ function copyInviteCode(code: string) {
             <Copy :size="12" />
           </button>
         </div>
-        <div class="room-card-actions">
+	        <div class="room-card-actions">
+          <button class="text-btn" @click.stop="openJoinForRoom(room)">
+            {{ t('community.join') }}
+          </button>
           <button class="text-btn" @click.stop="openInvite(room)">
             {{ t('community.invite') }}
           </button>
@@ -111,7 +155,7 @@ function copyInviteCode(code: string) {
     </div>
 
     <RoomCreateDialog v-if="showCreate" @close="showCreate = false" @created="handleRoomCreated" />
-    <JoinDialog v-if="showJoin" @close="showJoin = false" @joined="handleJoined" />
+    <JoinDialog v-if="showJoin" ref="joinDialog" @close="showJoin = false" @joined="handleJoined" />
     <InviteDialog v-if="showInvite && selectedRoom" :room="selectedRoom" @close="showInvite = false" />
     <ConfirmDialog
       :visible="!!confirmTarget"
@@ -157,6 +201,10 @@ function copyInviteCode(code: string) {
   border-color: var(--accent-muted);
 }
 
+.room-action-btn:active {
+  background: var(--bg-glass-active);
+}
+
 .room-section-title {
   font-size: 11px;
   font-weight: 600;
@@ -191,6 +239,7 @@ function copyInviteCode(code: string) {
 .room-card.active {
   border-color: var(--accent-muted);
   background: var(--bg-glass-hover);
+  box-shadow: var(--shadow-sm);
 }
 
 .room-card-header {
@@ -225,28 +274,31 @@ function copyInviteCode(code: string) {
   flex: 1;
   background: var(--bg-secondary);
   padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   font-size: 12px;
   color: var(--accent);
   letter-spacing: 0.5px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
 .icon-only {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
   border-radius: 4px;
+  transition: all var(--transition);
 }
 
 .icon-only:hover {
   background: var(--bg-glass-hover);
-  color: var(--text-secondary);
+  color: var(--accent);
 }
 
 .room-card-actions {
@@ -262,15 +314,26 @@ function copyInviteCode(code: string) {
   background: transparent;
   border: none;
   cursor: pointer;
-  padding: 2px 4px;
+  padding: 4px 8px;
   border-radius: 4px;
+  transition: all var(--transition);
 }
 
 .text-btn:hover {
   background: var(--accent-muted);
+  color: var(--accent-hover);
+}
+
+.text-btn:active {
+  background: var(--bg-glass-active);
 }
 
 .text-btn.danger {
-  color: var(--error, #ef4444);
+  color: var(--danger);
+}
+
+.text-btn.danger:hover {
+  background: rgba(255, 95, 86, 0.12);
+  color: var(--danger);
 }
 </style>

@@ -4,7 +4,7 @@ import uuid
 import threading
 import requests
 from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify, Response
+from quart import Blueprint, request, jsonify, Response
 
 chat_bp = Blueprint('chat', __name__)
 

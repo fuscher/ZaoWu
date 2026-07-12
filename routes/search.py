@@ -2,7 +2,7 @@ import os
 import json
 import threading
 import uuid
-from flask import Blueprint, request, jsonify
+from quart import Blueprint, request, jsonify
 
 search_bp = Blueprint('search', __name__)
 

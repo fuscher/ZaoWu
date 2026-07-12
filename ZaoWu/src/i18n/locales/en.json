@@ -117,6 +117,7 @@
     "inviteLink": "Invite Link",
     "inviteLinkOrCode": "Invite link or room code",
     "inviteLinkPlaceholder": "Paste invite link or enter roomID:inviteCode",
+    "invalidInviteLink": "Please enter a valid invite link or roomID:inviteCode",
     "hostAddress": "Host Address",
     "copy": "Copy",
     "copyInviteCode": "Copy invite code",

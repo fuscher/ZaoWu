@@ -239,6 +239,7 @@ def generate_invite_code(room_id: str) -> str:
 # In-memory user/session state (temporary, not persisted across restarts)
 _users_by_room: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _sessions: Dict[str, Dict[str, Any]] = {}
+_host_user_map: Dict[str, str] = {}  # room_id -> host user UUID (created by routes/community.py)
 
 
 def _get_room_users(room_id: str) -> Dict[str, Dict[str, Any]]:
@@ -297,12 +298,42 @@ def join_room(
 
 
 def leave_room(room_id: str, user_id: str) -> None:
+    """Handle a user leaving a room.
+
+    If the leaving user is the host, the room is closed and all users are
+    removed — the host's departure ends the session for everyone. Otherwise
+    the user is simply marked offline.
+    """
+    room = get_room(room_id)
+
+    # Check if the leaver is the host — match by host_id (machine UUID) or
+    # by the _host_user_map entry (routes/community.py records which user
+    # UUID belongs to the host of each room).
+    is_host = False
+    if room:
+        if room.get('host_id') == user_id:
+            is_host = True
+        if _host_user_map.get(room_id) == user_id:
+            is_host = True
+
+    if is_host:
+        # Host left — close the room and evict everyone
+        users = _get_room_users(room_id)
+        expired_sessions = [
+            t for t, s in _sessions.items() if s['room_id'] == room_id
+        ]
+        for token in expired_sessions:
+            _sessions.pop(token, None)
+        users.clear()
+        _host_user_map.pop(room_id, None)
+        close_room(room_id)
+        return
+
+    # Regular user — mark offline, keep session for potential reconnection
     users = _get_room_users(room_id)
     if user_id in users:
         users[user_id]['status'] = 'offline'
-        # Keep user record briefly for reconnection; cleanup can prune later
 
-    # Remove sessions for this user
     expired = [t for t, s in _sessions.items() if s['room_id'] == room_id and s['user_id'] == user_id]
     for token in expired:
         _sessions.pop(token, None)

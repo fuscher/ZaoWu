@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, watch, computed } from 'vue'
+import { ref, shallowRef, watch, computed, onUnmounted } from 'vue'
 import { Users, MessageSquare, Shield, LogOut, Wifi, WifiOff, Link } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
@@ -18,11 +18,13 @@ const showPermissions = ref(false)
 
 const _watching = ref(false)
 const _collab = shallowRef<ReturnType<typeof useCollaboration> | null>(null)
+const _isMounted = ref(true)
 
 const collab = computed(() => {
   if (!store.currentRoom || !store.currentUser || !store.wsUrl) {
     return null
   }
+  if (!_isMounted.value) return null
   if (_collab.value) return _collab.value
   const c = useCollaboration({
     roomId: store.currentRoom.id,
@@ -69,6 +71,15 @@ watch(
   },
   { deep: true },
 )
+
+onUnmounted(() => {
+  _isMounted.value = false
+  if (_collab.value) {
+    _collab.value.disconnect()
+    _collab.value = null
+  }
+  _watching.value = false
+})
 
 async function leave() {
   collab.value?.disconnect()
@@ -224,20 +235,20 @@ function copyInviteLink() {
 }
 
 .connection-badge.connected {
-  background: rgba(16, 185, 129, 0.15);
-  color: #10b981;
+  background: var(--accent-muted);
+  color: var(--accent);
 }
 
 .connection-badge.connecting,
 .connection-badge.reconnecting {
-  background: rgba(245, 158, 11, 0.15);
-  color: #f59e0b;
+  background: rgba(255, 189, 46, 0.15);
+  color: var(--warning);
 }
 
 .connection-badge.error,
 .connection-badge.disconnected {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: rgba(255, 95, 86, 0.15);
+  color: var(--danger);
 }
 
 .toolbar-right {
@@ -262,12 +273,16 @@ function copyInviteLink() {
 
 .tool-btn:hover {
   background: var(--bg-glass-hover);
-  color: var(--text-secondary);
+  color: var(--accent);
+}
+
+.tool-btn:active {
+  background: var(--bg-glass-active);
 }
 
 .tool-btn.danger:hover {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: rgba(255, 95, 86, 0.15);
+  color: var(--danger);
 }
 
 .community-body {
@@ -300,5 +315,15 @@ function copyInviteLink() {
 .btn.secondary {
   background: transparent;
   color: var(--text-secondary);
+}
+
+.btn.secondary:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
+.btn.primary:active,
+.btn.secondary:active {
+  transform: scale(0.97);
 }
 </style>

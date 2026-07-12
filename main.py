@@ -1,8 +1,25 @@
 import os
+import sys
 import ctypes
 import threading
 import webview
-from server import run_server
+from server_quart import run_server
+
+# ── Suppress pycrdt cross-thread Subscription drop noise ────────────────
+# pycrdt's Rust-backed Subscription finalizer posts a RuntimeError through
+# sys.unraisablehook when a Subscription is dropped on a thread different
+# from its origin.  On Windows daemon threads, this happens at process exit
+# after all application logic has completed.  The message is completely
+# harmless — we suppress it here so it doesn't clutter stderr.
+_original_unraisablehook = sys.unraisablehook
+
+def _quiet_pycrdt_subscription(args):
+    msg = str(args.exc_value) if args.exc_value else ''
+    if 'Subscription' in msg and 'unsendable' in msg:
+        return  # silently swallow
+    _original_unraisablehook(args)
+
+sys.unraisablehook = _quiet_pycrdt_subscription
 
 PORT = 5000
 W_WIDTH = 1000
@@ -41,12 +58,12 @@ class Api:
         return None
 
 
-def start_server():
-    run_server(port=PORT)
-
-
 if __name__ == '__main__':
-    server_thread = threading.Thread(target=start_server, daemon=True)
+    # PyWebView must own the main thread so its Windows message pump works.
+    # The asyncio server runs in a *daemon* thread — on Windows this means
+    # signal handlers are not available, so we configure Hypercorn to skip them.
+
+    server_thread = threading.Thread(target=run_server, args=(PORT,), daemon=True)
     server_thread.start()
 
     window = webview.create_window(
