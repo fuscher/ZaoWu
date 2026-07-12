@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { Folder, ChevronRight } from '@lucide/vue'
+import { Folder, Users, ChevronRight } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useProjectsStore } from '@/stores/projects'
 import FileTree from './FileTree.vue'
@@ -21,7 +21,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const store = useProjectsStore()
-const expanded = ref(false)
+const expanded = ref(props.project.virtual === true)
 const showMenu = ref(false)
 const menuX = ref(0)
 const menuY = ref(0)
@@ -83,9 +83,11 @@ onUnmounted(() => {
         <ChevronRight :size="14" />
       </span>
       <span class="card-icon">
-        <Folder :size="14" />
+        <Users v-if="project.virtual" :size="14" class="collab-icon" />
+        <Folder v-else :size="14" />
       </span>
       <span class="card-name" :title="project.path">{{ project.name }}</span>
+      <span v-if="project.virtual" class="collab-badge">{{ t('projectCard.collaborating') }}</span>
       <span v-if="project.archived" class="archived-badge">{{ t('projectCard.archived') }}</span>
     </div>
     <div v-if="project.lastModified" class="card-meta">
@@ -98,7 +100,12 @@ onUnmounted(() => {
 
   <Teleport to="body">
     <div v-if="showMenu" class="context-menu" :style="{ left: menuX + 'px', top: menuY + 'px' }">
-      <template v-if="!project.archived">
+      <template v-if="project.virtual">
+        <div class="menu-item disabled">
+          {{ t('projectCard.collabProject') }}
+        </div>
+      </template>
+      <template v-else-if="!project.archived">
         <div class="menu-item" @click="emit('archive', project.id); closeMenu()">
           {{ t('explorer.archive') }}
         </div>
@@ -180,6 +187,29 @@ onUnmounted(() => {
   padding: 2px 6px;
   border-radius: 4px;
   flex-shrink: 0;
+}
+
+.collab-badge {
+  font-size: 10px;
+  color: var(--accent, #4fc3f7);
+  background: var(--accent-muted, rgba(79, 195, 247, 0.15));
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.collab-icon {
+  color: var(--accent, #4fc3f7);
+}
+
+.menu-item.disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.menu-item.disabled:hover {
+  background: transparent;
 }
 
 .card-meta {

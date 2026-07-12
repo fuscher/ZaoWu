@@ -140,6 +140,9 @@
     "permissionInvite": "邀请用户",
     "permissionKick": "移除用户",
     "permissionManageFiles": "管理文件",
+    "kickUser": "移出房间",
+    "kickConfirm": "确定要将 {name} 移出房间吗？",
+    "unsupported": "暂不支持",
     "welcomeTitle": "社区协作",
     "welcomeDesc": "创建或加入一个房间，与局域网内的其他用户实时协作编辑代码。",
     "useSidePanelHint": "请使用左侧边栏创建或加入房间",
@@ -247,11 +250,18 @@
   },
   "fileTree": {
     "empty": "此文件夹为空",
-    "loading": "加载中..."
+    "loading": "加载中...",
+    "newFile": "新建文件",
+    "rename": "重命名",
+    "delete": "删除",
+    "newFileNamePrompt": "请输入文件名：",
+    "confirmDelete": "确定要删除 {name} 吗？"
   },
   "projectCard": {
     "lastModified": "最后修改：{time}",
-    "archived": "已归档"
+    "archived": "已归档",
+    "collaborating": "协作中",
+    "collabProject": "协作项目"
   },
   "filePreview": {
     "clickHint": "点击文件即可预览",

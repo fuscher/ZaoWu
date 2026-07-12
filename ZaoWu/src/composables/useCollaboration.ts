@@ -292,13 +292,68 @@ export function useCollaboration(options: UseCollaborationOptions) {
         break
       }
       case 'file_diff': {
-        const payload = message.payload as { operation?: string; path?: string; timestamp?: number }
+        const payload = message.payload as { operation?: string; path?: string; timestamp?: number; oldPath?: string; newPath?: string }
+        const diffPath = payload.path || ''
+        const operation = payload.operation || 'write'
+
+        // Skip applying our own file_diff (optimistic update already done in sendFileDiff)
+        if (message.userId === options.userId) break
+
         fileDiffs.value.push({
           userId: message.userId,
-          operation: payload.operation || 'write',
-          path: payload.path || '',
+          operation,
+          path: diffPath,
           timestamp: payload.timestamp || Date.now(),
         })
+
+        // Apply to editor: reload, close, or update path
+        import('@/stores/editor').then(({ useEditorStore }) => {
+          const editorStore = useEditorStore()
+          const currentPath = editorStore.openFilePath
+          if (!currentPath) return
+
+          const normCurrent = currentPath.replace(/\\/g, '/')
+
+          if (operation === 'rename' && payload.oldPath && payload.newPath) {
+            const normOld = payload.oldPath.replace(/\\/g, '/')
+            if (normCurrent === normOld || normCurrent.endsWith(normOld)) {
+              editorStore.openFile(payload.newPath)
+            }
+          } else if (operation === 'delete') {
+            const normDiff = diffPath.replace(/\\/g, '/')
+            if (normCurrent.endsWith(normDiff)) {
+              editorStore.closeFile()
+            }
+          } else if (operation === 'write') {
+            const normDiff = diffPath.replace(/\\/g, '/')
+            if (normCurrent.endsWith(normDiff)) {
+              if (editorStore.isDirty) {
+                editorStore.error = 'File has been modified externally'
+              } else {
+                editorStore.reloadCurrentFile()
+              }
+            }
+          }
+        })
+
+        // Notify FileTree to refresh via window event
+        window.dispatchEvent(new CustomEvent('collab-file-diff', {
+          detail: { path: diffPath, operation }
+        }))
+        break
+      }
+      case 'room_info': {
+        const payload = message.payload as { projectPath?: string; projectName?: string }
+        if (payload.projectPath) {
+          import('@/stores/projects').then(({ useProjectsStore }) => {
+            const projectsStore = useProjectsStore()
+            projectsStore.injectVirtualProject(
+              options.roomId,
+              payload.projectPath!,
+              payload.projectName || 'Collab Project',
+            )
+          })
+        }
         break
       }
     }
@@ -343,12 +398,15 @@ export function useCollaboration(options: UseCollaborationOptions) {
     })
   }
 
-  function sendFileDiff(path: string, content: string, operation: 'write' | 'delete' = 'write') {
+  function sendFileDiff(path: string, content: string, operation: 'write' | 'delete' | 'rename' = 'write', extra?: { oldPath?: string; newPath?: string }) {
     const diffPayload: Record<string, unknown> = { path, operation, timestamp: Date.now() }
     if (operation === 'write') {
       diffPayload.content = content
     } else if (operation === 'delete') {
       diffPayload.delete = true
+    } else if (operation === 'rename' && extra) {
+      diffPayload.oldPath = extra.oldPath
+      diffPayload.newPath = extra.newPath
     }
     sendCustomMessage({
       type: 'file_diff',
@@ -372,6 +430,10 @@ export function useCollaboration(options: UseCollaborationOptions) {
   }
 
   function disconnect() {
+    import('@/stores/projects').then(({ useProjectsStore }) => {
+      const projectsStore = useProjectsStore()
+      projectsStore.removeVirtualProject(options.roomId)
+    })
     provider.disconnect()
     doc.destroy()
   }

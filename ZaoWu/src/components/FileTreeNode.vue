@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Folder, FolderOpen, File } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useEditorStore } from '@/stores/editor'
+import { useProjectsStore } from '@/stores/projects'
 import type { TreeNode } from '@/types'
 
 const props = defineProps<{
@@ -13,10 +14,26 @@ const props = defineProps<{
 const emit = defineEmits<{ 'load-children': [path: string] }>()
 const { t } = useI18n()
 const editorStore = useEditorStore()
+const projectsStore = useProjectsStore()
 const expanded = ref(false)
 const loading = ref(false)
+const showMenu = ref(false)
+const menuX = ref(0)
+const menuY = ref(0)
+const isRenaming = ref(false)
+const renameValue = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
 
 const isExpandable = computed(() => props.node.type === 'directory')
+
+// Check if this node is inside a virtual (collaboration) project
+const isVirtualProject = computed(() => {
+  const normPath = props.node.path.replace(/\\/g, '/')
+  return projectsStore.virtualProjects.some((vp) => {
+    const normVpPath = vp.path.replace(/\\/g, '/')
+    return normPath.startsWith(normVpPath)
+  })
+})
 
 watch(() => props.node.children, (newChildren) => {
   if (loading.value && newChildren !== undefined) {
@@ -49,6 +66,88 @@ function toggle() {
 function onChildLoad(path: string) {
   emit('load-children', path)
 }
+
+function onContextMenu(e: MouseEvent) {
+  if (!isVirtualProject.value) return
+  e.preventDefault()
+  e.stopPropagation()
+  showMenu.value = true
+  menuX.value = e.clientX
+  menuY.value = e.clientY
+}
+
+function closeMenu() {
+  showMenu.value = false
+}
+
+function handleNewFile() {
+  closeMenu()
+  const fileName = window.prompt(t('fileTree.newFileNamePrompt'))
+  if (!fileName) return
+  const parentDir = props.node.type === 'directory' ? props.node.path : props.node.path.replace(/[\\/][^\\/]+$/, '')
+  const newPath = parentDir + '/' + fileName
+  // Create empty file via API, then broadcast via collab event
+  fetch('/api/explorer/save-file', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: newPath, content: '' }),
+  }).then(() => {
+    window.dispatchEvent(new CustomEvent('collab-file-operation', {
+      detail: { operation: 'write', path: newPath, content: '' }
+    }))
+  })
+}
+
+function handleDelete() {
+  closeMenu()
+  if (!window.confirm(t('fileTree.confirmDelete', { name: props.node.name }))) return
+  window.dispatchEvent(new CustomEvent('collab-file-operation', {
+    detail: { operation: 'delete', path: props.node.path }
+  }))
+}
+
+function handleRename() {
+  closeMenu()
+  isRenaming.value = true
+  renameValue.value = props.node.name
+  // Focus the input on next tick
+  setTimeout(() => {
+    renameInput.value?.focus()
+    renameInput.value?.select()
+  }, 0)
+}
+
+function commitRename() {
+  if (!isRenaming.value) return
+  const newName = renameValue.value.trim()
+  if (!newName || newName === props.node.name) {
+    isRenaming.value = false
+    return
+  }
+  const oldPath = props.node.path
+  const parentDir = oldPath.replace(/[\\/][^\\/]+$/, '')
+  const newPath = parentDir + '/' + newName
+  isRenaming.value = false
+  window.dispatchEvent(new CustomEvent('collab-file-operation', {
+    detail: { operation: 'rename', path: newPath, oldPath, newPath }
+  }))
+}
+
+function cancelRename() {
+  isRenaming.value = false
+}
+
+function handleClickOutside() {
+  if (showMenu.value) closeMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
 </script>
 
 <template>
@@ -57,6 +156,7 @@ function onChildLoad(path: string) {
       class="node-row"
       :style="{ paddingLeft: level * 16 + 'px' }"
       @click.stop="toggle"
+      @contextmenu="onContextMenu"
     >
       <span class="node-arrow" :class="{ expanded, visible: isExpandable }">
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -68,7 +168,17 @@ function onChildLoad(path: string) {
         <Folder v-else-if="isExpandable" :size="14" />
         <File v-else :size="14" />
       </span>
-      <span class="node-name" :title="node.path">{{ node.name }}</span>
+      <span v-if="!isRenaming" class="node-name" :title="node.path">{{ node.name }}</span>
+      <input
+        v-else
+        ref="renameInput"
+        v-model="renameValue"
+        class="rename-input"
+        @click.stop
+        @keyup.enter="commitRename"
+        @keyup.escape="cancelRename"
+        @blur="commitRename"
+      />
       <span v-if="loading" class="node-loading">
         <svg width="12" height="12" viewBox="0 0 12 12" class="spin">
           <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 12"/>
@@ -88,6 +198,21 @@ function onChildLoad(path: string) {
       />
     </div>
   </div>
+
+  <Teleport to="body">
+    <div v-if="showMenu" class="ctx-menu" :style="{ left: menuX + 'px', top: menuY + 'px' }" @click.stop>
+      <div v-if="isExpandable" class="ctx-item" @click="handleNewFile">
+        {{ t('fileTree.newFile') }}
+      </div>
+      <div class="ctx-item" @click="handleRename">
+        {{ t('fileTree.rename') }}
+      </div>
+      <div class="ctx-item danger" @click="handleDelete">
+        {{ t('fileTree.delete') }}
+      </div>
+    </div>
+    <div v-if="showMenu" class="ctx-overlay" @click="closeMenu" @contextmenu.prevent="closeMenu" />
+  </Teleport>
 </template>
 
 <style scoped>
@@ -142,6 +267,18 @@ function onChildLoad(path: string) {
   min-width: 0;
 }
 
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 2px 4px;
+  border: 1px solid var(--accent, #4fc3f7);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  outline: none;
+}
+
 .node-loading {
   flex-shrink: 0;
   color: var(--text-tertiary);
@@ -163,5 +300,43 @@ function onChildLoad(path: string) {
 
 .node-children {
   overflow: hidden;
+}
+
+.ctx-menu {
+  position: fixed;
+  z-index: 10000;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 120px;
+  box-shadow: var(--shadow);
+}
+
+.ctx-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ctx-item:hover {
+  background: var(--bg-glass-hover);
+}
+
+.ctx-item.danger {
+  color: var(--danger, #ff5f56);
+}
+
+.ctx-item.danger:hover {
+  background: rgba(255, 95, 86, 0.1);
+}
+
+.ctx-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
 }
 </style>

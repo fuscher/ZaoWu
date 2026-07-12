@@ -4,12 +4,14 @@ import type { Project } from '@/types'
 
 export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
+  const virtualProjects = ref<Project[]>([])
   const batchMode = ref(false)
   const batchSelected = ref<Set<string>>(new Set())
 
-  const activeProjects = computed(() =>
-    projects.value.filter(p => !p.archived)
-  )
+  const activeProjects = computed(() => [
+    ...projects.value.filter(p => !p.archived),
+    ...virtualProjects.value,
+  ])
 
   const archivedProjects = computed(() =>
     projects.value.filter(p => p.archived)
@@ -183,8 +185,27 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
+  function injectVirtualProject(roomId: string, projectPath: string, projectName: string) {
+    if (virtualProjects.value.some(p => p.roomId === roomId)) return
+    virtualProjects.value.push({
+      id: `virtual-${roomId}`,
+      path: projectPath,
+      name: projectName,
+      addedAt: new Date().toISOString(),
+      archived: false,
+      lastModified: null,
+      virtual: true,
+      roomId,
+    })
+  }
+
+  function removeVirtualProject(roomId: string) {
+    virtualProjects.value = virtualProjects.value.filter(p => p.roomId !== roomId)
+  }
+
   return {
     projects,
+    virtualProjects,
     batchMode,
     batchSelected,
     activeProjects,
@@ -201,5 +222,7 @@ export const useProjectsStore = defineStore('projects', () => {
     enterBatchMode,
     exitBatchMode,
     toggleBatchSelect,
+    injectVirtualProject,
+    removeVirtualProject,
   }
 })

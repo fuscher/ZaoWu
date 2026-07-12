@@ -14,6 +14,7 @@ persistence to pycrdt-websocket while preserving ZaoWu's custom features:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import logging
@@ -53,8 +54,14 @@ websocket_server = WebsocketServer(
     exception_handler=_ws_exception_handler,
 )
 
-# Per-room project path registry (for file_diff application)
+# Per-room project path registry (for file_diff application and search)
 _room_project_paths: dict[str, str] = {}
+
+# Room close callbacks (for cleanup when room_service.close_room is called)
+_room_close_callbacks: dict[str, Callable[[], None]] = {}
+
+# ContextVar for binding room_id to the current WebSocket connection (on_disconnect)
+_current_room_id: contextvars.ContextVar[str] = contextvars.ContextVar('_current_room_id', default='')
 
 # ── Auth hook ────────────────────────────────────────────────────────
 
@@ -104,6 +111,19 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     scope['zaowu_user'] = user
     scope['zaowu_session'] = session
 
+    # Register virtual project path for search and file_diff
+    room_meta = room_service.get_room(room_id)
+    if room_meta:
+        project_id = room_meta.get('project_id', '')
+        project_path = _resolve_project_path(room_id, project_id)
+        if project_path and os.path.isdir(project_path):
+            _room_project_paths[room_id] = os.path.normpath(project_path)
+
+    # Register room close callback for search cleanup
+    def _on_room_close():
+        _room_project_paths.pop(room_id, None)
+    _room_close_callbacks[room_id] = _on_room_close
+
     return False  # accept the WebSocket
 
 
@@ -119,10 +139,23 @@ def set_custom_message_handler(room: YRoom) -> None:
     the appropriate business-logic handler.  Messages with 0x00 (SYNC)
     or 0x01 (AWARENESS) fall through to pycrdt-websocket's default
     processing.
+
+    On every incoming message, a room_info broadcast is sent so that
+    newly connected clients receive the project path. The frontend
+    deduplicates by roomId, so redundant broadcasts are harmless.
     """
+    # Resolve room_id from room name (get_room_name returns full URL path)
+    room_name = websocket_server.get_room_name(room) or ''
+    ws_prefix = '/api/community/ws/'
+    room_id = room_name[len(ws_prefix):] if room_name.startswith(ws_prefix) else room_name.lstrip('/')
+
     async def _handler(message: bytes) -> bool:
         if not message:
             return False
+
+        # Broadcast room_info on every message (frontend deduplicates by roomId)
+        await _send_room_info(room, room_id)
+
         if message[0] == ZAOWU_PREFIX:
             await _dispatch_custom_message(message[1:], room)
             return True  # skip pycrdt default processing
@@ -147,6 +180,8 @@ async def _dispatch_custom_message(json_bytes: bytes, room: YRoom) -> None:
         await _handle_permission_change(room, payload)
     elif msg_type == 'file_diff':
         await _handle_file_diff(room, payload)
+    elif msg_type == 'awareness_update':
+        await _broadcast_custom(room, payload)
     else:
         logger.debug('Unknown custom message type: %s', msg_type)
 
@@ -235,8 +270,8 @@ def _resolve_project_path(room_id: str, project_root: str) -> str:
 
     if project_root:
         try:
-            from routes.explorer import get_project_by_id
-            proj = get_project_by_id(project_root)
+            from routes.explorer import find_project
+            proj = find_project(project_root)
             if proj:
                 return os.path.normpath(proj.get('path', ''))
         except Exception:
@@ -348,6 +383,62 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
     return f'ws://{host}/api/community/ws/{room_id}?token={token}'
 
 
+# ── Room info broadcaster ────────────────────────────────────────────
+
+async def _send_room_info(room: YRoom, room_id: str) -> None:
+    """Broadcast room project info to all clients (frontend deduplicates by roomId)."""
+    room_meta = room_service.get_room(room_id)
+    if not room_meta:
+        return
+    project_id = room_meta.get('project_id', '')
+    project_path = _resolve_project_path(room_id, project_id)
+    project_name = os.path.basename(project_path) if project_path else room_meta.get('name', '')
+
+    payload = {
+        'type': 'room_info',
+        'roomId': room_id,
+        'payload': {
+            'projectPath': project_path,
+            'projectName': project_name,
+        },
+        'timestamp': int(__import__('time').time() * 1000),
+    }
+    await _broadcast_custom(room, payload, exclude_user=None)
+
+
+# ── ZaoWuASGIServer (on_disconnect cleanup via ContextVar) ──────────
+
+def _on_disconnect_with_cleanup(message: dict[str, Any]) -> None:
+    """on_disconnect callback: clean up search registration via ContextVar room_id."""
+    room_id = _current_room_id.get('')
+    if room_id:
+        _room_project_paths.pop(room_id, None)
+        _room_close_callbacks.pop(room_id, None)
+
+
+class ZaoWuASGIServer(ASGIServer):
+    """Subclass of ASGIServer that binds room_id via ContextVar for on_disconnect cleanup.
+
+    Each WebSocket connection sets the ContextVar in __call__; the on_disconnect
+    callback reads it from the same coroutine context. No instance-level state
+    is modified, so multiple concurrent connections are safe.
+    """
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            path = scope.get("path", "")
+            ws_prefix = '/api/community/ws/'
+            room_id = path[len(ws_prefix):] if path.startswith(ws_prefix) else path.lstrip('/')
+
+            token = _current_room_id.set(room_id)
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                _current_room_id.reset(token)
+        else:
+            await super().__call__(scope, receive, send)
+
+
 # ── ASGI app factory ─────────────────────────────────────────────────
 
 def create_asgi_app():
@@ -356,7 +447,11 @@ def create_asgi_app():
     This ASGI app is mounted as middleware: requests to /api/community/ws/*
     are handled by pycrdt-websocket; all other requests fall through to Quart.
     """
-    _asgi = ASGIServer(websocket_server, on_connect=on_connect)
+    _asgi = ZaoWuASGIServer(
+        websocket_server,
+        on_connect=on_connect,
+        on_disconnect=_on_disconnect_with_cleanup,
+    )
     return _asgi
 
 

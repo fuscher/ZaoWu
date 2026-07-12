@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, shallowRef, watch, computed, onUnmounted } from 'vue'
+import { ref, shallowRef, watch, computed, onMounted, onUnmounted } from 'vue'
 import { Users, MessageSquare, Shield, LogOut, Wifi, WifiOff, Link } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
+import { useEditorStore } from '@/stores/editor'
 import { useCollaboration } from '@/composables/useCollaboration'
 import CollabEditor from './CollabEditor.vue'
 import CommunityChatPanel from './CommunityChatPanel.vue'
@@ -12,6 +13,7 @@ import PermissionPanel from './PermissionPanel.vue'
 
 const { t } = useI18n()
 const store = useCommunityStore()
+const editorStore = useEditorStore()
 
 const showInvite = ref(false)
 const showPermissions = ref(false)
@@ -71,6 +73,63 @@ watch(
   },
   { deep: true },
 )
+
+// Bridge editor save → collaboration sendFileDiff
+watch(
+  () => _collab.value,
+  (collabInstance) => {
+    if (collabInstance) {
+      editorStore.onFileSaved = (path: string, content: string) => {
+        const virtualProj = store.currentRoom
+        if (!virtualProj) return
+        collabInstance.sendFileDiff(path, content, 'write')
+      }
+    } else {
+      editorStore.onFileSaved = null
+    }
+  },
+)
+
+// Bridge editor openFile → collaboration updateCursor (P1-1)
+watch(
+  () => editorStore.openFilePath,
+  (filePath) => {
+    if (_collab.value && filePath) {
+      _collab.value.updateCursor({ filePath, line: 0, column: 0 })
+    }
+  },
+)
+
+// P2-1: Listen for file operations from FileTreeNode context menu
+function handleCollabFileOperation(e: Event) {
+  const detail = (e as CustomEvent).detail as { operation: string; path: string; content?: string; oldPath?: string; newPath?: string }
+  if (!_collab.value) return
+  if (detail.operation === 'write') {
+    _collab.value.sendFileDiff(detail.path, detail.content || '', 'write')
+  } else if (detail.operation === 'delete') {
+    _collab.value.sendFileDiff(detail.path, '', 'delete')
+  } else if (detail.operation === 'rename' && detail.oldPath && detail.newPath) {
+    _collab.value.sendFileDiff(detail.oldPath, '', 'rename', { oldPath: detail.oldPath, newPath: detail.newPath })
+    // Update editor path if the renamed file is currently open
+    const normOld = detail.oldPath.replace(/\\/g, '/')
+    const normCurrent = (editorStore.openFilePath || '').replace(/\\/g, '/')
+    if (normCurrent === normOld || normCurrent.endsWith(normOld)) {
+      editorStore.openFile(detail.newPath)
+    }
+  }
+  // Dispatch file-diff event for local FileTree refresh
+  window.dispatchEvent(new CustomEvent('collab-file-diff', {
+    detail: { path: detail.path, operation: detail.operation }
+  }))
+}
+
+onMounted(() => {
+  window.addEventListener('collab-file-operation', handleCollabFileOperation)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('collab-file-operation', handleCollabFileOperation)
+})
 
 onUnmounted(() => {
   _isMounted.value = false

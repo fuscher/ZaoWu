@@ -65,6 +65,7 @@ export type WSMessageType =
   | 'user_left'
   | 'permission_change'
   | 'room_state'
+  | 'room_info'
   | 'ping'
   | 'pong'
   | 'error'
@@ -165,6 +166,8 @@ export interface Project {
   addedAt: string
   archived: boolean
   lastModified: string | null
+  virtual?: boolean
+  roomId?: string
 }
 
 export interface TreeNode {

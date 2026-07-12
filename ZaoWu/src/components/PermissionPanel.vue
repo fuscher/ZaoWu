@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { X, Shield } from '@lucide/vue'
+import { ref, watch, computed } from 'vue'
+import { X, Shield, UserX } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
 import { DEFAULT_PERMISSIONS } from '@/types'
@@ -11,6 +11,7 @@ const { t } = useI18n()
 const store = useCommunityStore()
 
 const selectedUserId = ref('')
+const showKickConfirm = ref(false)
 
 watch(
   () => store.users,
@@ -51,7 +52,21 @@ function close() {
   emit('close')
 }
 
-const permissionKeys: (keyof PermissionMatrix)[] = ['edit', 'chat', 'terminal', 'invite', 'kick', 'manageFiles']
+const canKickUser = computed(() => {
+  if (!store.canKick || !selectedUser.value) return false
+  if (selectedUser.value.id === store.currentUser?.id) return false
+  return true
+})
+
+async function confirmKick() {
+  if (!selectedUser.value) return
+  await store.removeUser(selectedUser.value.id)
+  showKickConfirm.value = false
+  selectedUserId.value = ''
+}
+
+// P2-2: terminal permission is not yet supported — exclude from toggle list
+const permissionKeys: (keyof PermissionMatrix)[] = ['edit', 'chat', 'invite', 'kick', 'manageFiles']
 </script>
 
 <template>
@@ -101,11 +116,33 @@ const permissionKeys: (keyof PermissionMatrix)[] = ['edit', 'chat', 'terminal', 
               />
               <span>{{ t(`community.permission${key.charAt(0).toUpperCase() + key.slice(1)}`) }}</span>
             </label>
+            <label class="permission-item disabled">
+              <input type="checkbox" disabled />
+              <span>{{ t('community.permissionTerminal') }}</span>
+              <span class="unsupported-tag">{{ t('community.unsupported') }}</span>
+            </label>
+          </div>
+
+          <div v-if="canKickUser" class="kick-section">
+            <button class="btn danger" @click="showKickConfirm = true">
+              <UserX :size="14" />
+              {{ t('community.kickUser') }}
+            </button>
           </div>
         </div>
       </div>
       <div class="dialog-footer">
         <button class="btn primary" @click="close">{{ t('common.done') }}</button>
+      </div>
+
+      <div v-if="showKickConfirm" class="confirm-overlay" @click.self="showKickConfirm = false">
+        <div class="confirm-dialog">
+          <p>{{ t('community.kickConfirm', { name: selectedUser?.name ?? '' }) }}</p>
+          <div class="confirm-actions">
+            <button class="btn" @click="showKickConfirm = false">{{ t('common.cancel') }}</button>
+            <button class="btn danger" @click="confirmKick">{{ t('community.kickUser') }}</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -245,6 +282,71 @@ const permissionKeys: (keyof PermissionMatrix)[] = ['edit', 'chat', 'terminal', 
 
 .permission-item input:disabled {
   cursor: not-allowed;
+}
+
+.permission-item.disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.unsupported-tag {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--bg-glass);
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+
+.kick-section {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.btn.danger {
+  background: transparent;
+  color: var(--danger, #ff5f56);
+  border-color: var(--danger, #ff5f56);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn.danger:hover {
+  background: rgba(255, 95, 86, 0.1);
+}
+
+.confirm-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  z-index: 10;
+}
+
+.confirm-dialog {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  width: 280px;
+  text-align: center;
+}
+
+.confirm-dialog p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
 }
 
 .dialog-footer {

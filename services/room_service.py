@@ -216,6 +216,14 @@ def close_room(room_id: str) -> None:
     room['updated_at'] = _now_ms()
     _write_rooms(data)
 
+    # Trigger community_ws cleanup callback (search registration, etc.)
+    try:
+        from community_ws import _room_close_callbacks
+        if cb := _room_close_callbacks.pop(room_id, None):
+            cb()
+    except Exception:
+        pass
+
 
 def refresh_room_activity(room_id: str) -> None:
     data = _read_rooms()

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
 import type { TreeNode } from '@/types'
 
@@ -51,8 +51,23 @@ function loadChildren(path: string) {
   loadTree(path)
 }
 
+function handleCollabFileDiff(e: Event) {
+  const detail = (e as CustomEvent).detail as { path: string; operation: string }
+  // Only reload if the diff path is within this project's directory
+  const normProject = props.projectPath.replace(/\\/g, '/')
+  const normDiff = detail.path.replace(/\\/g, '/')
+  if (normProject && (normDiff.startsWith(normProject) || normProject.endsWith(normDiff))) {
+    loadTree()
+  }
+}
+
 onMounted(() => {
   loadTree()
+  window.addEventListener('collab-file-diff', handleCollabFileDiff)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('collab-file-diff', handleCollabFileDiff)
 })
 </script>
 

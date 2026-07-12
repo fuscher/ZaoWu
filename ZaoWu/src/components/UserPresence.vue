@@ -8,6 +8,11 @@ const props = defineProps<{
 }>()
 
 const displayUsers = computed(() => props.users.filter((u) => u.status === 'online'))
+
+function fileBasename(path: string | undefined): string {
+  if (!path) return ''
+  return path.replace(/\\/g, '/').split('/').pop() || path
+}
 </script>
 
 <template>
@@ -15,11 +20,20 @@ const displayUsers = computed(() => props.users.filter((u) => u.status === 'onli
     <div
       v-for="user in displayUsers"
       :key="user.id"
-      class="user-avatar"
-      :style="{ backgroundColor: user.color }"
-      :title="`${user.name}${user.id === currentUserId ? ' (you)' : ''}`"
+      class="user-item"
     >
-      {{ user.name.charAt(0).toUpperCase() }}
+      <div
+        class="user-avatar"
+        :style="{ backgroundColor: user.color }"
+        :title="user.cursor?.filePath
+          ? `${user.name} → ${fileBasename(user.cursor.filePath)}`
+          : `${user.name}${user.id === currentUserId ? ' (you)' : ''}`"
+      >
+        {{ user.name.charAt(0).toUpperCase() }}
+      </div>
+      <span v-if="user.cursor?.filePath" class="user-file">
+        {{ fileBasename(user.cursor.filePath) }}
+      </span>
     </div>
   </div>
 </template>
@@ -29,6 +43,13 @@ const displayUsers = computed(() => props.users.filter((u) => u.status === 'onli
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+}
+
+.user-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .user-avatar {
@@ -43,9 +64,22 @@ const displayUsers = computed(() => props.users.filter((u) => u.status === 'onli
   color: white;
   border: 2px solid var(--bg-secondary);
   margin-left: -6px;
+  flex-shrink: 0;
 }
 
 .user-avatar:first-child {
   margin-left: 0;
+}
+
+.user-file {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--bg-glass);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

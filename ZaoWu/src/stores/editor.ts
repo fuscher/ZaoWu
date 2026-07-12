@@ -9,6 +9,9 @@ export const useEditorStore = defineStore('editor', () => {
   const isLoading = ref(false)
   const error = ref('')
 
+  /** Callback invoked after a successful save. Set by collaboration composable to bridge file_diff. */
+  const onFileSaved = ref<((path: string, content: string) => void) | null>(null)
+
   const isDirty = computed(() => fileContent.value !== originalContent.value)
 
   async function openFile(path: string) {
@@ -51,11 +54,36 @@ export const useEditorStore = defineStore('editor', () => {
       const data = await res.json()
       if (data.ok) {
         originalContent.value = fileContent.value
+        // Bridge to collaboration: notify the collaboration composable to broadcast file_diff
+        if (onFileSaved.value) {
+          onFileSaved.value(openFilePath.value, fileContent.value)
+        }
       } else {
         error.value = data.error || 'failed to save'
       }
     } catch {
       error.value = 'network error'
+    }
+  }
+
+  /** Reload the current file from disk (used when a remote file_diff is received). */
+  async function reloadCurrentFile() {
+    if (!openFilePath.value) return
+    isLoading.value = true
+    error.value = ''
+    try {
+      const res = await fetch(`/api/explorer/read-file?path=${encodeURIComponent(openFilePath.value)}`)
+      const data = await res.json()
+      if (data.ok) {
+        fileContent.value = data.content
+        originalContent.value = data.content
+      } else {
+        error.value = data.error || 'failed to reload file'
+      }
+    } catch {
+      error.value = 'network error'
+    } finally {
+      isLoading.value = false
     }
   }
 
@@ -79,9 +107,11 @@ export const useEditorStore = defineStore('editor', () => {
     isLoading,
     error,
     isDirty,
+    onFileSaved,
     openFile,
     updateContent,
     saveFile,
+    reloadCurrentFile,
     revertFile,
     closeFile,
   }

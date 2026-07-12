@@ -119,6 +119,15 @@ def search():
     projects = _read_projects()
     active_projects = [p for p in projects if not _is_archived(p.get('path', ''))]
 
+    # Append virtual (collaboration) project paths
+    try:
+        from community_ws import _room_project_paths
+        for vid, vpath in _room_project_paths.items():
+            if os.path.isdir(vpath):
+                active_projects.append({'id': vid, 'path': vpath})
+    except ImportError:
+        pass
+
     results = []
     total_files = 0
     total_matches = 0

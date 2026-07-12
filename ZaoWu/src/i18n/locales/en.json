@@ -140,6 +140,9 @@
     "permissionInvite": "Invite users",
     "permissionKick": "Remove users",
     "permissionManageFiles": "Manage files",
+    "kickUser": "Remove from room",
+    "kickConfirm": "Are you sure you want to remove {name} from the room?",
+    "unsupported": "Not supported",
     "welcomeTitle": "Community Collaboration",
     "welcomeDesc": "Create or join a room to collaborate on code with others on your local network in real time.",
     "useSidePanelHint": "Use the left sidebar to create or join a room",
@@ -247,11 +250,18 @@
   },
   "fileTree": {
     "empty": "This folder is empty",
-    "loading": "Loading..."
+    "loading": "Loading...",
+    "newFile": "New File",
+    "rename": "Rename",
+    "delete": "Delete",
+    "newFileNamePrompt": "Enter file name:",
+    "confirmDelete": "Are you sure you want to delete {name}?"
   },
   "projectCard": {
     "lastModified": "Last modified: {time}",
-    "archived": "Archived"
+    "archived": "Archived",
+    "collaborating": "Collaborating",
+    "collabProject": "Collab Project"
   },
   "filePreview": {
     "clickHint": "Click a file to preview",
