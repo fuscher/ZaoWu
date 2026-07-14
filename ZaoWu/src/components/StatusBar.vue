@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '@/i18n'
+import { usePluginsStore } from '@/stores/plugins'
+import { PluginHost } from '@/plugin-system'
 
 const { t } = useI18n()
+const pluginsStore = usePluginsStore()
 const model = 'ZaoWu v0.1.0-xiaoshu'
 
 type ServerStatus = 'checking' | 'ready' | 'offline'
@@ -91,6 +94,14 @@ onUnmounted(() => {
       <span class="status-text">{{ t(`statusBar.${status}`) }}</span>
     </div>
     <div class="status-right">
+      <!-- 插件状态栏小部件 -->
+      <template v-for="item in pluginsStore.statusItems" :key="item.id">
+        <PluginHost
+          v-if="item.position === 'right'"
+          :plugin-name="item.pluginName"
+          :component-name="item.component"
+        />
+      </template>
       <span class="model-badge">{{ model }}</span>
     </div>
   </div>

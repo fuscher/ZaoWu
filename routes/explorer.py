@@ -3,8 +3,11 @@ import json
 import uuid
 import shutil
 import stat
+import asyncio
 from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify
+
+from plugin_system import get_plugin_manager
 
 explorer_bp = Blueprint('explorer', __name__)
 
@@ -432,6 +435,29 @@ def read_file():
         return jsonify({'ok': False, 'error': 'failed to read file'}), 500
 
 
+def _fire_file_hook(hook_name: str, *args) -> None:
+    """异步触发文件系统事件 hook（fire-and-forget，不阻塞请求）。
+
+    通过 PluginManager 中存储的主事件循环引用 _main_loop，使用
+    call_soon_threadsafe() 从任意线程（包括 Quart 线程池中的同步路由）
+    将协程投递到主事件循环执行。
+    """
+    mgr = get_plugin_manager()
+    if mgr is None or not hasattr(mgr, '_main_loop') or mgr._main_loop is None:
+        return
+
+    async def _run_hooks():
+        try:
+            await mgr.fire_hook(hook_name, *args)
+        except Exception:
+            pass
+
+    # fire-and-forget：从任意线程投递到主事件循环
+    mgr._main_loop.call_soon_threadsafe(
+        lambda: asyncio.ensure_future(_run_hooks(), loop=mgr._main_loop)
+    )
+
+
 @explorer_bp.route('/save-file', methods=['POST'])
 def save_file():
     data = request.get_json(silent=True)
@@ -445,12 +471,60 @@ def save_file():
     try:
         with open(real, 'w', encoding='utf-8') as f:
             f.write(data['content'])
+        # 文件保存成功后触发插件 hook
+        _fire_file_hook('zaowu_on_file_saved', real)
         return jsonify({'ok': True})
     except PermissionError:
         return jsonify({'ok': False, 'error': 'permission denied'}), 403
     except Exception as e:
         log_error('Failed to save file', {'path': data['path'], 'error': str(e)})
         return jsonify({'ok': False, 'error': 'failed to save file'}), 500
+
+
+@explorer_bp.route('/delete-file', methods=['POST'])
+def delete_file():
+    """删除单个文件。成功后触发 zaowu_on_file_deleted hook。"""
+    data = request.get_json(silent=True)
+    if not data or 'path' not in data:
+        return jsonify({'ok': False, 'error': 'missing path'}), 400
+
+    real = os.path.realpath(data['path'])
+    if not os.path.isfile(real):
+        return jsonify({'ok': False, 'error': 'not a file'}), 400
+
+    try:
+        os.remove(real)
+        _fire_file_hook('zaowu_on_file_deleted', real)
+        return jsonify({'ok': True})
+    except PermissionError:
+        return jsonify({'ok': False, 'error': 'permission denied'}), 403
+    except Exception as e:
+        log_error('Failed to delete file', {'path': data['path'], 'error': str(e)})
+        return jsonify({'ok': False, 'error': 'failed to delete file'}), 500
+
+
+@explorer_bp.route('/rename-file', methods=['POST'])
+def rename_file():
+    """重命名 / 移动单个文件。成功后触发 zaowu_on_file_renamed hook。"""
+    data = request.get_json(silent=True)
+    if not data or 'oldPath' not in data or 'newPath' not in data:
+        return jsonify({'ok': False, 'error': 'missing oldPath or newPath'}), 400
+
+    old_real = os.path.realpath(data['oldPath'])
+    new_real = os.path.realpath(data['newPath'])
+
+    if not os.path.exists(old_real):
+        return jsonify({'ok': False, 'error': 'source file not found'}), 400
+
+    try:
+        os.rename(old_real, new_real)
+        _fire_file_hook('zaowu_on_file_renamed', old_real, new_real)
+        return jsonify({'ok': True})
+    except PermissionError:
+        return jsonify({'ok': False, 'error': 'permission denied'}), 403
+    except Exception as e:
+        log_error('Failed to rename file', {'oldPath': data['oldPath'], 'newPath': data['newPath'], 'error': str(e)})
+        return jsonify({'ok': False, 'error': 'failed to rename file'}), 500
 
 
 def is_path_in_projects(target_path):

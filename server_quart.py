@@ -2,14 +2,35 @@ import os
 import json
 import locale
 import asyncio
+import logging
 from quart import Quart, send_from_directory, request, jsonify
-from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp
+from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp
 
 app = Quart(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(BASE_DIR, 'ZaoWu', 'dist')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
+PLUGINS_DIR = os.path.join(BASE_DIR, 'plugins')
+
+# ── Plugin system bootstrap ────────────────────────────────────────
+# The manager is constructed at import time so that routes/plugin.py
+# can reach it via get_plugin_manager() as soon as the app is up.
+from plugin_system import PluginManager, get_plugin_manager, set_plugin_manager
+
+_plugin_mgr = PluginManager(PLUGINS_DIR)
+_plugin_mgr.attach_app(app)
+set_plugin_manager(_plugin_mgr)
+_logger = logging.getLogger('plugin_system')
+
+app.register_blueprint(explorer_bp, url_prefix='/api/explorer')
+app.register_blueprint(search_bp, url_prefix='/api/search')
+app.register_blueprint(log_bp, url_prefix='/api/log')
+app.register_blueprint(chat_bp, url_prefix='/api/chat')
+app.register_blueprint(git_bp, url_prefix='/api/git')
+app.register_blueprint(terminal_bp, url_prefix='/api/terminal')
+app.register_blueprint(community_bp, url_prefix='/api/community')
+app.register_blueprint(plugin_bp, url_prefix='/api/plugins')
 
 DEFAULTS = {
     'enabled': True,
@@ -55,15 +76,6 @@ def read_settings():
 def write_settings(data):
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-app.register_blueprint(explorer_bp, url_prefix='/api/explorer')
-app.register_blueprint(search_bp, url_prefix='/api/search')
-app.register_blueprint(log_bp, url_prefix='/api/log')
-app.register_blueprint(chat_bp, url_prefix='/api/chat')
-app.register_blueprint(git_bp, url_prefix='/api/git')
-app.register_blueprint(terminal_bp, url_prefix='/api/terminal')
-app.register_blueprint(community_bp, url_prefix='/api/community')
 
 
 @app.route('/')
@@ -173,6 +185,47 @@ async def _mount_ws_middleware():
             await original_asgi(scope, receive, send)
 
     app.asgi_app = _asgi_middleware
+
+
+# ── Plugin system lifecycle ────────────────────────────────────────
+# before_serving / after_serving fire in registration order.
+# Startup order:  _startup_ws_server → _mount_ws_middleware → _startup_plugins
+#   (plugins see a running websocket_server and registered middleware)
+# Shutdown order: _shutdown_ws_server → _shutdown_plugins
+#   (plugins must not touch the WS server during zaowu_app_shutdown)
+
+@app.before_serving
+async def _startup_plugins():
+    """Discover, load, and start every plugin in plugins/."""
+    mgr = get_plugin_manager()
+    if mgr is None:
+        _logger.warning('PluginManager not installed; skipping plugin startup')
+        return
+    try:
+        await mgr.load_all()
+        # Plugins register their blueprints via zaowu_register_routes.
+        # Must happen before the server accepts requests.
+        await mgr.collect_routes()
+
+        # ★ ASGI 中间件挂载 hook（早于任何 HTTP 请求）
+        for record in mgr._enabled_records():
+            await mgr._invoke(record, 'zaowu_mount_asgi_middleware')
+
+        await mgr.startup_hooks()
+    except Exception:
+        _logger.exception('plugin startup failed; continuing without plugins')
+
+
+@app.after_serving
+async def _shutdown_plugins():
+    """Invoke zaowu_app_shutdown on every enabled plugin and clean up."""
+    mgr = get_plugin_manager()
+    if mgr is None:
+        return
+    try:
+        await mgr.shutdown_hooks()
+    except Exception:
+        _logger.exception('plugin shutdown failed')
 
 
 # ── Server entry point ───────────────────────────────────────────────

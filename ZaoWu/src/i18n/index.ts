@@ -11,10 +11,11 @@ const locales: Record<string, Record<string, unknown>> = {
 export function useI18n() {
   const store = useSettingsStore()
 
-  const locale = computed(() => locales[store.background.language] ?? locales['en'])
+  const locale = computed(() => store.background.language)
+  const messages = computed(() => locales[locale.value] ?? locales['en'])
 
   function t(key: string, params?: Record<string, string | number>): string {
-    const currentLocale = locale.value
+    const currentLocale = messages.value
     const keys = key.split('.')
     let value: unknown = currentLocale
     for (const k of keys) {
@@ -33,5 +34,5 @@ export function useI18n() {
     })
   }
 
-  return { t }
+  return { t, locale }
 }

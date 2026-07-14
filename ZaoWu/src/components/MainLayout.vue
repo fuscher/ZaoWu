@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import type { Theme, ViewType } from '@/types'
 import CustomTitleBar from './CustomTitleBar.vue'
 import ActivityBar from './ActivityBar.vue'
@@ -9,9 +9,11 @@ import FilePreview from './FilePreview.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import GitPanel from './GitPanel.vue'
 import CommunityPanel from './CommunityPanel.vue'
+import PluginManagementDetail from './PluginManagementDetail.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useI18n } from '@/i18n'
+import { pluginEventBus } from '@/plugin-system/events'
 
 defineProps<{ theme: Theme }>()
 const emit = defineEmits<{ toggleTheme: [] }>()
@@ -19,6 +21,7 @@ const emit = defineEmits<{ toggleTheme: [] }>()
 const activeView = ref<ViewType>('chat')
 const sideCollapsed = ref(false)
 const highlightSection = ref<string | null>(null)
+const selectedPluginName = ref<string | null>(null)
 const editorStore = useEditorStore()
 const { t } = useI18n()
 const clickHint = computed(() => t('filePreview.clickHint'))
@@ -35,6 +38,18 @@ function selectView(view: ViewType) {
 function handleHighlightSection(section: string | null) {
   highlightSection.value = section
 }
+
+function handleShowPluginDetail(pluginName: string) {
+  selectedPluginName.value = pluginName
+}
+
+// 监听插件 activity bar action handler 事件
+onMounted(() => {
+  pluginEventBus.on('hello_world.click', () => {
+    activeView.value = 'plugins'
+    sideCollapsed.value = false
+  })
+})
 </script>
 
 <template>
@@ -42,7 +57,7 @@ function handleHighlightSection(section: string | null) {
     <CustomTitleBar />
     <div class="body">
       <ActivityBar :active-view="activeView" :theme="theme" @select="selectView" @toggle-theme="emit('toggleTheme')" />
-      <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" @highlight-section="handleHighlightSection" />
+      <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" @highlight-section="handleHighlightSection" @show-plugin-detail="handleShowPluginDetail" />
       <div v-if="activeView === 'chat'" class="content-area">
         <ChatPanel />
       </div>
@@ -63,6 +78,9 @@ function handleHighlightSection(section: string | null) {
       </div>
       <div v-else-if="activeView === 'community'" class="content-area">
         <CommunityPanel />
+      </div>
+      <div v-else-if="activeView === 'plugins'" class="content-area">
+        <PluginManagementDetail :plugin-name="selectedPluginName" />
       </div>
     </div>
     <StatusBar />

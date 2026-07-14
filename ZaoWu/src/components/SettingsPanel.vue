@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users } from '@lucide/vue'
+import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
+import { usePluginsStore } from '@/stores/plugins'
+import { PluginHost } from '@/plugin-system'
 import { backgroundRegistry } from './backgrounds/index'
 import { saveProviders } from '@/services/ai'
 import { useI18n } from '@/i18n'
@@ -14,7 +16,12 @@ const emit = defineEmits<{ toggleTheme: []; highlight: [section: string | null] 
 
 const settingsStore = useSettingsStore()
 const chatStore = useChatStore()
-const { t } = useI18n()
+const pluginsStore = usePluginsStore()
+const { t, locale } = useI18n()
+
+function getLocalizedLabel(label: Record<string, string>): string {
+  return label[locale.value] ?? label['en'] ?? Object.values(label)[0] ?? ''
+}
 
 watch(() => props.highlightSection, (val) => {
   if (val) {
@@ -419,6 +426,24 @@ onMounted(() => {
               variant="input"
             />
           </div>
+        </div>
+      </section>
+
+      <section class="settings-section" id="sec-plugins">
+        <div class="section-header">
+          <Puzzle :size="16" />
+          <h2 class="section-title">{{ t('settings.plugins') }}</h2>
+        </div>
+
+        <template v-for="section in pluginsStore.settingsSections" :key="section.id">
+          <div class="plugin-settings-block">
+            <h3>{{ getLocalizedLabel(section.label) }}</h3>
+            <PluginHost :plugin-name="section.pluginName" :component-name="section.component" />
+          </div>
+        </template>
+
+        <div v-if="pluginsStore.settingsSections.length === 0" class="settings-empty">
+          {{ t('settings.noSettings') }}
         </div>
       </section>
 
@@ -926,5 +951,25 @@ onMounted(() => {
   100% {
     box-shadow: 0 0 0 0 transparent;
   }
+}
+
+/* ── 插件设置分区 ── */
+
+.plugin-settings-block {
+  margin-bottom: 16px;
+}
+
+.plugin-settings-block h3 {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
+.settings-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 16px 0;
+  text-align: center;
 }
 </style>

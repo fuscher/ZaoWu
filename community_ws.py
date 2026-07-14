@@ -14,6 +14,7 @@ persistence to pycrdt-websocket while preserving ZaoWu's custom features:
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -26,6 +27,7 @@ from pycrdt.websocket import ASGIServer, WebsocketServer, YRoom
 
 from services import room_service
 from services.permission_service import can_edit
+from plugin_system import get_plugin_manager
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,39 @@ _room_close_callbacks: dict[str, Callable[[], None]] = {}
 
 # ContextVar for binding room_id to the current WebSocket connection (on_disconnect)
 _current_room_id: contextvars.ContextVar[str] = contextvars.ContextVar('_current_room_id', default='')
+
+# Module-level room → user mapping for disconnect hook
+_room_users: dict[str, str] = {}
+
+# ── Plugin hook helpers ─────────────────────────────────────────────
+
+def _fire_user_hook(hook_name: str, room_id: str, user_id: str) -> None:
+    """触发用户协作事件 hook（fire-and-forget，不阻塞 WS 处理）。
+
+    自适应调度策略：
+    - 若当前线程有运行中的事件循环（如 on_connect async 上下文），
+      直接使用 asyncio.create_task()。
+    - 若当前线程无事件循环（如 _on_disconnect_with_cleanup 同步回调），
+      通过 PluginManager._main_loop.call_soon_threadsafe() 投递到主循环。
+    """
+    mgr = get_plugin_manager()
+    if mgr is None:
+        return
+
+    async def _run_hooks():
+        try:
+            await mgr.fire_hook(hook_name, room_id, user_id)
+        except Exception:
+            pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_run_hooks())
+    except RuntimeError:
+        if hasattr(mgr, '_main_loop') and mgr._main_loop is not None:
+            mgr._main_loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(_run_hooks(), loop=mgr._main_loop)
+            )
 
 # ── Auth hook ────────────────────────────────────────────────────────
 
@@ -105,6 +140,9 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     # Mark user online — persisted in-memory for room_service queries
     room_service.set_user_status(room_id, user_id, 'online')
 
+    # Track user in module-level registry for disconnect hook
+    _room_users[room_id] = user_id
+
     # Attach metadata to scope so message handlers can use it
     scope['zaowu_room_id'] = room_id
     scope['zaowu_user_id'] = user_id
@@ -122,7 +160,11 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     # Register room close callback for search cleanup
     def _on_room_close():
         _room_project_paths.pop(room_id, None)
+        _room_users.pop(room_id, None)
     _room_close_callbacks[room_id] = _on_room_close
+
+    # Fire user-joined hook
+    _fire_user_hook('zaowu_on_user_joined', room_id, user_id)
 
     return False  # accept the WebSocket
 
@@ -183,7 +225,15 @@ async def _dispatch_custom_message(json_bytes: bytes, room: YRoom) -> None:
     elif msg_type == 'awareness_update':
         await _broadcast_custom(room, payload)
     else:
-        logger.debug('Unknown custom message type: %s', msg_type)
+        # ★ 将未识别的消息类型转发给插件系统
+        mgr = get_plugin_manager()
+        if mgr is not None:
+            try:
+                result = await mgr.dispatch_ws_message(msg_type, payload)
+                if result is not None:
+                    await _broadcast_custom(room, result)
+            except Exception:
+                logger.debug('Plugin WS message dispatch failed', exc_info=True)
 
 
 # ── Chat handler ─────────────────────────────────────────────────────
@@ -371,8 +421,11 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
     Returns:
         Full ws:// URL with room_id substituted.
     """
-    base = build_ws_url(host_address, token)
-    # Replace the {room_id} placeholder and append the actual token
+    # Let plugins replace the host address (e.g. for intranet penetration)
+    resolved = _resolve_host_address(host_address)
+    if resolved:
+        host_address = resolved
+
     host = host_address
     if host.startswith('http://') or host.startswith('https://'):
         from urllib.parse import urlparse
@@ -381,6 +434,38 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
     if ':' not in host:
         host = f'{host}:5000'
     return f'ws://{host}/api/community/ws/{room_id}?token={token}'
+
+
+def _resolve_host_address(default_host: str) -> str | None:
+    """调用插件的 zaowu_resolve_host_address hook。
+
+    注意：此函数为同步 def，插件 **必须** 将 zaowu_resolve_host_address
+    定义为同步函数（def）。若定义为 async def，inspect.iscoroutine()
+    检测到后打印警告并跳过，确保 host_address 不会被误设为 coroutine 对象。
+    """
+    import inspect
+    mgr = get_plugin_manager()
+    if mgr is None:
+        return None
+    for record in mgr._enabled_records():
+        if not record.enabled:
+            continue
+        fn = getattr(record.module, 'zaowu_resolve_host_address', None)
+        if fn is not None:
+            try:
+                result = fn(default_host)
+                if inspect.iscoroutine(result):
+                    logger.warning(
+                        'plugin %r: zaowu_resolve_host_address must be a '
+                        'sync function, not async def; skipping',
+                        record.name,
+                    )
+                    continue
+                if result:
+                    return result
+            except Exception:
+                pass
+    return None
 
 
 # ── Room info broadcaster ────────────────────────────────────────────
@@ -414,6 +499,10 @@ def _on_disconnect_with_cleanup(message: dict[str, Any]) -> None:
     if room_id:
         _room_project_paths.pop(room_id, None)
         _room_close_callbacks.pop(room_id, None)
+        # Fire user-left hook
+        user_id = _room_users.pop(room_id, '')
+        if user_id:
+            _fire_user_hook('zaowu_on_user_left', room_id, user_id)
 
 
 class ZaoWuASGIServer(ASGIServer):

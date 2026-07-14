@@ -3,6 +3,8 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
 import { useProjectsStore } from '@/stores/projects'
+import { usePluginsStore } from '@/stores/plugins'
+import { PluginHost, pluginEventBus } from '@/plugin-system'
 import ExplorerPanel from './ExplorerPanel.vue'
 import SearchPanel from './SearchPanel.vue'
 import ConversationList from './ConversationList.vue'
@@ -12,13 +14,46 @@ import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
 import GitBranchDialog from './GitBranchDialog.vue'
 import GitMissingDialog from './GitMissingDialog.vue'
 import GitNoRepoDialog from './GitNoRepoDialog.vue'
+import { RefreshCw, PackageOpen, Power, Trash2 } from '@lucide/vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import type { ViewType, Project } from '@/types'
+import type { PluginInfo } from '@/stores/plugins'
 
 defineProps<{ view: ViewType; collapsed: boolean }>()
-const emit = defineEmits<{ toggle: []; highlightSection: [section: string] }>()
-const { t } = useI18n()
+const emit = defineEmits<{ toggle: []; highlightSection: [section: string]; showPluginDetail: [pluginName: string] }>()
+const { t, locale } = useI18n()
 const gitStore = useGitStore()
 const projectsStore = useProjectsStore()
+const pluginsStore = usePluginsStore()
+
+function getLocalizedLabel(label: Record<string, string>): string {
+  return label[locale.value] ?? label['en'] ?? Object.values(label)[0] ?? ''
+}
+
+function getLocalizedDescription(plugin: PluginInfo): string {
+  return getLocalizedLabel(plugin.description)
+}
+
+function confirmUninstall(name: string) {
+  uninstallTarget.value = name
+}
+
+const uninstallTarget = ref<string | null>(null)
+const uninstallConfirmTitle = computed(() => t('plugins.uninstallConfirmTitle'))
+const uninstallConfirmMessage = computed(() =>
+  t('plugins.uninstallConfirmMessage', { name: uninstallTarget.value ?? '' }),
+)
+
+function handleUninstallConfirm() {
+  if (uninstallTarget.value) {
+    pluginsStore.uninstallPlugin(uninstallTarget.value)
+  }
+  uninstallTarget.value = null
+}
+
+function handleUninstallCancel() {
+  uninstallTarget.value = null
+}
 
 function handleBannerClick(section: string) {
   emit('highlightSection', section)
@@ -195,24 +230,82 @@ watch(
         </div>
       </template>
       <template v-else-if="view === 'plugins'">
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 3v1a2 2 0 004 0V3M3 7h8M7 3v5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><rect x="2.5" y="2.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        <!-- 插件管理区域 -->
+        <div class="plugin-management">
+          <div class="plugin-section-header">
+            <span>{{ t('plugins.installed') }}</span>
+            <button @click="pluginsStore.fetchPlugins()" class="icon-btn-sm" :title="t('plugins.refresh')">
+              <RefreshCw :size="14" />
+            </button>
           </div>
-          <div class="list-text">
-            <div class="list-title">{{ t('sidebar.installed') }}</div>
-            <div class="list-desc">{{ t('sidebar.2pluginsActive') }}</div>
+
+          <!-- 加载中 -->
+          <div v-if="pluginsStore.loading" class="plugin-loading">{{ t('plugins.loading') }}</div>
+
+          <!-- 空状态 -->
+          <div v-else-if="!pluginsStore.hasPlugins" class="plugin-empty">
+            <PackageOpen :size="32" />
+            <span>{{ t('plugins.noPlugins') }}</span>
+          </div>
+
+          <!-- 插件列表 -->
+          <div
+            v-for="plugin in pluginsStore.plugins"
+            :key="plugin.name"
+            class="plugin-item"
+            :class="{ disabled: !plugin.enabled, broken: !!plugin.error }"
+            @click="emit('showPluginDetail', plugin.name)"
+          >
+            <div class="plugin-item-header">
+              <span class="plugin-name">{{ plugin.name }}</span>
+              <span class="plugin-version">v{{ plugin.version }}</span>
+            </div>
+            <div class="plugin-description">{{ getLocalizedDescription(plugin) }}</div>
+            <div class="plugin-item-actions">
+              <button
+                v-if="plugin.enabled"
+                @click.stop="pluginsStore.disablePlugin(plugin.name)"
+                class="plugin-btn disable"
+                :title="t('plugins.disable')"
+              >
+                <Power :size="12" />
+              </button>
+              <button
+                v-else
+                @click.stop="pluginsStore.enablePlugin(plugin.name)"
+                class="plugin-btn enable"
+                :title="t('plugins.enable')"
+              >
+                <Power :size="12" />
+              </button>
+              <button
+                @click.stop="pluginsStore.reloadPlugin(plugin.name)"
+                class="plugin-btn"
+                :title="t('plugins.reload')"
+              >
+                <RefreshCw :size="12" />
+              </button>
+              <button
+                @click.stop="confirmUninstall(plugin.name)"
+                class="plugin-btn danger"
+                :title="t('plugins.uninstall')"
+              >
+                <Trash2 :size="12" />
+              </button>
+            </div>
+            <div v-if="plugin.error" class="plugin-error">{{ plugin.error }}</div>
           </div>
         </div>
-        <div class="list-item">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 4v6M4 7h6" stroke="currentColor" stroke-width="1.2"/></svg>
+
+        <!-- 插件注册的侧栏面板 -->
+        <template v-for="panel in pluginsStore.panels" :key="panel.id">
+          <div class="plugin-panel-section">
+            <div class="plugin-section-header">
+              <span>{{ getLocalizedLabel(panel.label) }}</span>
+            </div>
+            <PluginHost :plugin-name="panel.pluginName" :component-name="panel.component" />
           </div>
-          <div class="list-text">
-            <div class="list-title">{{ t('sidebar.marketplace') }}</div>
-            <div class="list-desc">{{ t('sidebar.browsePlugins') }}</div>
-          </div>
-        </div>
+        </template>
       </template>
       <template v-else-if="view === 'community'">
         <RoomPanel />
@@ -245,6 +338,15 @@ watch(
             <div class="list-desc">{{ t('settings.communityBannerDesc') }}</div>
           </div>
         </div>
+        <div class="list-item" @click="handleBannerClick('plugins')">
+          <div class="list-icon">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1L2 4v6l5 3 5-3V4L7 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          </div>
+          <div class="list-text">
+            <div class="list-title">{{ t('settings.pluginsBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.pluginsBannerDesc') }}</div>
+          </div>
+        </div>
       </template>
     </div>
   </div>
@@ -267,6 +369,13 @@ watch(
     v-if="showNoRepoDialog"
     @close="showNoRepoDialog = false"
     @init="handleInitRepo"
+  />
+  <ConfirmDialog
+    :visible="uninstallTarget !== null"
+    :title="uninstallConfirmTitle"
+    :message="uninstallConfirmMessage"
+    @confirm="handleUninstallConfirm"
+    @cancel="handleUninstallCancel"
   />
 </template>
 
@@ -404,4 +513,146 @@ watch(
   color: var(--text-primary);
 }
 
+/* ── 插件管理 ── */
+
+.plugin-management {
+  margin-bottom: 12px;
+}
+
+.plugin-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.icon-btn-sm {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+}
+
+.icon-btn-sm:hover {
+  color: var(--text-secondary);
+  background: var(--bg-glass-hover);
+}
+
+.plugin-loading {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.plugin-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.plugin-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--transition);
+  margin: 2px 0;
+}
+
+.plugin-item:hover {
+  background: var(--bg-glass-hover);
+}
+
+.plugin-item.disabled {
+  opacity: 0.5;
+}
+
+.plugin-item.broken {
+  border: 1px solid var(--danger);
+}
+
+.plugin-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plugin-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.plugin-version {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  background: var(--bg-glass);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.plugin-description {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-item-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.plugin-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.plugin-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
+}
+
+.plugin-btn.danger:hover {
+  background: var(--danger-muted, rgba(255, 80, 80, 0.12));
+  color: var(--danger);
+}
+
+.plugin-error {
+  font-size: 10px;
+  color: var(--danger);
+  padding: 2px 0;
+}
+
+.plugin-panel-section {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
 </style>
