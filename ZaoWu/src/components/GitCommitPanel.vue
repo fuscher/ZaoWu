@@ -205,6 +205,6 @@ async function handlePull() {
 }
 
 .commit-feedback.error {
-  color: var(--danger, #f87171);
+  color: var(--danger);
 }
 </style>

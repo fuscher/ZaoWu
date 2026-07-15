@@ -41,20 +41,20 @@ onMounted(() => {
 }
 
 .toast.error {
-  background: rgba(255, 95, 86, 0.15);
-  border: 1px solid rgba(255, 95, 86, 0.3);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   color: var(--danger);
 }
 
 .toast.warning {
-  background: rgba(255, 189, 46, 0.15);
-  border: 1px solid rgba(255, 189, 46, 0.3);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
   color: var(--warning);
 }
 
 .toast.info {
   background: var(--accent-muted);
-  border: 1px solid rgba(100, 210, 255, 0.3);
+  border: 1px solid var(--accent-border);
   color: var(--accent);
 }
 

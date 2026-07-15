@@ -149,7 +149,7 @@ function handleKeydown(event: KeyboardEvent) {
 }
 
 .number-input:hover:not(.disabled) {
-  border-color: var(--border-subtle);
+  border-color: var(--border-hover);
 }
 
 .number-input.focused {
@@ -159,7 +159,7 @@ function handleKeydown(event: KeyboardEvent) {
 
 .number-input.error {
   border-color: var(--danger);
-  box-shadow: 0 0 0 3px rgba(255, 95, 86, 0.12);
+  box-shadow: 0 0 0 3px var(--danger-muted);
 }
 
 .number-input.disabled {

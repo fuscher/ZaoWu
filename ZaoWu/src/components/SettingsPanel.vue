@@ -689,7 +689,7 @@ onMounted(() => {
 
 .meta-tag.ok {
   color: var(--success);
-  background: rgba(39, 201, 63, 0.1);
+  background: var(--success-muted);
 }
 
 /* ── Delete Confirm ───────────────────────────────────── */
@@ -697,8 +697,8 @@ onMounted(() => {
 .delete-confirm {
   margin-top: 12px;
   padding: 10px 12px;
-  background: rgba(255, 95, 86, 0.08);
-  border: 1px solid rgba(255, 95, 86, 0.2);
+  background: var(--danger-muted);
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
   font-size: 12px;
   color: var(--text-secondary);
@@ -840,7 +840,7 @@ onMounted(() => {
 }
 
 .icon-btn.danger:hover {
-  background: rgba(255, 95, 86, 0.1);
+  background: var(--danger-muted);
   color: var(--danger);
 }
 

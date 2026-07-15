@@ -333,7 +333,7 @@ function copyInviteCode(code: string) {
 }
 
 .text-btn.danger:hover {
-  background: rgba(255, 95, 86, 0.12);
+  background: var(--danger-muted);
   color: var(--danger);
 }
 </style>

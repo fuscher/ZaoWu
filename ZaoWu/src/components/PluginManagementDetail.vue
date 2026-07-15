@@ -193,7 +193,7 @@ function resetConfig() {
 .detail-error {
   margin-top: 8px;
   padding: 8px 12px;
-  background: var(--danger-muted, rgba(255, 80, 80, 0.1));
+  background: var(--danger-muted);
   color: var(--danger);
   border-radius: 6px;
   font-size: 12px;

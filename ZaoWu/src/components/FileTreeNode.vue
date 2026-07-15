@@ -327,11 +327,11 @@ onUnmounted(() => {
 }
 
 .ctx-item.danger {
-  color: var(--danger, #ff5f56);
+  color: var(--danger);
 }
 
 .ctx-item.danger:hover {
-  background: rgba(255, 95, 86, 0.1);
+  background: var(--danger-muted);
 }
 
 .ctx-overlay {

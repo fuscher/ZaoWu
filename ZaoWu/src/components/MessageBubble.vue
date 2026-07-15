@@ -90,7 +90,7 @@ const displayName = computed(() => {
 }
 
 .user .avatar {
-  background: var(--accent);
+  background: var(--accent-hover);
   color: #fff;
 }
 

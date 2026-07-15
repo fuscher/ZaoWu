@@ -151,7 +151,7 @@ function getContentSnippet(match: ContentMatch, query: string): string {
 }
 
 .match-content :deep(mark) {
-  background: rgba(100, 210, 255, 0.25);
+  background: rgba(0, 122, 255, 0.25);
   color: var(--accent);
   border-radius: 2px;
   padding: 0 1px;

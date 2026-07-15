@@ -131,7 +131,7 @@ textarea::placeholder {
   height: 32px;
   border-radius: 10px;
   border: none;
-  background: #ef4444;
+  background: var(--danger);
   color: #fff;
   cursor: pointer;
   display: flex;
@@ -143,12 +143,13 @@ textarea::placeholder {
 }
 
 .stop-btn:hover {
-  background: #dc2626;
+  background: var(--danger);
+  filter: brightness(0.88);
 }
 
 @keyframes pulse-red {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-  50% { box-shadow: 0 0 0 4px rgba(239, 68, 68, 0); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(201, 42, 42, 0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(201, 42, 42, 0); }
 }
 
 .input-footer {

@@ -640,7 +640,7 @@ watch(
 }
 
 .plugin-btn.danger:hover {
-  background: var(--danger-muted, rgba(255, 80, 80, 0.12));
+  background: var(--danger-muted);
   color: var(--danger);
 }
 

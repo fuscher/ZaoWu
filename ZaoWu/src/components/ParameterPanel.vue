@@ -215,7 +215,7 @@ function reset() {
   border-radius: 50%;
   background: var(--accent);
   cursor: pointer;
-  border: 2px solid var(--bg-primary);
+  border: 2px solid var(--border-subtle);
 }
 
 .param-textarea {

@@ -143,17 +143,17 @@ function handleClear() {
 }
 
 .connection-dot.connected {
-  background: #4ade80;
+  background: var(--status-connected);
 }
 
 .connection-dot.connecting,
 .connection-dot.reconnecting {
-  background: #facc15;
+  background: var(--status-connecting);
   animation: pulse 1s infinite;
 }
 
 .connection-dot.error {
-  background: #f87171;
+  background: var(--status-error);
 }
 
 @keyframes pulse {

@@ -306,15 +306,15 @@ const permissionKeys: (keyof PermissionMatrix)[] = ['edit', 'chat', 'invite', 'k
 
 .btn.danger {
   background: transparent;
-  color: var(--danger, #ff5f56);
-  border-color: var(--danger, #ff5f56);
+  color: var(--danger);
+  border-color: var(--danger);
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .btn.danger:hover {
-  background: rgba(255, 95, 86, 0.1);
+  background: var(--danger-muted);
 }
 
 .confirm-overlay {

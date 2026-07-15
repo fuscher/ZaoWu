@@ -305,7 +305,7 @@ function handleDelete(e: Event, id: string) {
 }
 
 .action-btn.danger:hover {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 .conv-empty {

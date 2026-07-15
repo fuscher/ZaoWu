@@ -49,14 +49,14 @@ function copyHash(hash: string) {
           :y1="PADDING_TOP + i * LINE_HEIGHT + NODE_RADIUS"
           :x2="PADDING_LEFT"
           :y2="PADDING_TOP + (i + 1) * LINE_HEIGHT - NODE_RADIUS"
-          :stroke="c.isLocalTip ? 'var(--accent)' : c.isRemoteTip ? '#4FC1FF' : 'var(--text-tertiary)'"
+          :stroke="c.isLocalTip ? 'var(--accent)' : c.isRemoteTip ? '#1565c0' : 'var(--text-tertiary)'"
           stroke-width="1.5"
         />
         <circle
           :cx="PADDING_LEFT"
           :cy="PADDING_TOP + i * LINE_HEIGHT"
           :r="NODE_RADIUS"
-          :fill="c.isLocalTip ? 'var(--accent)' : c.isRemoteTip ? '#4FC1FF' : 'var(--text-tertiary)'"
+          :fill="c.isLocalTip ? 'var(--accent)' : c.isRemoteTip ? '#1565c0' : 'var(--text-tertiary)'"
           :opacity="c.isLocalTip || c.isRemoteTip ? 1 : 0.6"
           style="cursor: pointer"
           @click="copyHash(c.hash)"
@@ -85,7 +85,7 @@ function copyHash(hash: string) {
           v-else-if="c.isRemoteTip"
           :x="PADDING_LEFT + 14"
           :y="PADDING_TOP + i * LINE_HEIGHT + 18"
-          fill="#4FC1FF"
+          fill="#1565c0"
           font-size="9"
         >{{ t('git.remoteTip') }}</text>
       </g>

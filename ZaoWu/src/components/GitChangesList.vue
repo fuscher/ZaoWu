@@ -202,8 +202,8 @@ async function executeDiscard() {
 }
 
 .changes-btn.danger {
-  color: var(--danger, #f87171);
-  border-color: var(--danger-muted, rgba(248, 113, 113, 0.2));
+  color: var(--danger);
+  border-color: var(--danger-muted);
 }
 
 .changes-empty {
@@ -272,10 +272,10 @@ async function executeDiscard() {
 }
 
 .changes-file-type.untracked { background: var(--accent-muted); color: var(--accent); }
-.changes-file-type.modified { background: rgba(79, 193, 255, 0.15); color: #4FC1FF; }
-.changes-file-type.added { background: rgba(52, 211, 153, 0.15); color: #34D399; }
-.changes-file-type.deleted { background: rgba(248, 113, 113, 0.15); color: #F87171; }
-.changes-file-type.renamed { background: rgba(167, 139, 250, 0.15); color: #A78BFA; }
+.changes-file-type.modified { background: rgba(21, 101, 192, 0.1); color: #1565c0; }
+.changes-file-type.added { background: rgba(22, 101, 52, 0.1); color: #166534; }
+.changes-file-type.deleted { background: rgba(185, 28, 28, 0.1); color: #b91c1c; }
+.changes-file-type.renamed { background: rgba(94, 74, 208, 0.1); color: #5e4ad0; }
 
 .changes-file-path {
   color: var(--text-primary);

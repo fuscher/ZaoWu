@@ -300,13 +300,13 @@ function copyInviteLink() {
 
 .connection-badge.connecting,
 .connection-badge.reconnecting {
-  background: rgba(255, 189, 46, 0.15);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 
 .connection-badge.error,
 .connection-badge.disconnected {
-  background: rgba(255, 95, 86, 0.15);
+  background: var(--danger-bg);
   color: var(--danger);
 }
 
@@ -340,7 +340,7 @@ function copyInviteLink() {
 }
 
 .tool-btn.danger:hover {
-  background: rgba(255, 95, 86, 0.15);
+  background: var(--danger-bg);
   color: var(--danger);
 }
 

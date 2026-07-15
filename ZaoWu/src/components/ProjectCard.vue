@@ -253,6 +253,6 @@ onUnmounted(() => {
 }
 
 .menu-item.danger:hover {
-  background: rgba(255, 95, 86, 0.1);
+  background: var(--danger-muted);
 }
 </style>
