@@ -455,6 +455,36 @@ class PluginManager:
                 flat.extend(str(x) for x in item)
         return flat
 
+    async def collect_agent_tools(self) -> List[Any]:
+        """Invoke ``zaowu_register_agent_tools`` on every enabled plugin.
+
+        Plugins are expected to return a list of :class:`ToolDefinition`
+        objects (or anything exposing ``name``, ``description``,
+        ``parameters`` and ``handler``).  Invalid items are logged and
+        skipped so one misbehaving plugin cannot break the host.
+        """
+        calls = await self._invoke_all_enabled('zaowu_register_agent_tools')
+        merged = _hooks.merge_aggregated(calls)
+        valid: List[Any] = []
+        for tool in merged:
+            missing = [
+                attr for attr in ('name', 'description', 'parameters', 'handler')
+                if not hasattr(tool, attr)
+            ]
+            if missing:
+                logger.warning(
+                    'plugin agent tool skipped: missing attributes %s', missing,
+                )
+                continue
+            if not callable(tool.handler):
+                logger.warning(
+                    'plugin agent tool %r skipped: handler is not callable',
+                    tool.name,
+                )
+                continue
+            valid.append(tool)
+        return valid
+
     async def dispatch_ws_message(self, msg_type: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Forward a custom WS message to plugins that declared the type.
 

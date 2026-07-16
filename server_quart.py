@@ -207,6 +207,18 @@ async def _startup_plugins():
         # Must happen before the server accepts requests.
         await mgr.collect_routes()
 
+        # Collect agent tools registered by plugins and merge them into the
+        # global ToolRegistry.  Delay the import to avoid circular imports.
+        try:
+            plugin_tools = await mgr.collect_agent_tools()
+            from services.tool_registry import ToolRegistry
+            registry = ToolRegistry.get_instance()
+            for tool in plugin_tools:
+                registry.register(tool)
+                _logger.info('registered agent tool from plugin: %s', tool.name)
+        except Exception:
+            _logger.exception('failed to collect plugin agent tools; continuing')
+
         # ★ ASGI 中间件挂载 hook（早于任何 HTTP 请求）
         for record in mgr._enabled_records():
             await mgr._invoke(record, 'zaowu_mount_asgi_middleware')

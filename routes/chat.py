@@ -463,10 +463,13 @@ def delete_preset(preset_id):
 
 # ── Agent mode (Stage 8) ─────────────────────────────────────
 
-from typing import Dict
+from typing import Dict, Any
 
 # 智能体停止事件字典（convId 键 + asyncio.Event，独立于 _stop_events）
 agent_stop_events: Dict[str, asyncio.Event] = {}
+
+# 当前活跃的智能体服务实例（convId -> AgentService），供确认端点查找
+active_agents: Dict[str, Any] = {}
 
 
 @chat_bp.route('/conversations/<conv_id>/agent-messages', methods=['POST'])
@@ -520,6 +523,7 @@ async def send_agent_message(conv_id):
     agent = AgentService(registry, display_path, model_id=model_id,
                          stop_event=agent_stop_events[conv_id],
                          limit_path=limit_path)
+    active_agents[conv_id] = agent
 
     async def generate():
         try:
@@ -528,6 +532,7 @@ async def send_agent_message(conv_id):
         finally:
             await agent.close()
             agent_stop_events.pop(conv_id, None)
+            active_agents.pop(conv_id, None)
 
     return Response(
         generate(),
@@ -575,3 +580,23 @@ async def agent_stop():
         stop_event.set()
         return jsonify({'ok': True})
     return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
+
+
+@chat_bp.route('/conversations/<conv_id>/confirm-tool', methods=['POST'])
+async def confirm_tool(conv_id):
+    """用户对需要确认的工具调用进行批准/拒绝"""
+    body = await request.get_json(silent=True) or {}
+    request_id = body.get('requestId')
+    approved = body.get('approved')
+
+    if not request_id:
+        return jsonify({'ok': False, 'error': 'missing requestId'}), 400
+    if not isinstance(approved, bool):
+        return jsonify({'ok': False, 'error': 'approved must be boolean'}), 400
+
+    agent = active_agents.get(conv_id)
+    if not agent:
+        return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
+
+    ok = agent.submit_confirmation(request_id, approved)
+    return jsonify({'ok': ok})

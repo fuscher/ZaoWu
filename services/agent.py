@@ -55,6 +55,8 @@ class AgentService:
     """智能体核心服务"""
 
     LOOP_THRESHOLD = 3  # 同一工具+参数连续调用达到此次数时自动中断
+    CONFIRMATION_TIMEOUT = 300  # 用户确认等待超时（秒）
+    REQUIRES_APPROVAL_TOOLS = {'write_file', 'run_command'}
 
     def __init__(self, tool_registry: ToolRegistry, project_path: str = None,
                  model_id: str = '', stop_event=None, limit_path: str = None):
@@ -67,6 +69,9 @@ class AgentService:
         self._model_id = model_id
         self._http_client: Optional[httpx.AsyncClient] = None
         self.stop_event = stop_event or asyncio.Event()
+        # 用户确认状态：request_id -> asyncio.Event
+        self._confirmation_events: Dict[str, asyncio.Event] = {}
+        self._confirmation_results: Dict[str, bool] = {}
 
     @property
     def http_client(self) -> httpx.AsyncClient:
@@ -150,50 +155,32 @@ class AgentService:
                                                    full_text or '(loop detected, stopped)')
                             return
 
-                    # 2b: requires_approval Phase 1 处理（安全检查）
-                    requires_approval_tools = {'write_file', 'run_command'}
-                    needs_approval = any(tc['name'] in requires_approval_tools
-                                         for tc in collected_tool_calls)
-                    if needs_approval:
-                        yield self._text_event(
-                            f'[系统] 检测到需要确认的操作：{", ".join(tc["name"] for tc in collected_tool_calls if tc["name"] in requires_approval_tools)}'
-                        )
-                        yield self._text_event('[系统] 已自动执行（后续版本将要求用户确认）')
-
-                    # 2c: 发送 tool_call_start 事件
+                    # 2b: 发送 tool_call_start 事件
                     for tc in collected_tool_calls:
                         yield self._tool_call_start_event(assistant_msg_id, tc)
 
-                    # 2d: 串行执行工具
+                    # 2c: 串行执行工具（危险工具需用户确认）
                     for tc in collected_tool_calls:
+                        if tc['name'] in self.REQUIRES_APPROVAL_TOOLS:
+                            yield self._requires_confirmation_event(assistant_msg_id, tc)
+                            approved = await self._wait_for_confirmation(tc['requestId'])
+                            if not approved:
+                                result = {
+                                    'success': False,
+                                    'error': '用户已拒绝执行该操作',
+                                    'content': '',
+                                }
+                                yield self._tool_call_end_event(
+                                    assistant_msg_id, tc['requestId'], result
+                                )
+                                self._inject_tool_result(
+                                    messages, conv_id, tc, result
+                                )
+                                continue
+
                         result = await self.executor.execute(tc['name'], tc['arguments'])
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
-
-                        # 注入工具结果到消息历史
-                        assistant_msg = {
-                            'role': 'assistant',
-                            'content': None,
-                            'tool_calls': [{
-                                'id': tc['requestId'],
-                                'type': 'function',
-                                'function': {
-                                    'name': tc['name'],
-                                    'arguments': json.dumps(tc['arguments'], ensure_ascii=False),
-                                }
-                            }]
-                        }
-                        tool_msg = {
-                            'role': 'tool',
-                            'tool_call_id': tc['requestId'],
-                            'name': tc['name'],
-                            'content': json.dumps(result, ensure_ascii=False),
-                        }
-                        messages.append(assistant_msg)
-                        messages.append(tool_msg)
-
-                        # 实时持久化（逐轮写入）
-                        self._append_message(conv_id, assistant_msg)
-                        self._append_message(conv_id, tool_msg)
+                        self._inject_tool_result(messages, conv_id, tc, result)
                 else:
                     # 无工具调用，退出循环
                     break
@@ -210,6 +197,69 @@ class AgentService:
 
         finally:
             pass  # 统一由路由层的 finally await agent.close() 处理
+
+    # ── 工具结果注入与持久化 ─────────────────────────────────
+
+    def _inject_tool_result(self, messages: list, conv_id: str,
+                            tc: dict, result: dict) -> None:
+        """将 assistant tool_calls 与 tool 结果消息注入历史并持久化"""
+        assistant_msg = {
+            'role': 'assistant',
+            'content': None,
+            'tool_calls': [{
+                'id': tc['requestId'],
+                'type': 'function',
+                'function': {
+                    'name': tc['name'],
+                    'arguments': json.dumps(tc['arguments'], ensure_ascii=False),
+                }
+            }]
+        }
+        tool_msg = {
+            'role': 'tool',
+            'tool_call_id': tc['requestId'],
+            'name': tc['name'],
+            'content': json.dumps(result, ensure_ascii=False),
+        }
+        messages.append(assistant_msg)
+        messages.append(tool_msg)
+        self._append_message(conv_id, assistant_msg)
+        self._append_message(conv_id, tool_msg)
+
+    # ── 用户确认 ──────────────────────────────────────────────
+
+    def submit_confirmation(self, request_id: str, approved: bool) -> bool:
+        """由路由层调用，提交用户对指定 tool requestId 的确认结果"""
+        event = self._confirmation_events.get(request_id)
+        if not event:
+            return False
+        self._confirmation_results[request_id] = approved
+        event.set()
+        return True
+
+    async def _wait_for_confirmation(self, request_id: str) -> bool:
+        """阻塞等待用户确认，超时或停止时返回 False"""
+        event = asyncio.Event()
+        self._confirmation_events[request_id] = event
+        try:
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(event.wait()),
+                 asyncio.create_task(self.stop_event.wait())],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=self.CONFIRMATION_TIMEOUT,
+            )
+            for task in pending:
+                task.cancel()
+            if not done:
+                # 超时
+                return False
+            # 检查是确认事件还是停止事件先触发
+            if event.is_set():
+                return self._confirmation_results.get(request_id, False)
+            return False
+        finally:
+            self._confirmation_events.pop(request_id, None)
+            self._confirmation_results.pop(request_id, None)
 
     # ── 死循环检测 ────────────────────────────────────────────
 
@@ -523,6 +573,10 @@ class AgentService:
     @staticmethod
     def _tool_call_start_event(msg_id: str, tc: dict) -> str:
         return f'data: {json.dumps({"id": msg_id, "type": "tool_call_start", "toolCall": tc})}\n\n'
+
+    @staticmethod
+    def _requires_confirmation_event(msg_id: str, tc: dict) -> str:
+        return f'data: {json.dumps({"id": msg_id, "type": "requires_confirmation", "toolCall": tc})}\n\n'
 
     @staticmethod
     def _tool_call_end_event(msg_id: str, request_id: str, result: dict) -> str:

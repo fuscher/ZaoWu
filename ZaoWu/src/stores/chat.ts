@@ -23,9 +23,25 @@ export const useChatStore = defineStore('chat', () => {
   let abortController: AbortController | null = null
 
   // ── Agent state (Stage 8) ────────────────────────────────
-  const agentMode = ref(false)
+  // agentMode 与当前对话的 agentConfig.enabled 绑定，切换时自动持久化。
+  const agentMode = computed<boolean>({
+    get: () => currentConversation.value?.agentConfig?.enabled ?? false,
+    set: async (value) => {
+      const conv = currentConversation.value
+      if (!conv) return
+      const nextConfig = { ...(conv.agentConfig || {}), enabled: value }
+      conv.agentConfig = nextConfig
+      try {
+        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      } catch {
+        // 失败时回退本地状态
+        conv.agentConfig = { ...conv.agentConfig, enabled: !value }
+      }
+    },
+  })
   const currentToolCalls = ref<Map<string, ToolCall>>(new Map())
   const currentToolResults = ref<Map<string, ToolResult>>(new Map())
+  const pendingConfirmations = ref<Map<string, ToolCall>>(new Map())
 
   // ── Computed ───────────────────────────────────────────
   const currentMessages = computed(() => currentConversation.value?.messages || [])
@@ -219,6 +235,16 @@ export const useChatStore = defineStore('chat', () => {
     loadConversations()
   }
 
+  async function confirmTool(requestId: string, approved: boolean) {
+    const conv = currentConversation.value
+    if (!conv) return
+    try {
+      await ai.confirmToolCall(conv.id, requestId, approved)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'confirm failed'
+    }
+  }
+
   function stopStreaming() {
     if (abortController) {
       abortController.abort()
@@ -231,6 +257,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     isStreaming.value = false
     streamingMessageId.value = null
+    pendingConfirmations.value.clear()
   }
 
   // ── Agent message sending (Stage 8) ──────────────────────
@@ -258,6 +285,7 @@ export const useChatStore = defineStore('chat', () => {
     error.value = ''
     currentToolCalls.value.clear()
     currentToolResults.value.clear()
+    pendingConfirmations.value.clear()
 
     const assistantMessage: Message = {
       id: `stream-${Date.now()}`,
@@ -279,8 +307,12 @@ export const useChatStore = defineStore('chat', () => {
         onToolCallStart(_messageId: string, toolCall: ToolCall) {
           currentToolCalls.value.set(toolCall.requestId, toolCall)
         },
+        onRequiresConfirmation(_messageId: string, toolCall: ToolCall) {
+          pendingConfirmations.value.set(toolCall.requestId, toolCall)
+        },
         onToolCallEnd(_messageId: string, result: ToolResult) {
           currentToolResults.value.set(result.requestId, result)
+          pendingConfirmations.value.delete(result.requestId)
         },
         onDone(messageId: string, fullContent: string) {
           assistantMessage.content = fullContent
@@ -336,6 +368,8 @@ export const useChatStore = defineStore('chat', () => {
     agentMode,
     currentToolCalls,
     currentToolResults,
+    pendingConfirmations,
     sendAgentMessage,
+    confirmTool,
   }
 })

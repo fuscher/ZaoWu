@@ -4,7 +4,7 @@ import MarkdownIt from 'markdown-it'
 import { User, Bot } from '@lucide/vue'
 import { useCommunityStore } from '@/stores/community'
 import { useChatStore } from '@/stores/chat'
-import type { Message } from '@/types'
+import type { Message, ToolCall, ToolResult } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
 
 const props = defineProps<{
@@ -26,6 +26,49 @@ const md = new MarkdownIt({
 const renderedContent = computed(() => {
   if (!props.message.content) return ''
   return md.render(props.message.content)
+})
+
+/** Stage 8: 从已持久化的消息中还原工具调用卡片 */
+const historicalToolCalls = computed(() => {
+  const items: { toolCall?: ToolCall; toolResult?: ToolResult }[] = []
+
+  if (props.message.role === 'assistant' && props.message.tool_calls) {
+    for (const tc of props.message.tool_calls) {
+      const fn = (tc as any).function
+      let args: Record<string, unknown> = {}
+      try {
+        args = fn?.arguments ? JSON.parse(fn.arguments) : (tc as any).arguments || {}
+      } catch {
+        args = {}
+      }
+      items.push({
+        toolCall: {
+          requestId: tc.id,
+          name: fn?.name || (tc as any).name || 'unknown',
+          arguments: args,
+        },
+      })
+    }
+  } else if (props.message.role === 'tool') {
+    const content = props.message.content || ''
+    let success = true
+    try {
+      const parsed = JSON.parse(content)
+      success = parsed.success !== false
+    } catch {
+      success = true
+    }
+    items.push({
+      toolResult: {
+        requestId: props.message.tool_call_id || '',
+        tool: props.message.name || 'unknown',
+        success,
+        content,
+      },
+    })
+  }
+
+  return items
 })
 
 const isUser = computed(() => props.message.role === 'user')
@@ -59,12 +102,32 @@ const displayName = computed(() => {
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <div v-else class="content-md" v-html="renderedContent" />
       <!-- Stage 8: Tool call cards for agent mode -->
-      <div v-if="!isUser && chatStore.agentMode && chatStore.currentToolResults.size > 0" class="tool-calls">
+      <div v-if="!isUser && chatStore.agentMode && (chatStore.currentToolResults.size > 0 || chatStore.pendingConfirmations.size > 0)" class="tool-calls">
         <ToolCallCard
           v-for="[requestId, result] in chatStore.currentToolResults"
           :key="requestId"
           :tool-call="chatStore.currentToolCalls.get(requestId)"
           :tool-result="result"
+          :requires-approval="chatStore.pendingConfirmations.has(requestId)"
+          @approve="chatStore.confirmTool($event, true)"
+          @reject="chatStore.confirmTool($event, false)"
+        />
+        <ToolCallCard
+          v-for="[requestId, toolCall] in chatStore.pendingConfirmations"
+          :key="`pending-${requestId}`"
+          :tool-call="toolCall"
+          :requires-approval="true"
+          @approve="chatStore.confirmTool($event, true)"
+          @reject="chatStore.confirmTool($event, false)"
+        />
+      </div>
+      <!-- Stage 8: Historical tool calls persisted in messages -->
+      <div v-if="!isUser && historicalToolCalls.length > 0" class="tool-calls">
+        <ToolCallCard
+          v-for="(item, index) in historicalToolCalls"
+          :key="index"
+          :tool-call="item.toolCall"
+          :tool-result="item.toolResult"
         />
       </div>
       <div v-if="isStreaming && !isUser" class="streaming-indicator">

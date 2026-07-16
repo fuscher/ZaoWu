@@ -269,6 +269,7 @@ export interface ToolResult {
 export interface AgentStreamCallbacks {
   onDelta: (messageId: string, delta: string) => void
   onToolCallStart: (messageId: string, toolCall: ToolCall) => void
+  onRequiresConfirmation: (messageId: string, toolCall: ToolCall) => void
   onToolCallEnd: (messageId: string, result: ToolResult) => void
   onDone: (messageId: string, fullContent: string) => void
   onError: (error: string) => void
@@ -284,5 +285,6 @@ export interface AgentConfig {
 export type SSEEvent =
   | { id: string; type: 'delta'; delta: string; done: false }
   | { id: string; type: 'tool_call_start'; toolCall: ToolCall }
+  | { id: string; type: 'requires_confirmation'; toolCall: ToolCall }
   | { id: string; type: 'tool_call_end'; toolResult: ToolResult }
   | { id: string; type: 'done'; content: string; done: true }

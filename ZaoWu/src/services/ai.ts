@@ -60,7 +60,7 @@ export async function getConversation(id: string): Promise<Conversation> {
 
 export async function updateConversation(
   id: string,
-  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt'>>
+  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt' | 'agentConfig'>>
 ): Promise<Conversation> {
   const data = await request<{ conversation: Conversation }>(`${BASE}/conversations/${id}`, {
     method: 'PATCH',
@@ -210,6 +210,8 @@ export async function sendAgentMessageStream(
             callbacks.onDelta(event.id, event.delta)
           } else if (event.type === 'tool_call_start' && event.toolCall) {
             callbacks.onToolCallStart(event.id, event.toolCall)
+          } else if (event.type === 'requires_confirmation' && event.toolCall) {
+            callbacks.onRequiresConfirmation(event.id, event.toolCall)
           } else if (event.type === 'tool_call_end' && event.toolResult) {
             callbacks.onToolCallEnd(event.id, event.toolResult)
           }
@@ -236,6 +238,17 @@ export async function stopAgentGeneration(convId: string): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+export async function confirmToolCall(
+  convId: string,
+  requestId: string,
+  approved: boolean
+): Promise<void> {
+  await request(`${BASE}/conversations/${convId}/confirm-tool`, {
+    method: 'POST',
+    body: JSON.stringify({ requestId, approved }),
+  })
 }
 
 // ── Config ────────────────────────────────────────────────
