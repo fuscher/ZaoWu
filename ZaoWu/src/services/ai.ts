@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMConfig, Conversation, Message } from '@/types'
+import type { LLMProvider, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent } from '@/types'
 
 const BASE = '/api/chat'
 
@@ -152,6 +152,86 @@ export async function stopGeneration(messageId: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messageId }),
+    })
+  } catch {
+    // ignore
+  }
+}
+
+// ── Agent mode (Stage 8) ────────────────────────────────────
+
+export async function sendAgentMessageStream(
+  conversationId: string,
+  content: string,
+  callbacks: AgentStreamCallbacks,
+  params?: { temperature?: number; maxTokens?: number; topP?: number }
+): Promise<AbortController> {
+  const controller = new AbortController()
+
+  try {
+    const res = await fetch(`${BASE}/conversations/${conversationId}/agent-messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, ...params }),
+      signal: controller.signal,
+    })
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'request failed' }))
+      callbacks.onError(err.error || `HTTP ${res.status}`)
+      return controller
+    }
+
+    const reader = res.body?.getReader()
+    if (!reader) {
+      callbacks.onError('no response body')
+      return controller
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const event = JSON.parse(line.slice(6)) as SSEEvent
+
+          if (event.type === 'done' && event.done) {
+            callbacks.onDone(event.id, event.content)
+          } else if (event.type === 'delta') {
+            callbacks.onDelta(event.id, event.delta)
+          } else if (event.type === 'tool_call_start' && event.toolCall) {
+            callbacks.onToolCallStart(event.id, event.toolCall)
+          } else if (event.type === 'tool_call_end' && event.toolResult) {
+            callbacks.onToolCallEnd(event.id, event.toolResult)
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+  } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') return controller
+    callbacks.onError(err instanceof Error ? err.message : 'unknown error')
+  }
+
+  return controller
+}
+
+export async function stopAgentGeneration(convId: string): Promise<void> {
+  try {
+    await fetch(`${BASE}/agent-stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ convId }),
     })
   } catch {
     // ignore

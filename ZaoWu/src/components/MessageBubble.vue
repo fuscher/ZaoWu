@@ -3,7 +3,9 @@ import { computed } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { User, Bot } from '@lucide/vue'
 import { useCommunityStore } from '@/stores/community'
+import { useChatStore } from '@/stores/chat'
 import type { Message } from '@/types'
+import ToolCallCard from './ToolCallCard.vue'
 
 const props = defineProps<{
   message: Message
@@ -13,6 +15,7 @@ const props = defineProps<{
 }>()
 
 const communityStore = useCommunityStore()
+const chatStore = useChatStore()
 
 const md = new MarkdownIt({
   html: false,
@@ -55,6 +58,15 @@ const displayName = computed(() => {
       </div>
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <div v-else class="content-md" v-html="renderedContent" />
+      <!-- Stage 8: Tool call cards for agent mode -->
+      <div v-if="!isUser && chatStore.agentMode && chatStore.currentToolResults.size > 0" class="tool-calls">
+        <ToolCallCard
+          v-for="[requestId, result] in chatStore.currentToolResults"
+          :key="requestId"
+          :tool-call="chatStore.currentToolCalls.get(requestId)"
+          :tool-result="result"
+        />
+      </div>
       <div v-if="isStreaming && !isUser" class="streaming-indicator">
         <span class="dot" /><span class="dot" /><span class="dot" />
       </div>
@@ -220,6 +232,13 @@ const displayName = computed(() => {
   display: flex;
   gap: 4px;
   padding-top: 4px;
+}
+
+.tool-calls {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .dot {

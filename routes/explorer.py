@@ -465,10 +465,17 @@ def save_file():
         return jsonify({'ok': False, 'error': 'missing path or content'}), 400
 
     real = os.path.realpath(data['path'])
-    if not os.path.isfile(real):
-        return jsonify({'ok': False, 'error': 'not a file'}), 400
+
+    # v1.2 修正：允许创建新文件（仅限项目内路径）；原代码用 isfile 阻止了创建
+    if not is_path_in_projects(real):
+        return jsonify({'ok': False, 'error': 'path not in registered projects'}), 403
+
+    parent = os.path.dirname(real)
+    if not os.path.isdir(parent):
+        return jsonify({'ok': False, 'error': 'parent directory does not exist'}), 400
 
     try:
+        os.makedirs(parent, exist_ok=True)
         with open(real, 'w', encoding='utf-8') as f:
             f.write(data['content'])
         # 文件保存成功后触发插件 hook

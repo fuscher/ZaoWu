@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import asyncio
 import threading
 import requests
 from datetime import datetime, timezone
@@ -148,6 +149,11 @@ def create_conversation():
         'messages': [],
         'createdAt': now,
         'updatedAt': now,
+        'agentConfig': body.get('agentConfig', {
+            'enabled': False,
+            'maxIterations': 10,
+            'requiresApproval': False,
+        }),
     }
 
     data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
@@ -180,6 +186,11 @@ def update_conversation(conv_id):
     for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
         if key in body:
             conv[key] = body[key]
+
+    # 支持更新 agentConfig
+    if 'agentConfig' in body:
+        conv['agentConfig'] = body['agentConfig']
+
     conv['updatedAt'] = datetime.now(timezone.utc).isoformat()
 
     _write_json(CONVERSATIONS_FILE, data)
@@ -448,3 +459,119 @@ def delete_preset(preset_id):
     data['presets'] = [p for p in data['presets'] if p['id'] != preset_id]
     _write_json(PRESETS_FILE, data)
     return jsonify({'ok': True})
+
+
+# ── Agent mode (Stage 8) ─────────────────────────────────────
+
+from typing import Dict
+
+# 智能体停止事件字典（convId 键 + asyncio.Event，独立于 _stop_events）
+agent_stop_events: Dict[str, asyncio.Event] = {}
+
+
+@chat_bp.route('/conversations/<conv_id>/agent-messages', methods=['POST'])
+async def send_agent_message(conv_id):
+    """智能体模式消息路由（异步 SSE 流）"""
+    from services.tool_registry import ToolRegistry  # lazy import avoids circular dep
+    from services.agent import AgentService
+    body = await request.get_json(silent=True)
+    if not body or 'content' not in body:
+        return jsonify({'ok': False, 'error': 'missing content'}), 400
+
+    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
+    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+    if not conv:
+        return jsonify({'ok': False, 'error': 'conversation not found'}), 404
+
+    providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers', [])
+    provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
+
+    if not provider:
+        return jsonify({'ok': False, 'error': 'provider not configured'}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    user_msg = {
+        'id': str(uuid.uuid4()),
+        'role': 'user',
+        'content': body['content'],
+        'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+    }
+    conv['messages'].append(user_msg)
+
+    if len(conv['messages']) <= 2:
+        conv['title'] = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
+
+    conv['updatedAt'] = now
+    _write_json(CONVERSATIONS_FILE, data)
+
+    # 将"限缩过滤器"与"系统提示词展示路径"解耦
+    # limit_path 来自 agentConfig.projectPath（未设置时为 None，触发多项目白名单）
+    # display_path 用于系统提示词 <<PROJECT_PATH>> 占位符展示
+    agent_config = conv.get('agentConfig') or {}
+    limit_path = agent_config.get('projectPath') or None  # None → 多项目白名单
+    display_path = _resolve_project_for_conversation(conv)
+
+    registry = ToolRegistry.get_instance()
+    model_id = conv.get('modelId', '') or next(
+        iter(provider.get('models') or [{}]), {}
+    ).get('id', '')
+
+    agent_stop_events[conv_id] = asyncio.Event()
+    agent = AgentService(registry, display_path, model_id=model_id,
+                         stop_event=agent_stop_events[conv_id],
+                         limit_path=limit_path)
+
+    async def generate():
+        try:
+            async for event_str in agent.process_message(conv_id, body['content']):
+                yield event_str.encode('utf-8')
+        finally:
+            await agent.close()
+            agent_stop_events.pop(conv_id, None)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
+
+
+def _resolve_project_for_conversation(conv: dict) -> str:
+    """解析对话关联的项目路径（仅用于系统提示词展示，不影响路径白名单）
+
+    优先级：
+    1. conv.agentConfig.projectPath（对话级显式绑定）
+    2. 第一个注册项目（回退）
+    3. 当前工作目录（最终回退）
+    """
+    agent_config = conv.get('agentConfig') or {}
+    project_path = agent_config.get('projectPath', '')
+    if project_path and os.path.isdir(project_path):
+        return project_path
+
+    try:
+        from routes.explorer import read_projects
+        projects = read_projects()
+        if projects:
+            return projects[0].get('path', os.getcwd())
+    except Exception:
+        pass
+
+    return os.getcwd()
+
+
+@chat_bp.route('/agent-stop', methods=['POST'])
+async def agent_stop():
+    """停止智能体模式生成（convId 键，非 messageId）"""
+    body = await request.get_json(silent=True)
+    if not body or 'convId' not in body:
+        return jsonify({'ok': False, 'error': 'missing convId'}), 400
+    stop_event = agent_stop_events.get(body['convId'])
+    if stop_event:
+        stop_event.set()
+        return jsonify({'ok': True})
+    return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404

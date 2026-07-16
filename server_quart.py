@@ -249,6 +249,7 @@ def _start_asyncio(port: int) -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    asyncio._zaowu_main_loop = loop  # 保存主事件循环引用，供子线程异步 hook 调用
     loop.run_until_complete(_run_hypercorn(port))
 
 

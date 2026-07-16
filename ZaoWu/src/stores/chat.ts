@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, LLMProvider, LLMConfig } from '@/types'
+import type { Conversation, Message, LLMProvider, LLMConfig, ToolCall, ToolResult } from '@/types'
 import * as ai from '@/services/ai'
 
 export const useChatStore = defineStore('chat', () => {
@@ -21,6 +21,11 @@ export const useChatStore = defineStore('chat', () => {
   const streamingMessageId = ref<string | null>(null)
   const error = ref('')
   let abortController: AbortController | null = null
+
+  // ── Agent state (Stage 8) ────────────────────────────────
+  const agentMode = ref(false)
+  const currentToolCalls = ref<Map<string, ToolCall>>(new Map())
+  const currentToolResults = ref<Map<string, ToolResult>>(new Map())
 
   // ── Computed ───────────────────────────────────────────
   const currentMessages = computed(() => currentConversation.value?.messages || [])
@@ -219,11 +224,81 @@ export const useChatStore = defineStore('chat', () => {
       abortController.abort()
       abortController = null
     }
-    if (streamingMessageId.value) {
+    if (agentMode.value && currentConversation.value) {
+      ai.stopAgentGeneration(currentConversation.value.id)
+    } else if (streamingMessageId.value) {
       ai.stopGeneration(streamingMessageId.value)
     }
     isStreaming.value = false
     streamingMessageId.value = null
+  }
+
+  // ── Agent message sending (Stage 8) ──────────────────────
+  async function sendAgentMessage(
+    content: string,
+    params?: { temperature?: number; maxTokens?: number; topP?: number }
+  ) {
+    if (!content.trim() || isStreaming.value) return
+
+    let conv = currentConversation.value
+    if (!conv) {
+      conv = await createNewConversation()
+      if (!conv) return
+    }
+
+    const userMessage: Message = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+    }
+    conv.messages.push(userMessage)
+
+    isStreaming.value = true
+    error.value = ''
+    currentToolCalls.value.clear()
+    currentToolResults.value.clear()
+
+    const assistantMessage: Message = {
+      id: `stream-${Date.now()}`,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      model: conv.modelId,
+    }
+    conv.messages.push(assistantMessage)
+    streamingMessageId.value = assistantMessage.id
+
+    abortController = await ai.sendAgentMessageStream(
+      conv.id,
+      content,
+      {
+        onDelta(_messageId: string, delta: string) {
+          assistantMessage.content += delta
+        },
+        onToolCallStart(_messageId: string, toolCall: ToolCall) {
+          currentToolCalls.value.set(toolCall.requestId, toolCall)
+        },
+        onToolCallEnd(_messageId: string, result: ToolResult) {
+          currentToolResults.value.set(result.requestId, result)
+        },
+        onDone(messageId: string, fullContent: string) {
+          assistantMessage.content = fullContent
+          assistantMessage.id = messageId
+          isStreaming.value = false
+          streamingMessageId.value = null
+        },
+        onError(err: string) {
+          assistantMessage.content += `\n\n⚠️ ${err}`
+          isStreaming.value = false
+          streamingMessageId.value = null
+          error.value = err
+        },
+      },
+      params
+    )
+
+    loadConversations()
   }
 
   // ── Init ──────────────────────────────────────────────
@@ -257,5 +332,10 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     stopStreaming,
     init,
+    // Agent mode
+    agentMode,
+    currentToolCalls,
+    currentToolResults,
+    sendAgentMessage,
   }
 })

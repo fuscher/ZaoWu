@@ -384,5 +384,24 @@
     "permissionDenied": "Permission denied",
     "commandBlocked": "Command blocked: {reason}",
     "inputInvalid": "Invalid input: {reason}"
+  },
+  "agent": {
+    "title": "Agent",
+    "agentMode": "Agent Mode",
+    "agentModeDesc": "AI can read files, search code, execute commands",
+    "agentThinking": "Agent thinking...",
+    "agentExecuting": "Executing tools...",
+    "requiresApproval": "Requires Approval",
+    "parameters": "Parameters",
+    "result": "Result",
+    "error": "Error",
+    "approve": "Approve",
+    "reject": "Reject",
+    "system": {
+      "loopDetected": "[System] Detected repeated call to {tool} ({count} times), auto-stopped",
+      "stopped": "[System] Generation stopped by user",
+      "approvalNeeded": "[System] Operations requiring approval detected: {tools}",
+      "autoExecuted": "[System] Auto-executed (future versions will require user confirmation)"
+    }
   }
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Send, Square } from '@lucide/vue'
+import { Send, Square, Bot } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
 import ModelSwitcher from './ModelSwitcher.vue'
@@ -13,12 +13,20 @@ const isComposing = ref(false)
 
 function handleSend() {
   if (!input.value.trim() || isComposing.value) return
-  chatStore.sendMessage(input.value.trim())
+  if (chatStore.agentMode) {
+    chatStore.sendAgentMessage(input.value.trim())
+  } else {
+    chatStore.sendMessage(input.value.trim())
+  }
   input.value = ''
 }
 
 function handleStop() {
   chatStore.stopStreaming()
+}
+
+function toggleAgentMode() {
+  chatStore.agentMode = !chatStore.agentMode
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -57,8 +65,17 @@ function handleKeydown(e: KeyboardEvent) {
       <div class="footer-left">
         <ModelSwitcher />
         <ParameterPanel />
+        <button
+          class="agent-toggle"
+          :class="{ active: chatStore.agentMode }"
+          :title="chatStore.agentMode ? t('agent.agentModeDesc') : t('agent.agentMode')"
+          @click="toggleAgentMode"
+        >
+          <Bot :size="14" />
+          <span>{{ t('agent.agentMode') }}</span>
+        </button>
       </div>
-      <span class="hint">{{ t('chat.shortcutHint') }}</span>
+      <span class="hint">{{ chatStore.agentMode ? t('agent.agentThinking') : t('chat.shortcutHint') }}</span>
     </div>
   </div>
 </template>
@@ -168,5 +185,36 @@ textarea::placeholder {
 .hint {
   font-size: 11px;
   color: var(--text-tertiary);
+}
+
+.agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-glass);
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.agent-toggle:hover {
+  border-color: var(--accent-muted);
+  color: var(--text-secondary);
+}
+
+.agent-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.agent-toggle.active:hover {
+  background: var(--accent);
+  color: #fff;
 }
 </style>

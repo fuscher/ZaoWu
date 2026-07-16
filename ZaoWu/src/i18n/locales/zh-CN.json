@@ -384,5 +384,24 @@
     "permissionDenied": "无权访问该路径",
     "commandBlocked": "命令已被拦截: {reason}",
     "inputInvalid": "输入无效: {reason}"
+  },
+  "agent": {
+    "title": "智能体",
+    "agentMode": "智能体模式",
+    "agentModeDesc": "AI 可读取文件、搜索代码、执行命令",
+    "agentThinking": "智能体正在思考...",
+    "agentExecuting": "执行工具...",
+    "requiresApproval": "需确认",
+    "parameters": "参数",
+    "result": "结果",
+    "error": "错误",
+    "approve": "批准",
+    "reject": "拒绝",
+    "system": {
+      "loopDetected": "[系统] 检测到重复调用 {tool} 已达 {count} 次，已自动中断循环",
+      "stopped": "[系统] 生成已被用户终止",
+      "approvalNeeded": "[系统] 检测到需要确认的操作：{tools}",
+      "autoExecuted": "[系统] 已自动执行（后续版本将要求用户确认）"
+    }
   }
 }

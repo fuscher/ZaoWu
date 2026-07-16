@@ -88,11 +88,18 @@ export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 're
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   timestamp: number
   model?: string
   tokens?: number
+  tool_calls?: Array<{
+    id: string
+    type: string
+    function: { name: string; arguments: string }
+  }>
+  tool_call_id?: string
+  name?: string
 }
 
 export interface Conversation {
@@ -105,6 +112,7 @@ export interface Conversation {
   createdAt: string
   updatedAt: string
   messageCount?: number
+  agentConfig?: AgentConfig
 }
 
 export interface LLMProvider {
@@ -241,3 +249,40 @@ declare global {
     __SETTINGS__?: Record<string, unknown>
   }
 }
+
+// ── Stage 8: Agent types ─────────────────────────────────────
+
+export interface ToolCall {
+  requestId: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+export interface ToolResult {
+  requestId: string
+  success: boolean
+  content: string
+  error?: string
+  tool: string
+}
+
+export interface AgentStreamCallbacks {
+  onDelta: (messageId: string, delta: string) => void
+  onToolCallStart: (messageId: string, toolCall: ToolCall) => void
+  onToolCallEnd: (messageId: string, result: ToolResult) => void
+  onDone: (messageId: string, fullContent: string) => void
+  onError: (error: string) => void
+}
+
+export interface AgentConfig {
+  enabled: boolean
+  systemPrompt?: string
+  maxIterations?: number
+  projectPath?: string
+}
+
+export type SSEEvent =
+  | { id: string; type: 'delta'; delta: string; done: false }
+  | { id: string; type: 'tool_call_start'; toolCall: ToolCall }
+  | { id: string; type: 'tool_call_end'; toolResult: ToolResult }
+  | { id: string; type: 'done'; content: string; done: true }
