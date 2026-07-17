@@ -42,8 +42,9 @@ export const useProjectsStore = defineStore('projects', () => {
         return { ok: true }
       }
       return { ok: false, error: data.error }
-    } catch {
-      return { ok: false, error: 'network error' }
+    } catch (err) {
+      console.error('addProject failed', err)
+      return { ok: false, error: err instanceof Error ? err.message : 'network error' }
     }
   }
 

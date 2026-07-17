@@ -67,8 +67,8 @@ def get_providers():
 
 
 @chat_bp.route('/providers', methods=['POST'])
-def save_providers():
-    body = request.get_json(silent=True)
+async def save_providers():
+    body = await request.get_json(silent=True)
     if not body or 'providers' not in body:
         return jsonify({'ok': False, 'error': 'missing providers'}), 400
     _write_json(PROVIDERS_FILE, {'providers': body['providers']})
@@ -131,8 +131,8 @@ def list_conversations():
 
 
 @chat_bp.route('/conversations', methods=['POST'])
-def create_conversation():
-    body = request.get_json(silent=True)
+async def create_conversation():
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
 
@@ -173,8 +173,8 @@ def get_conversation(conv_id):
 
 
 @chat_bp.route('/conversations/<conv_id>', methods=['PATCH'])
-def update_conversation(conv_id):
-    body = request.get_json(silent=True)
+async def update_conversation(conv_id):
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
 
@@ -221,8 +221,8 @@ def clear_conversation(conv_id):
 # ── Send Message (SSE streaming) ───────────────────────────
 
 @chat_bp.route('/conversations/<conv_id>/messages', methods=['POST'])
-def send_message(conv_id):
-    body = request.get_json(silent=True)
+async def send_message(conv_id):
+    body = await request.get_json(silent=True)
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400
 
@@ -385,8 +385,8 @@ def send_message(conv_id):
 
 
 @chat_bp.route('/stop', methods=['POST'])
-def stop_generation():
-    body = request.get_json(silent=True)
+async def stop_generation():
+    body = await request.get_json(silent=True)
     if not body or 'messageId' not in body:
         return jsonify({'ok': False, 'error': 'missing messageId'}), 400
     stop_event = _stop_events.get(body['messageId'])
@@ -405,8 +405,8 @@ def get_config():
 
 
 @chat_bp.route('/config', methods=['POST'])
-def save_config():
-    body = request.get_json(silent=True)
+async def save_config():
+    body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
     config = _read_json(CONFIG_FILE, {})
@@ -426,8 +426,8 @@ def list_presets():
 
 
 @chat_bp.route('/presets', methods=['POST'])
-def save_preset():
-    body = request.get_json(silent=True)
+async def save_preset():
+    body = await request.get_json(silent=True)
     if not body or 'name' not in body:
         return jsonify({'ok': False, 'error': 'missing name'}), 400
 

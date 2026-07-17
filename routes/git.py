@@ -131,8 +131,8 @@ def check_git():
 
 
 @git_bp.route('/status', methods=['POST'])
-def git_status():
-    data = request.get_json(silent=True) or {}
+async def git_status():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -169,8 +169,8 @@ def git_status():
 
 
 @git_bp.route('/branches', methods=['POST'])
-def git_branches():
-    data = request.get_json(silent=True) or {}
+async def git_branches():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -199,8 +199,8 @@ def git_branches():
 
 
 @git_bp.route('/switch-branch', methods=['POST'])
-def git_switch_branch():
-    data = request.get_json(silent=True) or {}
+async def git_switch_branch():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     branch = data.get('branch', '')
     error = validate_git_path(path)
@@ -223,8 +223,8 @@ def git_switch_branch():
 
 
 @git_bp.route('/commits', methods=['POST'])
-def git_commits():
-    data = request.get_json(silent=True) or {}
+async def git_commits():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     limit = data.get('limit', 20)
     offset = data.get('offset', 0)
@@ -258,8 +258,8 @@ def git_commits():
 
 
 @git_bp.route('/stage', methods=['POST'])
-def git_stage():
-    data = request.get_json(silent=True) or {}
+async def git_stage():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     files = data.get('files', [])
     error = validate_git_path(path)
@@ -282,8 +282,8 @@ def git_stage():
 
 
 @git_bp.route('/unstage', methods=['POST'])
-def git_unstage():
-    data = request.get_json(silent=True) or {}
+async def git_unstage():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     files = data.get('files', [])
     error = validate_git_path(path)
@@ -306,8 +306,8 @@ def git_unstage():
 
 
 @git_bp.route('/stage-all', methods=['POST'])
-def git_stage_all():
-    data = request.get_json(silent=True) or {}
+async def git_stage_all():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -326,8 +326,8 @@ def git_stage_all():
 
 
 @git_bp.route('/discard', methods=['POST'])
-def git_discard():
-    data = request.get_json(silent=True) or {}
+async def git_discard():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     files = data.get('files', [])
     error = validate_git_path(path)
@@ -350,8 +350,8 @@ def git_discard():
 
 
 @git_bp.route('/commit', methods=['POST'])
-def git_commit():
-    data = request.get_json(silent=True) or {}
+async def git_commit():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     message = data.get('message', '')
     error = validate_git_path(path)
@@ -373,8 +373,8 @@ def git_commit():
 
 
 @git_bp.route('/push', methods=['POST'])
-def git_push():
-    data = request.get_json(silent=True) or {}
+async def git_push():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -403,8 +403,8 @@ def git_push():
 
 
 @git_bp.route('/pull', methods=['POST'])
-def git_pull():
-    data = request.get_json(silent=True) or {}
+async def git_pull():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -442,8 +442,8 @@ def git_pull():
 
 
 @git_bp.route('/init', methods=['POST'])
-def git_init():
-    data = request.get_json(silent=True) or {}
+async def git_init():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -461,8 +461,8 @@ def git_init():
 
 
 @git_bp.route('/undo-commit', methods=['POST'])
-def git_undo_commit():
-    data = request.get_json(silent=True) or {}
+async def git_undo_commit():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     error = validate_git_path(path)
     if error:
@@ -482,8 +482,8 @@ def git_undo_commit():
 
 
 @git_bp.route('/reset-file', methods=['POST'])
-def git_reset_file():
-    data = request.get_json(silent=True) or {}
+async def git_reset_file():
+    data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     file = data.get('file', '')
     error = validate_git_path(path)

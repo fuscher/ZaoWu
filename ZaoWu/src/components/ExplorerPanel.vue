@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Plus, CheckSquare, ChevronDown, ChevronRight } from '@lucide/vue'
+import { Plus, CheckSquare, ChevronDown, ChevronRight, Archive, Upload, Trash2, X } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useProjectsStore } from '@/stores/projects'
 import ProjectCard from './ProjectCard.vue'
@@ -157,17 +157,21 @@ function showError(msg: string) {
     </div>
 
     <div v-if="store.batchMode && store.batchSelected.size > 0" class="batch-footer">
-      <button class="batch-btn" @click="startBatchAction('archive')">
-        {{ t('explorer.batchArchive') }}
+      <button class="batch-btn" :title="t('explorer.batchArchive')" @click="startBatchAction('archive')">
+        <Archive :size="16" />
+        <span>{{ t('explorer.batchArchiveShort') }}</span>
       </button>
-      <button class="batch-btn" @click="startBatchAction('unload')">
-        {{ t('explorer.batchUnload') }}
+      <button class="batch-btn" :title="t('explorer.batchUnload')" @click="startBatchAction('unload')">
+        <Upload :size="16" />
+        <span>{{ t('explorer.batchUnloadShort') }}</span>
       </button>
-      <button class="batch-btn danger" @click="startBatchAction('delete')">
-        {{ t('explorer.batchDelete') }}
+      <button class="batch-btn danger" :title="t('explorer.batchDelete')" @click="startBatchAction('delete')">
+        <Trash2 :size="16" />
+        <span>{{ t('explorer.batchDeleteShort') }}</span>
       </button>
-      <button class="batch-btn" @click="store.exitBatchMode()">
-        {{ t('explorer.cancel') }}
+      <button class="batch-btn" :title="t('explorer.cancel')" @click="store.exitBatchMode()">
+        <X :size="16" />
+        <span>{{ t('explorer.cancel') }}</span>
       </button>
     </div>
 
@@ -292,7 +296,8 @@ function showError(msg: string) {
 }
 
 .batch-footer {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
   padding: 12px;
   border-top: 1px solid var(--border-subtle);
@@ -300,11 +305,16 @@ function showError(msg: string) {
 }
 
 .batch-btn {
-  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 52px;
   padding: 8px;
   border: none;
-  border-radius: 6px;
-  font-size: 12px;
+  border-radius: 8px;
+  font-size: 11px;
   cursor: pointer;
   background: var(--bg-glass);
   color: var(--text-primary);

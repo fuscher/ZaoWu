@@ -98,8 +98,8 @@ def _search_in_file(filepath, query_lower, max_file_size_kb):
 
 
 @search_bp.route('', methods=['POST'])
-def search():
-    data = request.get_json(silent=True)
+async def search():
+    data = await request.get_json(silent=True)
     if not data or 'query' not in data:
         return jsonify({'ok': False, 'error': 'missing query'}), 400
 

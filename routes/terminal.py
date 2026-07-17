@@ -45,8 +45,8 @@ def is_command_safe(command):
 
 
 @terminal_bp.route('/exec', methods=['POST'])
-def exec_command():
-    data = request.get_json(silent=True) or {}
+async def exec_command():
+    data = await request.get_json(silent=True) or {}
     cwd = data.get('cwd', '')
     command = data.get('command', '')
 

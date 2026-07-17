@@ -154,8 +154,8 @@ def get_projects():
 
 
 @explorer_bp.route('/add-project', methods=['POST'])
-def add_project():
-    data = request.get_json(silent=True)
+async def add_project():
+    data = await request.get_json(silent=True)
     if not data or 'path' not in data:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
@@ -202,8 +202,8 @@ def add_project():
 
 
 @explorer_bp.route('/archive-project', methods=['POST'])
-def archive_project():
-    data = request.get_json(silent=True)
+async def archive_project():
+    data = await request.get_json(silent=True)
     if not data or 'projectId' not in data:
         return jsonify({'ok': False, 'error': 'missing projectId'}), 400
 
@@ -219,8 +219,8 @@ def archive_project():
 
 
 @explorer_bp.route('/unarchive-project', methods=['POST'])
-def unarchive_project():
-    data = request.get_json(silent=True)
+async def unarchive_project():
+    data = await request.get_json(silent=True)
     if not data or 'projectId' not in data:
         return jsonify({'ok': False, 'error': 'missing projectId'}), 400
 
@@ -236,8 +236,8 @@ def unarchive_project():
 
 
 @explorer_bp.route('/unload-project', methods=['POST'])
-def unload_project():
-    data = request.get_json(silent=True)
+async def unload_project():
+    data = await request.get_json(silent=True)
     if not data or 'projectId' not in data:
         return jsonify({'ok': False, 'error': 'missing projectId'}), 400
 
@@ -259,8 +259,8 @@ def unload_project():
 
 
 @explorer_bp.route('/delete-project', methods=['POST'])
-def delete_project():
-    data = request.get_json(silent=True)
+async def delete_project():
+    data = await request.get_json(silent=True)
     if not data or 'projectId' not in data:
         return jsonify({'ok': False, 'error': 'missing projectId'}), 400
 
@@ -302,22 +302,22 @@ def delete_project():
 
 
 @explorer_bp.route('/batch-archive', methods=['POST'])
-def batch_archive():
-    return _batch_operation('archive')
+async def batch_archive():
+    return await _batch_operation('archive')
 
 
 @explorer_bp.route('/batch-unload', methods=['POST'])
-def batch_unload():
-    return _batch_operation('unload')
+async def batch_unload():
+    return await _batch_operation('unload')
 
 
 @explorer_bp.route('/batch-delete', methods=['POST'])
-def batch_delete():
-    return _batch_operation('delete')
+async def batch_delete():
+    return await _batch_operation('delete')
 
 
-def _batch_operation(op_type):
-    data = request.get_json(silent=True)
+async def _batch_operation(op_type):
+    data = await request.get_json(silent=True)
     if not data or 'projectIds' not in data:
         return jsonify({'ok': False, 'error': 'missing projectIds'}), 400
 
@@ -375,8 +375,8 @@ def _batch_operation(op_type):
 
 
 @explorer_bp.route('/get-tree', methods=['POST'])
-def get_tree():
-    data = request.get_json(silent=True)
+async def get_tree():
+    data = await request.get_json(silent=True)
     if not data or 'path' not in data:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
@@ -459,8 +459,8 @@ def _fire_file_hook(hook_name: str, *args) -> None:
 
 
 @explorer_bp.route('/save-file', methods=['POST'])
-def save_file():
-    data = request.get_json(silent=True)
+async def save_file():
+    data = await request.get_json(silent=True)
     if not data or 'path' not in data or 'content' not in data:
         return jsonify({'ok': False, 'error': 'missing path or content'}), 400
 
@@ -489,9 +489,9 @@ def save_file():
 
 
 @explorer_bp.route('/delete-file', methods=['POST'])
-def delete_file():
+async def delete_file():
     """删除单个文件。成功后触发 zaowu_on_file_deleted hook。"""
-    data = request.get_json(silent=True)
+    data = await request.get_json(silent=True)
     if not data or 'path' not in data:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
@@ -511,9 +511,9 @@ def delete_file():
 
 
 @explorer_bp.route('/rename-file', methods=['POST'])
-def rename_file():
+async def rename_file():
     """重命名 / 移动单个文件。成功后触发 zaowu_on_file_renamed hook。"""
-    data = request.get_json(silent=True)
+    data = await request.get_json(silent=True)
     if not data or 'oldPath' not in data or 'newPath' not in data:
         return jsonify({'ok': False, 'error': 'missing oldPath or newPath'}), 400
 

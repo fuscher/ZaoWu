@@ -50,7 +50,7 @@ class Api:
 
     def select_folder(self):
         result = webview.windows[0].create_file_dialog(
-            webview.FOLDER_DIALOG,
+            webview.FileDialog.FOLDER,
             allow_multiple=False,
         )
         if result and len(result) > 0:
