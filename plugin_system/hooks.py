@@ -50,6 +50,7 @@ HOOK_NAMES: Tuple[str, ...] = (
     'zaowu_activity_bar_actions',  # -> list[dict]
     'zaowu_settings_sections',  # -> list[dict]
     'zaowu_status_bar_items',   # -> list[dict]
+    'zaowu_plugin_detail_sections',  # -> list[dict]
     # WebSocket / collaboration
     'zaowu_ws_message_types',   # -> list[str]
     'zaowu_handle_ws_message',  # -> dict | None
@@ -72,6 +73,7 @@ AGGREGATE_HOOKS: Tuple[str, ...] = (
     'zaowu_activity_bar_actions',
     'zaowu_settings_sections',
     'zaowu_status_bar_items',
+    'zaowu_plugin_detail_sections',
     'zaowu_register_routes',
     'zaowu_ws_message_types',
     'zaowu_register_agent_tools',

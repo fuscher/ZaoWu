@@ -214,6 +214,7 @@ def zaowu_app_shutdown():
 | `zaowu_activity_bar_actions()` | 注册左侧工具栏按钮 | `[{id, label, icon, handler, order}]` |
 | `zaowu_settings_sections()` | 注册设置页面分区 | `[{id, label, component, icon, order}]` |
 | `zaowu_status_bar_items()` | 注册状态栏小部件 | `[{id, component, position, order}]` |
+| `zaowu_plugin_detail_sections()` | 注册插件详情页分区 | `[{id, label, component, order}]` |
 
 **各字段说明：**
 
@@ -263,6 +264,18 @@ def zaowu_status_bar_items():
         'component': 'StatusWidget', # 对应 frontend/StatusWidget.vue
         'position': 'right',         # 'left' 或 'right'
         'order': 200,
+    }]
+
+
+def zaowu_plugin_detail_sections():
+    return [{
+        'id': 'my_detail',
+        'label': {
+            'zh-CN': '详情',
+            'en': 'Details',
+        },
+        'component': 'DetailSection', # 对应 frontend/DetailSection.vue
+        'order': 100,
     }]
 ```
 
@@ -430,7 +443,38 @@ async function save() {
 </script>
 ```
 
-### 5.5 可用的 lucide 图标
+### 5.5 插件详情页分区 (DetailSection.vue)
+
+渲染在插件管理详情页中（日志区域之后），适合展示插件相关的附加信息，例如 README、运行状态、统计图表等。宿主会自动将多个插件返回的分区按 `order` 排序并渲染。
+
+```vue
+<template>
+  <div class="my-detail-section">
+    <p>插件详情页扩展内容</p>
+    <button @click="refresh">刷新</button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+
+const count = ref(0)
+
+async function refresh() {
+  const res = await fetch('/api/plugins/my_plugin/stats')
+  const data = await res.json()
+  count.value = data.count ?? 0
+}
+
+onMounted(() => refresh())
+</script>
+
+<style scoped>
+.my-detail-section { padding: 12px; }
+</style>
+```
+
+### 5.6 可用的 lucide 图标
 
 ActivityBar 和设置页面使用的图标来自 [lucide](https://lucide.dev)，宿主预导入了以下图标供插件使用：
 
@@ -1082,6 +1126,7 @@ async def zaowu_app_startup():
 | 注册工具栏按钮 | `zaowu_activity_bar_actions()` | ActivityBar 图标按钮 |
 | 注册设置区域 | `zaowu_settings_sections()` | 设置页面分区 |
 | 注册状态栏项 | `zaowu_status_bar_items()` | 底部状态栏 |
+| 注册插件详情页分区 | `zaowu_plugin_detail_sections()` | 插件管理详情页分区 |
 | 插件间通信 | `event_bus.subscribe/publish` | 进程内事件总线 |
 | WebSocket 消息 | `zaowu_ws_message_types()` + `zaowu_handle_ws_message()` | 实时双向通信 |
 | 广播到房间 | `await plugin_api.broadcast_to_room(room_id, payload)` | 协作房间广播 |

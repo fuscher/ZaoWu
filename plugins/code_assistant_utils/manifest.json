@@ -1,0 +1,22 @@
+{
+  "name": "code_assistant_utils",
+  "version": "1.0.0",
+  "description": {
+    "zh-CN": "为 ZaoWu 智能体提供代码助手常用的实用工具：时间戳、代码行数统计、UUID 生成、JSON 格式化等。",
+    "en": "Provides utility tools commonly used by the ZaoWu agent: timestamps, code line counting, UUID generation, JSON formatting, etc."
+  },
+  "author": "ZaoWu Plugin Team",
+  "minApiVersion": "1.0.0",
+  "enabled": true,
+  "config": {
+    "default_timezone": "local",
+    "default_exclude_patterns": ["node_modules", ".git", "__pycache__", ".venv", "venv", "dist", "build"],
+    "readme_enabled": true,
+    "readme_path": "README.md",
+    "readme_theme": "auto",
+    "readme_refresh_seconds": 10
+  },
+  "frontend": {
+    "panels": []
+  }
+}

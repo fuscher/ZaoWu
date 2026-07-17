@@ -158,10 +158,10 @@ async def update_config(name: str):
 async def get_extensions():
     """Aggregate every enabled plugin's frontend contributions.
 
-    Returns a single object with four keys — ``panels``, ``actions``,
-    ``settings``, ``statusItems`` — each a concatenated list.  The
-    frontend can call this once on startup to learn about all plugin
-    UI contributions.
+    Returns a single object with five keys — ``panels``, ``actions``,
+    ``settings``, ``statusItems``, ``detailSections`` — each a concatenated
+    list.  The frontend can call this once on startup to learn about all
+    plugin UI contributions.
     """
     mgr, err = _mgr()
     if err:
@@ -170,12 +170,14 @@ async def get_extensions():
     actions = await mgr.collect_activity_bar_actions()  # type: ignore[union-attr]
     settings = await mgr.collect_settings_sections()  # type: ignore[union-attr]
     status_items = await mgr.collect_status_bar_items()  # type: ignore[union-attr]
+    detail_sections = await mgr.collect_detail_sections()  # type: ignore[union-attr]
     return jsonify({
         'ok': True,
         'panels': panels,
         'actions': actions,
         'settings': settings,
         'statusItems': status_items,
+        'detailSections': detail_sections,
     })
 
 

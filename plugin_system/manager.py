@@ -425,6 +425,10 @@ class PluginManager:
     async def collect_status_bar_items(self) -> List[Dict[str, Any]]:
         return await self._aggregate('zaowu_status_bar_items')
 
+    async def collect_detail_sections(self) -> List[Dict[str, Any]]:
+        """Collect plugin-contributed sections for the plugin detail page."""
+        return await self._aggregate('zaowu_plugin_detail_sections')
+
     async def collect_routes(self) -> List[Any]:
         """Invoke ``zaowu_register_routes`` on every enabled plugin.
 

@@ -217,6 +217,7 @@ The return values of these hooks are **collected and merged** by the host, then 
 | `zaowu_activity_bar_actions()` | Register activity bar buttons | `[{id, label, icon, handler, order}]` |
 | `zaowu_settings_sections()` | Register settings page sections | `[{id, label, component, icon, order}]` |
 | `zaowu_status_bar_items()` | Register status bar widgets | `[{id, component, position, order}]` |
+| `zaowu_plugin_detail_sections()` | Register plugin detail page sections | `[{id, label, component, order}]` |
 
 **Field reference:**
 
@@ -266,6 +267,18 @@ def zaowu_status_bar_items():
         'component': 'StatusWidget', # Maps to frontend/StatusWidget.vue
         'position': 'right',         # 'left' or 'right'
         'order': 200,
+    }]
+
+
+def zaowu_plugin_detail_sections():
+    return [{
+        'id': 'my_detail',
+        'label': {
+            'zh-CN': '详情',
+            'en': 'Details',
+        },
+        'component': 'DetailSection', # Maps to frontend/DetailSection.vue
+        'order': 100,
     }]
 ```
 
@@ -433,7 +446,38 @@ async function save() {
 </script>
 ```
 
-### 5.5 Available Lucide Icons
+### 5.5 Plugin Detail Page Section (DetailSection.vue)
+
+Rendered in the plugin management detail page (after the log section). Useful for displaying additional plugin-related information such as README, runtime status, or statistics. The host sorts and renders sections returned by multiple plugins according to `order`.
+
+```vue
+<template>
+  <div class="my-detail-section">
+    <p>Plugin detail page extension content</p>
+    <button @click="refresh">Refresh</button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+
+const count = ref(0)
+
+async function refresh() {
+  const res = await fetch('/api/plugins/my_plugin/stats')
+  const data = await res.json()
+  count.value = data.count ?? 0
+}
+
+onMounted(() => refresh())
+</script>
+
+<style scoped>
+.my-detail-section { padding: 12px; }
+</style>
+```
+
+### 5.6 Available Lucide Icons
 
 Icons used by the ActivityBar and settings pages come from [lucide](https://lucide.dev). The host pre-imports the following icons for plugins to use:
 
@@ -1085,6 +1129,7 @@ After manually editing this file, restart the service for changes to take effect
 | Register toolbar button | `zaowu_activity_bar_actions()` | ActivityBar icon button |
 | Register settings section | `zaowu_settings_sections()` | Settings page section |
 | Register status bar item | `zaowu_status_bar_items()` | Bottom status bar |
+| Register plugin detail page section | `zaowu_plugin_detail_sections()` | Plugin management detail page section |
 | Inter-plugin communication | `event_bus.subscribe/publish` | In-process event bus |
 | WebSocket messages | `zaowu_ws_message_types()` + `zaowu_handle_ws_message()` | Real-time bidirectional communication |
 | Broadcast to room | `await plugin_api.broadcast_to_room(room_id, payload)` | Collaboration room broadcast |

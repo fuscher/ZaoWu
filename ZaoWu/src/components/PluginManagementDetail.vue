@@ -52,6 +52,19 @@
         <pre v-if="logs" class="log-viewer">{{ logs }}</pre>
         <div v-else class="log-empty">{{ t('plugins.noLogs') }}</div>
       </section>
+
+      <!-- 插件扩展区域（README 等） -->
+      <section
+        v-for="section in pluginDetailSections"
+        :key="section.id"
+        class="detail-section"
+      >
+        <h3>{{ getLocalizedLabel(section.label) }}</h3>
+        <PluginHost
+          :plugin-name="section.pluginName"
+          :component-name="section.component"
+        />
+      </section>
     </template>
   </div>
 </template>
@@ -60,12 +73,13 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import { usePluginsStore, type PluginInfo } from '@/stores/plugins'
+import PluginHost from '@/plugin-system/PluginHost.vue'
 
 const props = defineProps<{
   pluginName: string | null
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const pluginsStore = usePluginsStore()
 
 const configJson = ref('')
@@ -78,6 +92,18 @@ const plugin = computed<PluginInfo | null>(() =>
     ? pluginsStore.plugins.find(p => p.name === props.pluginName) ?? null
     : null,
 )
+
+const pluginDetailSections = computed(() =>
+  props.pluginName
+    ? pluginsStore.detailSections
+        .filter(s => s.pluginName === props.pluginName)
+        .sort((a, b) => a.order - b.order)
+    : [],
+)
+
+function getLocalizedLabel(label: Record<string, string>) {
+  return label[locale.value] ?? label['en'] ?? Object.values(label)[0] ?? ''
+}
 
 // 切换插件时重新加载配置
 watch(

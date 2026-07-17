@@ -1,6 +1,10 @@
 <template>
   <Suspense>
-    <component v-if="resolvedComponent" :is="resolvedComponent" />
+    <component
+      v-if="resolvedComponent"
+      :is="resolvedComponent"
+      :plugin-name="pluginName"
+    />
     <div v-else class="plugin-component-missing">
       <span>{{ pluginName }}:{{ componentName }}</span>
     </div>

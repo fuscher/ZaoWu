@@ -47,6 +47,14 @@ export interface PluginSettingsSection {
   pluginName: string
 }
 
+export interface PluginDetailSection {
+  id: string
+  label: Record<string, string>
+  component: string
+  order: number
+  pluginName: string
+}
+
 export const usePluginsStore = defineStore('plugins', () => {
   // ── 插件列表 ──
   const plugins = ref<PluginInfo[]>([])
@@ -58,6 +66,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   const actions = ref<PluginAction[]>([])
   const statusItems = ref<PluginStatusItem[]>([])
   const settingsSections = ref<PluginSettingsSection[]>([])
+  const detailSections = ref<PluginDetailSection[]>([])
 
   // ── 计算属性 ──
   const enabledPlugins = computed(() => plugins.value.filter(p => p.enabled))
@@ -101,6 +110,9 @@ export const usePluginsStore = defineStore('plugins', () => {
         )
         settingsSections.value = (data.settings || []).sort(
           (a: PluginSettingsSection, b: PluginSettingsSection) => a.order - b.order,
+        )
+        detailSections.value = (data.detailSections || []).sort(
+          (a: PluginDetailSection, b: PluginDetailSection) => a.order - b.order,
         )
       }
     } catch {
@@ -175,6 +187,7 @@ export const usePluginsStore = defineStore('plugins', () => {
     actions,
     statusItems,
     settingsSections,
+    detailSections,
     // 计算属性
     enabledPlugins,
     hasPlugins,
