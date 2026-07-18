@@ -8,7 +8,7 @@ def test_core_tools_auto_registered():
     registry = ToolRegistry.get_instance()
     names = set(registry.list_tools().keys())
     expected = {
-        'read_file', 'write_file', 'list_files', 'search_code',
+        'read_file', 'write_file', 'list_files', 'search_code', 'web_search',
         'git_status', 'git_diff', 'git_log', 'run_command',
     }
     assert names == expected
@@ -17,7 +17,7 @@ def test_core_tools_auto_registered():
 def test_build_openai_tools_spec_count():
     registry = ToolRegistry.get_instance()
     spec = registry.build_openai_tools_spec()
-    assert len(spec) == 8
+    assert len(spec) == 9
     assert all(item['type'] == 'function' for item in spec)
 
 

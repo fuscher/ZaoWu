@@ -569,6 +569,9 @@ class AgentService:
                 json=payload,
                 headers=headers,
             ) as response:
+                # 明确指定 UTF-8，防止上游未声明 charset 时产生中文乱码。
+                response.encoding = 'utf-8'
+
                 if response.status_code != 200:
                     body = await response.aread()
                     yield {
@@ -660,31 +663,31 @@ class AgentService:
 
     @staticmethod
     def _delta_event(msg_id: str, delta: str) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "delta", "delta": delta, "done": False})}\n\n'
+        return f'data: {json.dumps({"id": msg_id, "type": "delta", "delta": delta, "done": False}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _text_event(text: str) -> str:
-        return f'data: {json.dumps({"id": "system", "type": "delta", "delta": text, "done": False})}\n\n'
+        return f'data: {json.dumps({"id": "system", "type": "delta", "delta": text, "done": False}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _tool_call_start_event(msg_id: str, tc: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_start", "toolCall": tc})}\n\n'
+        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_start", "toolCall": tc}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _requires_confirmation_event(msg_id: str, tc: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "requires_confirmation", "toolCall": tc})}\n\n'
+        return f'data: {json.dumps({"id": msg_id, "type": "requires_confirmation", "toolCall": tc}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _tool_call_end_event(msg_id: str, request_id: str, result: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_end", "toolResult": {**result, "requestId": request_id}})}\n\n'
+        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_end", "toolResult": {**result, "requestId": request_id}}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _done_event(msg_id: str, content: str) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "done", "content": content, "done": True})}\n\n'
+        return f'data: {json.dumps({"id": msg_id, "type": "done", "content": content, "done": True}, ensure_ascii=False)}\n\n'
 
     @staticmethod
     def _error_event(error: str) -> str:
-        return f'data: {json.dumps({"id": "error", "type": "done", "content": error, "done": True})}\n\n'
+        return f'data: {json.dumps({"id": "error", "type": "done", "content": error, "done": True}, ensure_ascii=False)}\n\n'
 
     async def close(self):
         if self._http_client:

@@ -29,6 +29,8 @@ from services.skill_registry import SkillDefinition, SkillRegistry
 
 MODULE_PREFIX = 'zaowu_skill_'
 SKILL_STATE_FILENAME = '.skill_state.json'
+# 导入/创建 skill 时名称的最大长度（也作为目录名使用，过长会导致 UI 溢出和路径问题）。
+MAX_SKILL_NAME_LENGTH = 50
 
 # Default skills directory, centralised here to avoid circular imports between
 # ``server_quart`` and ``routes.agent_skills``.
@@ -433,6 +435,10 @@ def import_skill_from_markdown(
     name = _sanitize_skill_name(raw_name)
     if not name:
         raise ValueError(f'Invalid skill name: {raw_name!r}')
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        raise ValueError(
+            f'Skill name too long ({len(name)} > {MAX_SKILL_NAME_LENGTH} chars): {name!r}'
+        )
 
     description = metadata.get('description') or name
     if isinstance(description, dict):

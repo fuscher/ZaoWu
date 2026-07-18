@@ -563,7 +563,10 @@ onMounted(() => {
             class="skill-item"
           >
             <div class="skill-info">
-              <span class="skill-name">{{ skill.description || skill.name }}</span>
+              <span class="skill-name">{{ skill.name }}</span>
+              <span v-if="skill.description && skill.description !== skill.name" class="skill-desc">
+                {{ skill.description }}
+              </span>
               <span class="skill-source">
                 {{ skill.source === 'builtin' ? t('settings.builtin') : t('settings.pluginProvided') }}
               </span>
@@ -1173,6 +1176,14 @@ onMounted(() => {
 .skill-name {
   font-size: 13px;
   color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

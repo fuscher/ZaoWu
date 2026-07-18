@@ -90,8 +90,9 @@ function handleKeydown(e: KeyboardEvent) {
             v-for="skill in chatStore.availableSkills.filter((s) => s.enabled)"
             :key="skill.name"
             :value="skill.name"
+            :title="skill.description || skill.name"
           >
-            {{ skill.description || skill.name }}
+            {{ skill.name }}
           </option>
         </select>
       </div>
@@ -241,18 +242,27 @@ textarea::placeholder {
 .skill-select {
   appearance: none;
   -webkit-appearance: none;
-  padding: 4px 22px 4px 10px;
+  padding: 4px 24px 4px 10px;
   border-radius: 6px;
-  border: 1px solid var(--border-glass);
-  background: var(--bg-glass) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
+  border: 1px solid var(--border-subtle);
+  background:
+    linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%),
+    linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%),
+    var(--bg-secondary);
+  background-position: right 10px center, right 6px center, 0 0;
+  background-size: 4px 4px, 4px 4px, 100% 100%;
+  background-repeat: no-repeat;
   color: var(--text-secondary);
   font-size: 11.5px;
   cursor: pointer;
   max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .skill-select:hover {
-  border-color: var(--accent-muted);
+  border-color: var(--border-glass);
 }
 
 .skill-select:focus {

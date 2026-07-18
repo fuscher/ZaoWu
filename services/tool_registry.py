@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from services.file_utils import read_file_content, write_file_content, list_directory
 from services.search_utils import search_project
+from services.web_search_utils import search_web
 from services.git_utils import get_git_status, get_git_diff, get_recent_commits
 from services.terminal_utils import execute_command
 
@@ -226,6 +227,18 @@ def _search_code_tool(query: str, project_path: str = None) -> dict:
         project_path: 限定搜索的项目路径（可选）
     """
     return search_project(query, project_path)
+
+
+@tool(name='web_search', tags=['search', 'web', 'read'])
+def _web_search_tool(query: str, max_results: int = 5) -> dict:
+    """使用 DuckDuckGo 搜索公开网页。无需 API key，适合轻量查询。
+    如需搜索 GitHub 社区内容，可在 query 中加入 ``site:github.com``。
+
+    Args:
+        query: 搜索关键词
+        max_results: 返回结果数量上限（1-20），默认 5
+    """
+    return search_web(query, max_results=max_results)
 
 
 @tool(name='git_status', tags=['git', 'read'])

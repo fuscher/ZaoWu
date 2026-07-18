@@ -85,6 +85,14 @@ def test_done_event_format():
     assert payload['content'] == 'final content'
 
 
+def test_delta_event_preserves_chinese():
+    event = AgentService._delta_event('msg-1', '中文')
+    payload = json.loads(event[6:])
+    assert payload['delta'] == '中文'
+    # 不应出现 \uXXXX 转义，确保 SSE 原始流可直接阅读
+    assert r'\u4e2d' not in event
+
+
 def test_requires_confirmation_event_format():
     tc = {'requestId': 'call_1', 'name': 'write_file', 'arguments': {'path': '/a', 'content': 'x'}}
     event = AgentService._requires_confirmation_event('msg-1', tc)

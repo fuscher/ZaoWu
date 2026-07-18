@@ -98,6 +98,18 @@ Prompt.
         import_skill_from_markdown(content, skills_dir)
 
 
+def test_import_skill_rejects_too_long_name(skills_dir):
+    long_name = 'a' * 60
+    content = f'''---
+name: {long_name}
+---
+
+Prompt.
+'''
+    with pytest.raises(ValueError, match='too long'):
+        import_skill_from_markdown(content, skills_dir)
+
+
 def test_import_skill_registers_in_registry(skills_dir):
     content = '''---
 name: reg_skill

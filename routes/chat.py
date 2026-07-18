@@ -271,12 +271,16 @@ async def send_message(conv_id):
 
     def generate():
         full_content = ''
+
+        def _sse(payload):
+            return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+
         try:
             if not provider:
                 error_text = '未配置 LLM 提供商，请先在设置中添加 Provider。'
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
                 return
 
             api_base = provider.get('apiBase', '').rstrip('/')
@@ -285,9 +289,9 @@ async def send_message(conv_id):
 
             if not api_base or not api_key:
                 error_text = 'Provider API 配置不完整，请检查 apiBase 和 apiKey。'
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
                 return
 
             messages = []
@@ -322,12 +326,15 @@ async def send_message(conv_id):
                 stream=True,
                 timeout=120,
             )
+            # 强制使用 UTF-8 解码上游 SSE，避免部分 Provider 未声明 charset 时
+            # requests 默认按 ISO-8859-1 解码导致中文乱码。
+            resp.encoding = 'utf-8'
 
             if resp.status_code != 200:
                 error_text = f'API 请求失败 (HTTP {resp.status_code}): {resp.text[:200]}'
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
-                yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
                 return
 
             for line in resp.iter_lines(decode_unicode=True):
@@ -345,27 +352,27 @@ async def send_message(conv_id):
                         content = delta.get('content', '')
                         if content:
                             full_content += content
-                            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": content, "done": False})}\n\n'
+                            yield _sse({"id": assistant_msg_id, "delta": content, "done": False})
                     except json.JSONDecodeError:
                         continue
 
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
 
         except requests.exceptions.Timeout:
             error_text = '请求超时，请检查网络连接或 API 地址。'
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
         except requests.exceptions.ConnectionError:
             error_text = '无法连接到 API 服务器，请检查 apiBase 配置。'
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
         except Exception as e:
             error_text = f'发生未知错误: {str(e)}'
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": error_text, "done": False})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield f'data: {json.dumps({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})}\n\n'
+            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
         finally:
             _stop_events.pop(assistant_msg_id, None)
             _save_assistant_message(conv_id, assistant_msg_id, full_content)
@@ -389,7 +396,7 @@ async def send_message(conv_id):
 
     return Response(
         generate(),
-        mimetype='text/event-stream',
+        mimetype='text/event-stream; charset=utf-8',
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
@@ -550,7 +557,7 @@ async def send_agent_message(conv_id):
 
     return Response(
         generate(),
-        mimetype='text/event-stream',
+        mimetype='text/event-stream; charset=utf-8',
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
