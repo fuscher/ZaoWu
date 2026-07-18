@@ -189,7 +189,21 @@ async def update_conversation(conv_id):
 
     # 支持更新 agentConfig
     if 'agentConfig' in body:
-        conv['agentConfig'] = body['agentConfig']
+        agent_config = body['agentConfig'] or {}
+        selected_skill = agent_config.get('selectedSkill')
+        # Treat an empty string as "no skill selected".
+        if selected_skill == '':
+            agent_config['selectedSkill'] = None
+            selected_skill = None
+        if selected_skill is not None:
+            from services.skill_registry import SkillRegistry
+            registry = SkillRegistry.get_instance()
+            skill = registry.get(selected_skill)
+            if skill is None:
+                return jsonify({'ok': False, 'error': f'skill {selected_skill!r} not found'}), 400
+            if not registry.is_enabled(selected_skill):
+                return jsonify({'ok': False, 'error': f'skill {selected_skill!r} is disabled'}), 400
+        conv['agentConfig'] = agent_config
 
     conv['updatedAt'] = datetime.now(timezone.utc).isoformat()
 
@@ -476,7 +490,7 @@ active_agents: Dict[str, Any] = {}
 async def send_agent_message(conv_id):
     """智能体模式消息路由（异步 SSE 流）"""
     from services.tool_registry import ToolRegistry  # lazy import avoids circular dep
-    from services.agent import AgentService
+    from agent_modules.agent_core import AgentService
     body = await request.get_json(silent=True)
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400

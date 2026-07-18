@@ -74,6 +74,11 @@ class PluginRecord:
     enabled: bool = False
     # Subprocesses spawned by this plugin (tracked for cleanup)
     subprocesses: List[Any] = field(default_factory=list)
+    # Tracks whether zaowu_register_routes has already been processed so
+    # enabling a plugin after startup (or re-enabling) does not duplicate
+    # blueprint registrations in Quart.
+    _routes_registered: bool = False
+    _routes_call: Optional[_hooks.HookCall] = None
 
     @property
     def name(self) -> str:
@@ -316,6 +321,9 @@ class PluginManager:
             raise PluginStateError(f'plugin {name!r} refused to be enabled')
 
         record.enabled = True
+        # Register routes now so plugins enabled after startup serve their
+        # HTTP endpoints immediately (e.g. README viewer, custom APIs).
+        await self._ensure_routes_registered(record)
         if persist:
             self._save_plugin_state(name, enabled=True, config=record.ctx.config)
         logger.info('plugin %s enabled', name)
@@ -410,6 +418,56 @@ class PluginManager:
             self._started = False
 
     # ------------------------------------------------------------------ #
+    # Route registration
+    # ------------------------------------------------------------------ #
+
+    async def _ensure_routes_registered(
+        self, record: PluginRecord,
+    ) -> Optional[_hooks.HookCall]:
+        """Invoke ``zaowu_register_routes`` once and register blueprints.
+
+        Quart blueprints cannot be unregistered, so this is intentionally
+        idempotent: once a plugin's routes have been processed they are
+        never processed again for the same runtime record.
+
+        Blueprints are registered while the per-plugin ContextVar is still
+        bound so ``plugin_api.register_blueprint`` can record the owning
+        plugin name.
+        """
+        if record._routes_registered:
+            return record._routes_call
+
+        token = plugin_api.bind_context(record.ctx)
+        try:
+            call = await _hooks.invoke_hook(
+                record.module, record.name, 'zaowu_register_routes',
+            )
+            if not call.ok:
+                logger.error(
+                    'plugin %s failed to register routes: %s',
+                    record.name, call.error,
+                )
+                return call
+
+            record._routes_registered = True
+            record._routes_call = call
+            if not call.value:
+                return call
+
+            blueprints = call.value if isinstance(call.value, list) else [call.value]
+            for bp in blueprints:
+                try:
+                    plugin_api.register_blueprint(bp)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        'plugin %s blueprint registration failed: %s',
+                        record.name, exc,
+                    )
+            return call
+        finally:
+            plugin_api.reset_context(token)
+
+    # ------------------------------------------------------------------ #
     # Aggregate hook queries (used by host routes / frontend)
     # ------------------------------------------------------------------ #
 
@@ -436,16 +494,11 @@ class PluginManager:
         inside this hook; the return value (a list of Blueprints) is
         also accepted as a fallback and registered automatically.
         """
-        calls = await self._invoke_all_enabled('zaowu_register_routes')
-        for call in calls:
-            if not call.ok or not call.value:
-                continue
-            blueprints = call.value if isinstance(call.value, list) else [call.value]
-            for bp in blueprints:
-                try:
-                    plugin_api.register_blueprint(bp)
-                except Exception as exc:  # noqa: BLE001
-                    logger.error('plugin %s blueprint registration failed: %s', call.plugin_name, exc)
+        calls: List[_hooks.HookCall] = []
+        for record in self._enabled_records():
+            call = await self._ensure_routes_registered(record)
+            if call is not None:
+                calls.append(call)
         return _hooks.merge_aggregated(calls)
 
     async def collect_ws_message_types(self) -> List[str]:
@@ -487,6 +540,25 @@ class PluginManager:
                 )
                 continue
             valid.append(tool)
+        return valid
+
+    async def collect_skills(self) -> List[Any]:
+        """Invoke ``zaowu_register_skills`` on every enabled plugin.
+
+        Plugins are expected to return a list of :class:`SkillDefinition`
+        objects.  Invalid items are logged and skipped so one misbehaving
+        plugin cannot break the host.
+        """
+        from services.skill_registry import SkillDefinition
+
+        calls = await self._invoke_all_enabled('zaowu_register_skills')
+        merged = _hooks.merge_aggregated(calls)
+        valid: List[Any] = []
+        for skill in merged:
+            if not isinstance(skill, SkillDefinition):
+                logger.warning('plugin skill skipped: not a SkillDefinition')
+                continue
+            valid.append(skill)
         return valid
 
     async def dispatch_ws_message(self, msg_type: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:

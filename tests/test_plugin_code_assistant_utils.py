@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import shutil
 import tempfile
 import uuid as uuid_module
 from pathlib import Path
@@ -195,6 +197,10 @@ def test_plugin_loads_and_registers_tools():
     assert 'code_assistant_utils' in plugin_names, 'plugin should be loaded'
     assert not mgr.get_plugin('code_assistant_utils')['error']
 
+    # The plugin may be disabled by persisted state; enable it explicitly
+    # so the test does not depend on mutable .plugin_state.json.
+    asyncio.run(mgr.enable('code_assistant_utils', persist=False))
+
     tools = asyncio.run(mgr.collect_agent_tools())
     plugin_tool_names = [
         t.name for t in tools
@@ -214,3 +220,66 @@ def test_plugin_imports_without_plugin_api_context():
     assert callable(plugin_module.count_code_lines)
     assert callable(plugin_module.generate_uuid)
     assert callable(plugin_module.format_json)
+
+
+# ── Route registration on enable tests ──────────────────────────────
+
+@pytest.fixture
+def disabled_code_assistant_plugins_dir(tmp_path):
+    """Return a temp plugins dir with code_assistant_utils disabled at startup."""
+    src = Path(__file__).parent.parent / 'plugins' / 'code_assistant_utils'
+    dst = tmp_path / 'code_assistant_utils'
+    shutil.copytree(src, dst)
+    state = {
+        'version': 1,
+        'plugins': {
+            'code_assistant_utils': {
+                'enabled': False,
+                'config': {},
+            },
+        },
+    }
+    (tmp_path / '.plugin_state.json').write_text(
+        json.dumps(state, ensure_ascii=False), encoding='utf-8',
+    )
+    return str(tmp_path)
+
+
+def test_routes_registered_when_enabled_after_startup(disabled_code_assistant_plugins_dir):
+    """Plugins disabled at startup must register routes when later enabled.
+
+    This regression test covers the case where the README viewer returns an
+    HTML SPA fallback (``<!DOCTYPE...``) because the plugin blueprint was
+    never registered.
+    """
+    import asyncio
+
+    from quart import Quart
+    from plugin_system.api import plugin_api
+
+    async def _run():
+        app = Quart(__name__)
+        mgr = PluginManager(disabled_code_assistant_plugins_dir)
+        mgr.attach_app(app)
+
+        loaded, broken = await mgr.load_all()
+        assert loaded == 1
+        assert broken == 0
+
+        record = mgr._records.get('code_assistant_utils')
+        assert record is not None
+        assert record.enabled is False
+        assert record._routes_registered is False
+
+        await mgr.enable('code_assistant_utils', persist=False)
+
+        assert record.enabled is True
+        assert record._routes_registered is True
+        registered = plugin_api.registered_blueprints()
+        assert any(
+            b.get('plugin') == 'code_assistant_utils'
+            and b.get('blueprint') == 'code_assistant_utils'
+            for b in registered
+        ), f'expected code_assistant_utils blueprint, got {registered}'
+
+    asyncio.run(_run())

@@ -1,0 +1,12 @@
+{
+  "name": "refactor",
+  "version": "1.0.0",
+  "type": "skill",
+  "description": {
+    "zh-CN": "代码重构技能",
+    "en": "Refactoring Assistant Skill"
+  },
+  "config": {
+    "safe_mode": true
+  }
+}

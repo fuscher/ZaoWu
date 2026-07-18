@@ -63,6 +63,8 @@ HOOK_NAMES: Tuple[str, ...] = (
     'zaowu_on_file_renamed',
     # Agent tool registration
     'zaowu_register_agent_tools',
+    # Agent skill registration
+    'zaowu_register_skills',
 )
 
 #: Hooks whose return value is collected from every plugin and merged
@@ -77,6 +79,7 @@ AGGREGATE_HOOKS: Tuple[str, ...] = (
     'zaowu_register_routes',
     'zaowu_ws_message_types',
     'zaowu_register_agent_tools',
+    'zaowu_register_skills',
 )
 
 

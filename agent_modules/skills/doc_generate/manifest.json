@@ -1,0 +1,13 @@
+{
+  "name": "doc_generate",
+  "version": "1.0.0",
+  "type": "skill",
+  "description": {
+    "zh-CN": "文档生成技能",
+    "en": "Documentation Generation Skill"
+  },
+  "config": {
+    "format": "markdown",
+    "include_examples": true
+  }
+}

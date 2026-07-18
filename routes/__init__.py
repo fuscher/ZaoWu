@@ -6,6 +6,7 @@ from .git import git_bp
 from .terminal import terminal_bp
 from .community import community_bp
 from .plugin import plugin_bp
+from .agent_skills import bp as agent_skills_bp
 
 __all__ = [
     'explorer_bp',
@@ -16,4 +17,5 @@ __all__ = [
     'terminal_bp',
     'community_bp',
     'plugin_bp',
+    'agent_skills_bp',
 ]

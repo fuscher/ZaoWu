@@ -276,10 +276,23 @@ export interface AgentStreamCallbacks {
 }
 
 export interface AgentConfig {
-  enabled: boolean
+  enabled?: boolean
   systemPrompt?: string
   maxIterations?: number
   projectPath?: string
+  requiresApproval?: boolean
+  selectedSkill?: string
+  skillConfig?: Record<string, Record<string, any>>
+}
+
+export interface Skill {
+  name: string
+  description: string
+  tags: string[]
+  source: 'builtin' | string
+  enabled: boolean
+  defaultConfig?: Record<string, any>
+  allowedTools?: string[]
 }
 
 export type SSEEvent =

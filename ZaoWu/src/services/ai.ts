@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent } from '@/types'
+import type { LLMProvider, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill } from '@/types'
 
 const BASE = '/api/chat'
 
@@ -249,6 +249,35 @@ export async function confirmToolCall(
     method: 'POST',
     body: JSON.stringify({ requestId, approved }),
   })
+}
+
+// ── Skills ────────────────────────────────────────────────
+
+const SKILLS_BASE = '/api/agent/skills'
+
+export async function fetchSkills(): Promise<Skill[]> {
+  const data = await request<{ skills: Skill[] }>(SKILLS_BASE)
+  return data.skills
+}
+
+export async function enableSkill(name: string): Promise<void> {
+  await request(`${SKILLS_BASE}/${name}/enable`, { method: 'POST' })
+}
+
+export async function disableSkill(name: string): Promise<void> {
+  await request(`${SKILLS_BASE}/${name}/disable`, { method: 'POST' })
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  await request(`${SKILLS_BASE}/${name}`, { method: 'DELETE' })
+}
+
+export async function importSkill(content: string): Promise<Skill> {
+  const data = await request<{ skill: Skill }>(`${SKILLS_BASE}/import`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+  return data.skill
 }
 
 // ── Config ────────────────────────────────────────────────

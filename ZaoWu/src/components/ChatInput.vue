@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Send, Square, Bot } from '@lucide/vue'
+import { ref, onMounted } from 'vue'
+import { Send, Square, Bot, Sparkles } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
 import ModelSwitcher from './ModelSwitcher.vue'
@@ -28,6 +28,10 @@ function handleStop() {
 function toggleAgentMode() {
   chatStore.agentMode = !chatStore.agentMode
 }
+
+onMounted(() => {
+  chatStore.loadSkills()
+})
 
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -74,6 +78,22 @@ function handleKeydown(e: KeyboardEvent) {
           <Bot :size="14" />
           <span>{{ t('agent.agentMode') }}</span>
         </button>
+
+        <select
+          v-if="chatStore.agentMode && chatStore.availableSkills.length > 0"
+          v-model="chatStore.selectedSkill"
+          class="skill-select"
+          :title="t('agent.skill')"
+        >
+          <option value="">{{ t('agent.noSkill') }}</option>
+          <option
+            v-for="skill in chatStore.availableSkills.filter((s) => s.enabled)"
+            :key="skill.name"
+            :value="skill.name"
+          >
+            {{ skill.description || skill.name }}
+          </option>
+        </select>
       </div>
       <span class="hint">{{ chatStore.agentMode ? t('agent.agentThinking') : t('chat.shortcutHint') }}</span>
     </div>
@@ -216,5 +236,27 @@ textarea::placeholder {
 .agent-toggle.active:hover {
   background: var(--accent);
   color: #fff;
+}
+
+.skill-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 4px 22px 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-glass) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 6px center;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+  max-width: 160px;
+}
+
+.skill-select:hover {
+  border-color: var(--accent-muted);
+}
+
+.skill-select:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 </style>

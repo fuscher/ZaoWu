@@ -8,7 +8,8 @@ import json
 
 import pytest
 
-from services.agent import AgentService
+from agent_modules.agent_core import AgentService
+from services.skill_registry import SkillDefinition
 from services.tool_registry import ToolRegistry
 
 
@@ -177,3 +178,112 @@ def test_build_system_prompt_replaces_placeholders(agent_service):
     assert '<<PROJECT_PATH>>' not in prompt
     assert '<<GIT_BRANCH>>' not in prompt
     assert service.project_path in prompt
+
+
+def test_build_system_prompt_injects_enabled_skill(agent_service):
+    service = agent_service
+    skill = SkillDefinition(
+        name='code_review',
+        description='code review skill',
+        system_prompt='你是一位代码审查专家。',
+    )
+    service.skill_registry.register(skill)
+
+    conv = {
+        'agentConfig': {
+            'selectedSkill': 'code_review',
+        },
+    }
+    prompt = service._build_system_prompt(conv)
+    assert '## 当前技能' in prompt
+    assert '你是一位代码审查专家。' in prompt
+
+
+def test_build_system_prompt_ignores_disabled_skill(agent_service):
+    service = agent_service
+    skill = SkillDefinition(
+        name='code_review',
+        description='code review skill',
+        system_prompt='你是一位代码审查专家。',
+    )
+    service.skill_registry.register(skill, enabled=False)
+
+    conv = {
+        'agentConfig': {
+            'selectedSkill': 'code_review',
+        },
+    }
+    prompt = service._build_system_prompt(conv)
+    assert '## 当前技能' not in prompt
+    assert '你是一位代码审查专家。' not in prompt
+
+
+def test_build_system_prompt_ignores_unknown_skill(agent_service):
+    service = agent_service
+    conv = {
+        'agentConfig': {
+            'selectedSkill': 'unknown_skill',
+        },
+    }
+    prompt = service._build_system_prompt(conv)
+    assert '## 当前技能' not in prompt
+
+
+def test_resolve_skill_config_merges_default_and_user_config(agent_service):
+    service = agent_service
+    skill = SkillDefinition(
+        name='code_review',
+        description='code review skill',
+        default_config={'max_files': 5, 'strict': False},
+    )
+    service.skill_registry.register(skill)
+
+    conv = {
+        'agentConfig': {
+            'selectedSkill': 'code_review',
+            'skillConfig': {
+                'code_review': {'max_files': 10},
+            },
+        },
+    }
+    config = service._resolve_skill_config(conv)
+    assert config['max_files'] == 10
+    assert config['strict'] is False
+
+
+def test_resolve_skill_config_returns_empty_without_selected_skill(agent_service):
+    service = agent_service
+    assert service._resolve_skill_config({}) == {}
+    assert service._resolve_skill_config({'agentConfig': {}}) == {}
+
+
+def test_build_sandbox_allows_all_tools_without_skill(agent_service):
+    service = agent_service
+    sandbox = service._build_sandbox({'agentConfig': {}})
+    assert sandbox.allowed_tools == set()
+
+
+def test_build_sandbox_restricts_to_allowed_tools(agent_service):
+    service = agent_service
+    skill = SkillDefinition(
+        name='restricted',
+        description='restricted skill',
+        allowed_tools=['read_file', 'search_code'],
+    )
+    service.skill_registry.register(skill)
+
+    sandbox = service._build_sandbox({'agentConfig': {'selectedSkill': 'restricted'}})
+    assert sandbox.allowed_tools == {'read_file', 'search_code'}
+
+
+def test_build_sandbox_unrestricted_when_skill_disabled(agent_service):
+    service = agent_service
+    skill = SkillDefinition(
+        name='restricted',
+        description='restricted skill',
+        allowed_tools=['read_file'],
+    )
+    service.skill_registry.register(skill, enabled=False)
+
+    sandbox = service._build_sandbox({'agentConfig': {'selectedSkill': 'restricted'}})
+    assert sandbox.allowed_tools == set()

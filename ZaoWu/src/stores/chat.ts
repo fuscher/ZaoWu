@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, LLMProvider, LLMConfig, ToolCall, ToolResult } from '@/types'
+import type { Conversation, Message, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill } from '@/types'
 import * as ai from '@/services/ai'
 
 export const useChatStore = defineStore('chat', () => {
@@ -43,6 +43,25 @@ export const useChatStore = defineStore('chat', () => {
   const currentToolResults = ref<Map<string, ToolResult>>(new Map())
   const pendingConfirmations = ref<Map<string, ToolCall>>(new Map())
 
+  // ── Skill state ─────────────────────────────────────────
+  const availableSkills = ref<Skill[]>([])
+  const selectedSkill = computed<string | undefined>({
+    get: () => currentConversation.value?.agentConfig?.selectedSkill,
+    set: async (value) => {
+      const conv = currentConversation.value
+      if (!conv) return
+      // Normalize an empty string ("no skill" option) to undefined.
+      const normalized = value || undefined
+      const nextConfig = { ...(conv.agentConfig || {}), selectedSkill: normalized }
+      conv.agentConfig = nextConfig
+      try {
+        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      } catch {
+        conv.agentConfig = { ...conv.agentConfig, selectedSkill: undefined }
+      }
+    },
+  })
+
   // ── Computed ───────────────────────────────────────────
   const currentMessages = computed(() => currentConversation.value?.messages || [])
   const currentProvider = computed(() =>
@@ -76,6 +95,49 @@ export const useChatStore = defineStore('chat', () => {
     } catch {
       // silent
     }
+  }
+
+  async function loadSkills() {
+    try {
+      availableSkills.value = await ai.fetchSkills()
+    } catch {
+      // silent
+    }
+  }
+
+  async function enableSkill(name: string) {
+    await ai.enableSkill(name)
+    const skill = availableSkills.value.find((s) => s.name === name)
+    if (skill) skill.enabled = true
+  }
+
+  async function disableSkill(name: string) {
+    await ai.disableSkill(name)
+    const skill = availableSkills.value.find((s) => s.name === name)
+    if (skill) skill.enabled = false
+    // 如果当前对话正使用该 skill，清空选择
+    if (selectedSkill.value === name) {
+      selectedSkill.value = undefined
+    }
+  }
+
+  async function deleteSkill(name: string) {
+    await ai.deleteSkill(name)
+    availableSkills.value = availableSkills.value.filter((s) => s.name !== name)
+    if (selectedSkill.value === name) {
+      selectedSkill.value = undefined
+    }
+  }
+
+  async function importSkill(content: string): Promise<Skill> {
+    const skill = await ai.importSkill(content)
+    const idx = availableSkills.value.findIndex((s) => s.name === skill.name)
+    if (idx !== -1) {
+      availableSkills.value[idx] = skill
+    } else {
+      availableSkills.value.push(skill)
+    }
+    return skill
   }
 
   async function refreshModels(providerId: string) {
@@ -371,5 +433,13 @@ export const useChatStore = defineStore('chat', () => {
     pendingConfirmations,
     sendAgentMessage,
     confirmTool,
+    // Skills
+    availableSkills,
+    selectedSkill,
+    loadSkills,
+    enableSkill,
+    disableSkill,
+    deleteSkill,
+    importSkill,
   }
 })

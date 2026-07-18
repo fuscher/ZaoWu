@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle } from '@lucide/vue'
+import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle, Sparkles, Download } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
 import { usePluginsStore } from '@/stores/plugins'
@@ -9,6 +9,7 @@ import { backgroundRegistry } from './backgrounds/index'
 import { saveProviders } from '@/services/ai'
 import { useI18n } from '@/i18n'
 import NumberInput from './NumberInput.vue'
+import ErrorToast from './ErrorToast.vue'
 import type { Theme, LLMProvider } from '@/types'
 
 const props = defineProps<{ theme: Theme; highlightSection?: string | null }>()
@@ -43,6 +44,19 @@ const isNewProvider = ref(false)
 const showApiKey = ref(false)
 const newModelId = ref('')
 const showDeleteConfirm = ref<string | null>(null)
+const skillFileInput = ref<HTMLInputElement | null>(null)
+const isImportingSkill = ref(false)
+const toastMessage = ref('')
+const toastType = ref<'error' | 'warning' | 'info'>('info')
+
+function showToast(message: string, type: 'error' | 'warning' | 'info' = 'info') {
+  toastMessage.value = ''
+  // Force re-render so the Transition fires even for repeated messages
+  requestAnimationFrame(() => {
+    toastMessage.value = message
+    toastType.value = type
+  })
+}
 
 function openAddProvider() {
   editingProvider.value = {
@@ -109,8 +123,72 @@ function maskApiKey(key: string) {
   return key.slice(0, 4) + '••••••••' + key.slice(-4)
 }
 
+const IMPORT_MAX_BYTES = 512 * 1024
+
+function openImportSkill() {
+  skillFileInput.value?.click()
+}
+
+async function handleSkillFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  if (!file.name.toLowerCase().endsWith('.md')) {
+    showToast(t('settings.importSkillInvalidExtension'), 'error')
+    input.value = ''
+    return
+  }
+
+  if (file.size > IMPORT_MAX_BYTES) {
+    showToast(t('settings.importSkillTooLarge'), 'error')
+    input.value = ''
+    return
+  }
+
+  isImportingSkill.value = true
+  try {
+    const content = await file.text()
+    const skill = await chatStore.importSkill(content)
+    if (!skill) {
+      showToast(t('settings.importSkillFailed'), 'error')
+    } else {
+      showToast(t('settings.importSkillSuccess', { name: skill.description || skill.name }), 'info')
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : t('settings.importSkillFailed')
+    showToast(message, 'error')
+  } finally {
+    isImportingSkill.value = false
+    input.value = ''
+  }
+}
+
+async function toggleSkill(name: string, enabled: boolean) {
+  try {
+    if (enabled) {
+      await chatStore.disableSkill(name)
+    } else {
+      await chatStore.enableSkill(name)
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : t('settings.skillActionFailed')
+    showToast(message, 'error')
+  }
+}
+
+async function removeSkill(name: string) {
+  try {
+    await chatStore.deleteSkill(name)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : t('settings.skillActionFailed')
+    showToast(message, 'error')
+  }
+}
+
 onMounted(() => {
   chatStore.loadProviders()
+  chatStore.loadSkills()
 })
 </script>
 
@@ -447,7 +525,88 @@ onMounted(() => {
         </div>
       </section>
 
+      <section class="settings-section" id="sec-skills">
+        <div class="section-header">
+          <Sparkles :size="16" />
+          <h2 class="section-title">{{ t('settings.skills') }}</h2>
+          <button
+            class="btn-sm import-skill-btn"
+            :title="t('settings.importSkill')"
+            :disabled="isImportingSkill"
+            @click="openImportSkill"
+          >
+            <Download v-if="!isImportingSkill" :size="14" />
+            <span v-else class="import-spinner" />
+            <span>{{ isImportingSkill ? t('settings.importingSkill') : t('settings.importSkill') }}</span>
+          </button>
+          <input
+            ref="skillFileInput"
+            type="file"
+            accept=".md"
+            style="display: none"
+            @change="handleSkillFileSelected"
+          />
+        </div>
+
+        <div class="settings-desc">
+          {{ t('settings.importSkillDesc') }}
+        </div>
+
+        <div v-if="chatStore.availableSkills.length === 0" class="settings-empty">
+          {{ t('settings.noSkills') }}
+        </div>
+
+        <div v-else class="skill-list">
+          <div
+            v-for="skill in chatStore.availableSkills"
+            :key="skill.name"
+            class="skill-item"
+          >
+            <div class="skill-info">
+              <span class="skill-name">{{ skill.description || skill.name }}</span>
+              <span class="skill-source">
+                {{ skill.source === 'builtin' ? t('settings.builtin') : t('settings.pluginProvided') }}
+              </span>
+            </div>
+            <div class="skill-actions">
+              <label
+                class="toggle skill-toggle"
+                :title="skill.enabled ? t('settings.disable') : t('settings.enable')"
+              >
+                <input
+                  type="checkbox"
+                  :checked="skill.enabled"
+                  @change="toggleSkill(skill.name, skill.enabled)"
+                />
+                <span class="toggle-slider" />
+              </label>
+              <span class="skill-status">
+                {{ skill.enabled ? t('settings.enabled') : t('settings.disabled') }}
+              </span>
+              <button
+                v-if="skill.source === 'builtin'"
+                class="icon-btn danger"
+                :title="t('settings.delete')"
+                @click="removeSkill(skill.name)"
+              >
+                <Trash2 :size="14" />
+              </button>
+              <span v-else class="skill-plugin-hint">{{ t('settings.pluginProvided') }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
     </div>
+
+    <Teleport to="body">
+      <ErrorToast
+        v-if="toastMessage"
+        :message="toastMessage"
+        :type="toastType"
+        @close="toastMessage = ''"
+      />
+    </Teleport>
   </div>
 </template>
 
@@ -480,10 +639,18 @@ onMounted(() => {
 }
 
 .section-title {
+  flex: 1;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
   margin: 0;
+}
+
+.settings-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.5;
 }
 
 /* ── Setting Card ─────────────────────────────────────── */
@@ -971,5 +1138,104 @@ onMounted(() => {
   color: var(--text-tertiary);
   padding: 16px 0;
   text-align: center;
+}
+
+/* ── 技能管理 ── */
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 8px;
+  transition: border-color var(--transition);
+}
+
+.skill-item:hover {
+  border-color: var(--accent-muted);
+}
+
+.skill-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-name {
+  font-size: 13px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-source {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.skill-toggle {
+  width: 28px;
+  height: 16px;
+}
+
+.skill-toggle .toggle-slider::before {
+  width: 12px;
+  height: 12px;
+}
+
+.skill-toggle input:checked + .toggle-slider::before {
+  transform: translateX(12px);
+}
+
+.skill-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-width: 48px;
+}
+
+.skill-plugin-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.import-skill-btn {
+  flex-shrink: 0;
+}
+
+.import-skill-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.import-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-glass);
+  border-top-color: var(--text-secondary);
+  border-radius: 50%;
+  animation: import-spin 0.8s linear infinite;
+}
+
+@keyframes import-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-import services.agent as agent_module
-from services.agent import AgentService
+import agent_modules.agent_core.agent_service as agent_module
+from agent_modules.agent_core import AgentService
 from services.tool_executor import ToolExecutor
 from services.tool_registry import ToolRegistry
 

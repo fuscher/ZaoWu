@@ -4,7 +4,7 @@ import locale
 import asyncio
 import logging
 from quart import Quart, send_from_directory, request, jsonify
-from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp
+from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
 
 app = Quart(__name__)
 
@@ -31,6 +31,7 @@ app.register_blueprint(git_bp, url_prefix='/api/git')
 app.register_blueprint(terminal_bp, url_prefix='/api/terminal')
 app.register_blueprint(community_bp, url_prefix='/api/community')
 app.register_blueprint(plugin_bp, url_prefix='/api/plugins')
+app.register_blueprint(agent_skills_bp, url_prefix='/api/agent/skills')
 
 DEFAULTS = {
     'enabled': True,
@@ -189,10 +190,46 @@ async def _mount_ws_middleware():
 
 # ── Plugin system lifecycle ────────────────────────────────────────
 # before_serving / after_serving fire in registration order.
-# Startup order:  _startup_ws_server → _mount_ws_middleware → _startup_plugins
-#   (plugins see a running websocket_server and registered middleware)
+# Startup order:  _startup_ws_server → _mount_ws_middleware → _startup_skills → _startup_plugins
+#   (plugins see a running websocket_server, registered middleware and loaded skills)
 # Shutdown order: _shutdown_ws_server → _shutdown_plugins
 #   (plugins must not touch the WS server during zaowu_app_shutdown)
+
+from services.skill_loader import DEFAULT_SKILLS_DIR
+
+
+def _is_safe_skills_dir(skills_dir: str) -> bool:
+    """Validate that ``skills_dir`` is a real directory under ``BASE_DIR``.
+
+    Resolves symbolic links and rejects paths that escape the project root,
+    preventing accidental traversal if the configured directory is tampered
+    with between restarts.
+    """
+    try:
+        real_path = os.path.realpath(skills_dir)
+        base_real = os.path.realpath(BASE_DIR)
+        return os.path.isdir(real_path) and real_path.startswith(base_real + os.sep)
+    except Exception:
+        return False
+
+
+@app.before_serving
+async def _startup_skills():
+    """Discover and register skills from agent_modules/skills/."""
+    if not _is_safe_skills_dir(DEFAULT_SKILLS_DIR):
+        _logger.error(
+            'skills directory %r is not under project root or is unreachable; '
+            'skipping skill discovery',
+            DEFAULT_SKILLS_DIR,
+        )
+        return
+    try:
+        from services.skill_loader import discover_skills
+        loaded = await asyncio.to_thread(discover_skills, DEFAULT_SKILLS_DIR)
+        _logger.info('skills loaded: %s', loaded)
+    except Exception:
+        _logger.exception('skill startup failed; continuing without skills')
+
 
 @app.before_serving
 async def _startup_plugins():
@@ -218,6 +255,31 @@ async def _startup_plugins():
                 _logger.info('registered agent tool from plugin: %s', tool.name)
         except Exception:
             _logger.exception('failed to collect plugin agent tools; continuing')
+
+        # Collect agent skills registered by plugins and merge them into the
+        # global SkillRegistry.  Plugin skills may override builtin skills.
+        # New plugin skills default to enabled unless the user has explicitly
+        # disabled (or deleted) a skill with the same name in .skill_state.json.
+        try:
+            plugin_skills = await mgr.collect_skills()
+            from services.skill_registry import SkillRegistry
+            from services.skill_loader import load_skill_state
+            skill_registry = SkillRegistry.get_instance()
+            state = load_skill_state(DEFAULT_SKILLS_DIR)
+            disabled = set(state.get('disabled') or [])
+            deleted = set(state.get('deleted') or [])
+            for skill in plugin_skills:
+                if skill.name in deleted:
+                    _logger.info('plugin skill %s is marked deleted; skipping', skill.name)
+                    continue
+                enabled = skill.name not in disabled
+                skill_registry.register(skill, enabled=enabled)
+                _logger.info(
+                    'registered agent skill from plugin: %s (enabled=%s)',
+                    skill.name, enabled,
+                )
+        except Exception:
+            _logger.exception('failed to collect plugin skills; continuing')
 
         # ★ ASGI 中间件挂载 hook（早于任何 HTTP 请求）
         for record in mgr._enabled_records():

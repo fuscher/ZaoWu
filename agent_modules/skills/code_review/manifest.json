@@ -1,0 +1,12 @@
+{
+  "name": "code_review",
+  "version": "1.0.0",
+  "type": "skill",
+  "description": {
+    "zh-CN": "代码审查技能",
+    "en": "Code Review Skill"
+  },
+  "config": {
+    "max_files": 5
+  }
+}

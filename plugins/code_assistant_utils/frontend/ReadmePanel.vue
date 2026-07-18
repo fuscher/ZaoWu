@@ -163,6 +163,15 @@ async function loadReadme(force = false) {
   error.value = null
   try {
     const res = await fetch('/api/plugins/code_assistant_utils/readme')
+    const contentType = res.headers.get('content-type') || ''
+    // Defensive: the SPA fallback returns HTML on 404, which would otherwise
+    // surface as a confusing JSON parse error.
+    if (!res.ok || !contentType.includes('application/json')) {
+      const text = await res.text().catch(() => '')
+      const preview = text.trim().slice(0, 120)
+      error.value = `HTTP ${res.status}${preview ? `: ${preview}` : ''}`
+      return
+    }
     const data = await res.json()
     if (!data.ok) {
       error.value = data.error || 'Failed to load README'
