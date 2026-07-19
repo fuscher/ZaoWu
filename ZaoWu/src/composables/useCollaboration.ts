@@ -59,20 +59,20 @@ export function useCollaboration(options: UseCollaborationOptions) {
   // y-websocket constructs the WebSocket URL as:
   //   serverUrl + '/' + roomname + '?' + urlParams
   // Our wsUrl from the REST API has the form:
-  //   ws://host:port/api/community/ws/<roomId>?token=<token>
+  //   ws://host:port/api/v1/community/ws/<roomId>?token=<token>
   //
   // We need to split this into:
-  //   serverUrl = ws://host:port/api/community/ws    (path without roomId)
+  //   serverUrl = ws://host:port/api/v1/community/ws    (path without roomId)
   //   roomname  = <roomId>                            (will be appended by y-websocket)
   //   params    = { token: <token> }                  (y-websocket appends as query string)
   const parser = new URL(options.wsUrl)
   const wsPath = parser.pathname
-  // The path is /api/community/ws/<roomId> — split off the roomId
+  // The path is /api/v1/community/ws/<roomId> — split off the roomId
   const lastSlash = wsPath.lastIndexOf('/')
-  const basePath = wsPath.slice(0, lastSlash)           // /api/community/ws
+  const basePath = wsPath.slice(0, lastSlash)           // /api/v1/community/ws
   const token = parser.searchParams.get('token') || ''
 
-  // Build the clean server base URL: ws://host:port/api/community/ws
+  // Build the clean server base URL: ws://host:port/api/v1/community/ws
   const serverUrl = `ws://${parser.host}${basePath}`
 
   const provider = new WebsocketProvider(

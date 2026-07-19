@@ -4,8 +4,9 @@ import type {
   CollaborationRole,
   PermissionMatrix,
 } from '@/types'
+import { apiPath } from '@/utils/api'
 
-const API_PREFIX = '/api/community'
+const API_PREFIX = apiPath('/community')
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_PREFIX}${path}`, {

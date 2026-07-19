@@ -4,6 +4,7 @@
 验证当上游 LLM Provider 返回 text/event-stream 但未声明 charset 时，
 routes/chat.py 仍能正确以 UTF-8 解码中文内容，且 SSE 响应本身也声明 UTF-8。
 """
+import asyncio
 import json
 
 import pytest
@@ -40,12 +41,13 @@ def _make_sse(content: str) -> bytes:
 
 
 @pytest.fixture
-def chat_env(tmp_path, monkeypatch):
-    """准备隔离的 chat 数据文件与 provider/conversation。"""
+async def chat_env(tmp_path, monkeypatch):
+    """准备隔离的 SQLite conversation store 与 provider。"""
     from server_quart import app
     import routes.chat as chat
+    from services.conversation_store import ConversationStore
+    import server_quart
 
-    monkeypatch.setattr(chat, 'CONVERSATIONS_FILE', str(tmp_path / 'conversations.json'))
     monkeypatch.setattr(chat, 'PROVIDERS_FILE', str(tmp_path / 'providers.json'))
     monkeypatch.setattr(chat, 'CONFIG_FILE', str(tmp_path / 'chat_config.json'))
     monkeypatch.setattr(chat, 'PRESETS_FILE', str(tmp_path / 'chat_presets.json'))
@@ -62,26 +64,26 @@ def chat_env(tmp_path, monkeypatch):
             }]
         },
     )
-    chat._write_json(
-        chat.CONVERSATIONS_FILE,
-        {
-            'conversations': [{
-                'id': 'conv-1',
-                'title': 'Test',
-                'providerId': 'test-provider',
-                'modelId': 'test-model',
-                'systemPrompt': '',
-                'messages': [],
-                'createdAt': '2024-01-01T00:00:00+00:00',
-                'updatedAt': '2024-01-01T00:00:00+00:00',
-            }]
-        },
-    )
-    return app, chat
+
+    store = ConversationStore(str(tmp_path / 'test.db'))
+    await store.ensure_tables()
+    await store.create({
+        'id': 'conv-1',
+        'title': 'Test',
+        'providerId': 'test-provider',
+        'modelId': 'test-model',
+        'systemPrompt': '',
+        'createdAt': '2024-01-01T00:00:00+00:00',
+        'updatedAt': '2024-01-01T00:00:00+00:00',
+        'agentConfig': {},
+    })
+    monkeypatch.setattr(server_quart, 'get_conversation_store', lambda: store)
+    return app, store
 
 
-async def test_send_message_sse_decodes_chinese_utf8(chat_env, tmp_path, monkeypatch):
-    app, chat = chat_env
+async def test_send_message_sse_decodes_chinese_utf8(chat_env, monkeypatch):
+    app, store = chat_env
+    import routes.chat as chat
 
     body = b'\n'.join([
         _make_sse('中'),
@@ -107,7 +109,8 @@ async def test_send_message_sse_decodes_chinese_utf8(chat_env, tmp_path, monkeyp
         assert r'\u4e2d' not in text
 
     # 持久化的 assistant 消息也必须是正确的中文
-    data = json.loads((tmp_path / 'conversations.json').read_text(encoding='utf-8'))
-    assistant_msgs = [m for m in data['conversations'][0]['messages'] if m['role'] == 'assistant']
+    conv = await store.get('conv-1')
+    assert conv is not None
+    assistant_msgs = [m for m in conv['messages'] if m['role'] == 'assistant']
     assert assistant_msgs
     assert assistant_msgs[-1]['content'] == '中文'

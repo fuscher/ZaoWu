@@ -3,13 +3,14 @@
  *
  * 双轨加载机制：
  * 1. 构建时通过 import.meta.glob 扫描 plugins 目录下的 vue 文件（静态 registry）
- * 2. 运行时通过 /api/plugins/<name>/frontend/_manifest.json 发现后安装的插件，
+ * 2. 运行时通过 apiPath('/plugins/<name>/frontend/_manifest.json') 发现后安装的插件，
  *    并通过动态 import() 加载预编译的 JS bundle（运行时 registry）
  *
  * resolvePluginComponent() 先查静态 registry，再查运行时 registry，
  * 最后尝试从后端动态加载。
  */
 import { defineAsyncComponent, type Component } from 'vue'
+import { apiPath } from '@/utils/api'
 
 // ── 构建时扫描，静态注册 ─────────────────────────────────────────────
 // 使用相对路径：从 src/plugin-system/ 到项目根 plugins/（向上 3 层）
@@ -71,14 +72,14 @@ async function loadPluginBundles(pluginName: string): Promise<void> {
 
 async function _doLoad(pluginName: string): Promise<void> {
   try {
-    const res = await fetch(`/api/plugins/${pluginName}/frontend/_manifest.json`)
+    const res = await fetch(apiPath(`/plugins/${pluginName}/frontend/_manifest.json`))
     if (!res.ok) return // 插件没有前端 bundle
 
     const bundles: Record<string, string> = await res.json()
     manifestCache.set(pluginName, bundles)
 
     for (const [componentName, bundlePath] of Object.entries(bundles)) {
-      const url = `/api/plugins/${pluginName}/frontend/${bundlePath}`
+      const url = apiPath(`/plugins/${pluginName}/frontend/${bundlePath}`)
       const key = `${pluginName}:${componentName}`
       runtimeRegistry.set(key, {
         pluginName,

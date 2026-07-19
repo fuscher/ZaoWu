@@ -1,6 +1,7 @@
 import type { LLMProvider, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill } from '@/types'
+import { apiPath } from '@/utils/api'
 
-const BASE = '/api/chat'
+const BASE = apiPath('/chat')
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -253,7 +254,7 @@ export async function confirmToolCall(
 
 // ── Skills ────────────────────────────────────────────────
 
-const SKILLS_BASE = '/api/agent/skills'
+const SKILLS_BASE = apiPath('/agent/skills')
 
 export async function fetchSkills(): Promise<Skill[]> {
   const data = await request<{ skills: Skill[] }>(SKILLS_BASE)

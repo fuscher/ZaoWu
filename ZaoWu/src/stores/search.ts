@@ -1,6 +1,7 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SearchResult } from '@/types'
+import { apiPath } from '@/utils/api'
 
 export const useSearchStore = defineStore('search', () => {
   const query = ref('')
@@ -34,7 +35,7 @@ export const useSearchStore = defineStore('search', () => {
 
     isSearching.value = true
     try {
-      const res = await fetch('/api/search', {
+      const res = await fetch(apiPath('/search'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: query.value.trim() }),
@@ -56,7 +57,7 @@ export const useSearchStore = defineStore('search', () => {
 
   async function cancelSearch() {
     try {
-      await fetch('/api/search/cancel', { method: 'POST' })
+      await fetch(apiPath('/search/cancel'), { method: 'POST' })
     } catch {
       // ignore
     }

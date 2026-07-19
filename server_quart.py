@@ -3,7 +3,7 @@ import json
 import locale
 import asyncio
 import logging
-from quart import Quart, send_from_directory, request, jsonify
+from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
 
 app = Quart(__name__)
@@ -13,9 +13,9 @@ DIST_DIR = os.path.join(BASE_DIR, 'ZaoWu', 'dist')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 PLUGINS_DIR = os.path.join(BASE_DIR, 'plugins')
 
+API_VERSION = 'v1'
+
 # ── Plugin system bootstrap ────────────────────────────────────────
-# The manager is constructed at import time so that routes/plugin.py
-# can reach it via get_plugin_manager() as soon as the app is up.
 from plugin_system import PluginManager, get_plugin_manager, set_plugin_manager
 
 _plugin_mgr = PluginManager(PLUGINS_DIR)
@@ -23,6 +23,9 @@ _plugin_mgr.attach_app(app)
 set_plugin_manager(_plugin_mgr)
 _logger = logging.getLogger('plugin_system')
 
+# All routes registered under /api/xxx (legacy). An ASGI middleware (see below)
+# transparently rewrites /api/v1/xxx → /api/xxx so v1-aware clients work without
+# duplicate blueprint registrations.
 app.register_blueprint(explorer_bp, url_prefix='/api/explorer')
 app.register_blueprint(search_bp, url_prefix='/api/search')
 app.register_blueprint(log_bp, url_prefix='/api/log')
@@ -131,6 +134,14 @@ _ws_asgi = create_asgi_app()
 
 
 @app.before_serving
+async def _startup_logging():
+    """Configure unified logging before any other subsystem starts."""
+    from services.logging_config import configure_logging
+    configure_logging()
+    _logger.info('logging configured: zaowu root logger + RotatingFileHandler -> logs/app.ndjson')
+
+
+@app.before_serving
 async def _startup_ws_server():
     """Start pycrdt-websocket's WebsocketServer before Quart begins serving.
 
@@ -180,7 +191,7 @@ async def _mount_ws_middleware():
     original_asgi = app.asgi_app
 
     async def _asgi_middleware(scope, receive, send):
-        if scope.get('type') == 'websocket' and scope.get('path', '').startswith('/api/community/ws/'):
+        if scope.get('type') == 'websocket' and scope.get('path', '').startswith('/api/') and 'community/ws/' in scope.get('path', ''):
             await _ws_asgi(scope, receive, send)
         else:
             await original_asgi(scope, receive, send)
@@ -188,10 +199,72 @@ async def _mount_ws_middleware():
     app.asgi_app = _asgi_middleware
 
 
+@app.before_serving
+async def _mount_api_version_prefix():
+    """Rewrite /api/v1/* → /api/* transparently for v1-aware clients.
+
+    This avoids duplicate blueprint registrations while allowing the frontend
+    to use versioned paths. The original /api/* paths remain directly accessible
+    (used by test suite and backwards compatibility).
+
+    Important: WebSocket paths (scope type='websocket') are NOT rewritten —
+    the WS middleware has already intercepted them by this point.
+    """
+    original_asgi = app.asgi_app
+
+    async def _rewrite(scope, receive, send):
+        if scope.get('type') == 'http':
+            path = scope.get('path', '')
+            if path.startswith(f'/api/{API_VERSION}/'):
+                scope['path'] = path.replace(f'/api/{API_VERSION}/', '/api/', 1)
+        await original_asgi(scope, receive, send)
+
+    app.asgi_app = _rewrite
+
+
+# ── SQLite conversation store ───────────────────────────────────────
+
+from services.conversation_store import ConversationStore
+
+_conversation_store: ConversationStore | None = None
+
+
+def get_conversation_store() -> ConversationStore:
+    """返回全局 ConversationStore 单例。必须在 before_serving 之后调用。"""
+    assert _conversation_store is not None, 'store not initialised — call during before_serving'
+    return _conversation_store
+
+
+@app.before_serving
+async def _migrate_conversations():
+    """Create tables and one-time import from conversations.json → SQLite."""
+    global _conversation_store
+    _conversation_store = ConversationStore()
+    await _conversation_store.ensure_tables()
+
+    json_path = os.path.join(BASE_DIR, 'conversations.json')
+    if os.path.exists(json_path):
+        try:
+            count = await _conversation_store.migrate_from_json(json_path)
+            if count > 0:
+                backup = json_path + '.bak'
+                os.rename(json_path, backup)
+                _logger.info(
+                    'migrated %d conversations from JSON → SQLite (backup: %s)',
+                    count, backup,
+                )
+            else:
+                _logger.info('no conversations to migrate from %s', json_path)
+        except Exception:
+            _logger.exception('conversation migration failed; continuing')
+    else:
+        _logger.info('no conversations.json found; starting with empty SQLite store')
+
+
 # ── Plugin system lifecycle ────────────────────────────────────────
 # before_serving / after_serving fire in registration order.
-# Startup order:  _startup_ws_server → _mount_ws_middleware → _startup_skills → _startup_plugins
-#   (plugins see a running websocket_server, registered middleware and loaded skills)
+# Startup order:  _startup_logging → _startup_ws_server → _mount_ws_middleware → _mount_api_version_prefix → _migrate_conversations → _startup_skills → _startup_plugins
+#   (plugins see running WS server, registered middleware, loaded skills and configured logging)
 # Shutdown order: _shutdown_ws_server → _shutdown_plugins
 #   (plugins must not touch the WS server during zaowu_app_shutdown)
 

@@ -110,7 +110,9 @@ def test_run_command_within_threshold(perf_project, monkeypatch):
 
 def test_agent_single_loop_within_threshold(perf_project, tmp_path, monkeypatch):
     """单轮智能体循环（1 次工具调用）应在 5 秒内完成。"""
-    monkeypatch.setattr(agent_module, 'CONVERSATIONS_FILE', str(tmp_path / 'conversations.json'))
+    from services.conversation_store import ConversationStore
+    import server_quart
+
     monkeypatch.setattr(agent_module, 'PROVIDERS_FILE', str(tmp_path / 'providers.json'))
 
     (tmp_path / 'providers.json').write_text(json.dumps({
@@ -122,15 +124,28 @@ def test_agent_single_loop_within_threshold(perf_project, tmp_path, monkeypatch)
         }]
     }), encoding='utf-8')
 
-    (tmp_path / 'conversations.json').write_text(json.dumps({
-        'conversations': [{
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    store = ConversationStore(str(tmp_path / 'test.db'))
+
+    async def _init():
+        await store.ensure_tables()
+        await store.create({
             'id': 'conv-perf',
             'providerId': 'perf-provider',
             'modelId': 'perf-model',
             'agentConfig': {'enabled': True, 'maxIterations': 5},
-            'messages': [{'id': 'u1', 'role': 'user', 'content': 'read large.txt', 'timestamp': 1}],
-        }]
-    }), encoding='utf-8')
+            'createdAt': '2024-01-01T00:00:00+00:00',
+            'updatedAt': '2024-01-01T00:00:00+00:00',
+        })
+        await store.append_message('conv-perf', {
+            'id': 'u1', 'role': 'user', 'content': 'read large.txt', 'timestamp': 1,
+        })
+
+    loop.run_until_complete(_init())
+    loop.close()
+
+    monkeypatch.setattr(server_quart, 'get_conversation_store', lambda: store)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

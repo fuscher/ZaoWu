@@ -98,23 +98,7 @@ def _is_archived(project_path: str) -> bool:
         return False
 
 
-BINARY_EXTS = {
-    '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.pdb', '.obj', '.o', '.a', '.lib',
-    '.class', '.pyc', '.pyo', '.jar', '.war', '.ear',
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.psd', '.ai',
-    '.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a',
-    '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg',
-    '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst',
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    '.ttf', '.otf', '.woff', '.woff2', '.eot',
-    '.iso', '.img', '.vhd', '.vmdk', '.ova',
-}
-
-
-def _is_binary(filepath: str) -> bool:
-    """检测文件是否为二进制（扩展名匹配）"""
-    _, ext = os.path.splitext(filepath)
-    return ext.lower() in BINARY_EXTS
+from .file_utils import BINARY_EXTENSIONS, is_binary_file as _is_binary
 
 
 def _search_in_file(filepath: str, query_lower: str, max_file_size_kb: int = 1024) -> list:

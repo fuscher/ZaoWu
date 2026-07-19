@@ -4,6 +4,7 @@ import uuid
 import shutil
 import stat
 import asyncio
+import logging
 from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify
 
@@ -93,44 +94,22 @@ def get_last_modified(path):
         return None
 
 
+_explorer_logger = logging.getLogger('zaowu.routes.explorer')
+
+
 def log_error(msg, details=None):
-    log_path = os.path.join(BASE_DIR, 'log.json')
-    entry = {
-        'timestamp': datetime.now(timezone.utc).isoformat(),
-        'level': 'error',
-        'type': 'OperationError',
-        'message': msg,
-    }
-    if details:
-        entry['details'] = details
-    try:
-        logs = []
-        if os.path.exists(log_path):
-            with open(log_path, 'r', encoding='utf-8') as f:
-                logs = json.load(f).get('logs', [])
-        logs.append(entry)
-        tmp = log_path + '.tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump({'logs': logs}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, log_path)
-    except Exception:
-        pass
+    """记录操作错误（委托给统一 logging 系统）。
+    
+    生成的日志会通过 JsonLogFormatter 写入 log.json，
+    同时通过 StreamHandler 输出到 console。
+    """
+    extra = {'error_type': details.get('type', 'OperationError')} if details else {}
+    _explorer_logger.error(msg, extra=extra, stack_info=False)
 
 
 def is_binary_file(filepath):
-    binary_exts = {
-        '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.pdb', '.obj', '.o', '.a', '.lib',
-        '.class', '.pyc', '.pyo', '.jar', '.war', '.ear',
-        '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.psd', '.ai',
-        '.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a',
-        '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg',
-        '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst',
-        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-        '.ttf', '.otf', '.woff', '.woff2', '.eot',
-        '.iso', '.img', '.vhd', '.vmdk', '.ova',
-    }
-    _, ext = os.path.splitext(filepath)
-    return ext.lower() in binary_exts
+    from services.file_utils import is_binary_file as _check
+    return _check(filepath)
 
 
 @explorer_bp.route('/projects', methods=['GET'])

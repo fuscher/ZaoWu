@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { Project } from '@/types'
+import { apiPath } from '@/utils/api'
 
 export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])
@@ -19,7 +20,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function fetchProjects() {
     try {
-      const res = await fetch('/api/explorer/projects')
+      const res = await fetch(apiPath('/explorer/projects'))
       const data = await res.json()
       if (data.projects) {
         projects.value = data.projects
@@ -31,7 +32,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function addProject(path: string): Promise<{ ok: boolean; error?: string }> {
     try {
-      const res = await fetch('/api/explorer/add-project', {
+      const res = await fetch(apiPath('/explorer/add-project'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path }),
@@ -50,7 +51,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function archiveProject(projectId: string): Promise<boolean> {
     try {
-      const res = await fetch('/api/explorer/archive-project', {
+      const res = await fetch(apiPath('/explorer/archive-project'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId }),
@@ -68,7 +69,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function unarchiveProject(projectId: string): Promise<boolean> {
     try {
-      const res = await fetch('/api/explorer/unarchive-project', {
+      const res = await fetch(apiPath('/explorer/unarchive-project'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId }),
@@ -86,7 +87,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function unloadProject(projectId: string): Promise<boolean> {
     try {
-      const res = await fetch('/api/explorer/unload-project', {
+      const res = await fetch(apiPath('/explorer/unload-project'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId }),
@@ -104,7 +105,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function deleteProject(projectId: string): Promise<boolean> {
     try {
-      const res = await fetch('/api/explorer/delete-project', {
+      const res = await fetch(apiPath('/explorer/delete-project'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId }),
@@ -123,7 +124,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function batchArchive(): Promise<{ ok: boolean; results: any[] }> {
     const ids = Array.from(batchSelected.value)
     try {
-      const res = await fetch('/api/explorer/batch-archive', {
+      const res = await fetch(apiPath('/explorer/batch-archive'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectIds: ids }),
@@ -139,7 +140,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function batchUnload(): Promise<{ ok: boolean; results: any[] }> {
     const ids = Array.from(batchSelected.value)
     try {
-      const res = await fetch('/api/explorer/batch-unload', {
+      const res = await fetch(apiPath('/explorer/batch-unload'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectIds: ids }),
@@ -155,7 +156,7 @@ export const useProjectsStore = defineStore('projects', () => {
   async function batchDelete(): Promise<{ ok: boolean; results: any[] }> {
     const ids = Array.from(batchSelected.value)
     try {
-      const res = await fetch('/api/explorer/batch-delete', {
+      const res = await fetch(apiPath('/explorer/batch-delete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectIds: ids }),

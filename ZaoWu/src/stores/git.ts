@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { Project, GitAvailability, GitBranch, GitChange, GitCommit } from '@/types'
 import { useProjectsStore } from './projects'
+import { apiPath } from '@/utils/api'
 
 export const useGitStore = defineStore('git', () => {
   const gitAvailable = ref<GitAvailability>('unchecked')
@@ -23,7 +24,7 @@ export const useGitStore = defineStore('git', () => {
   const hasGitRepo = computed(() => hasRepo.value)
 
   async function _api<T>(endpoint: string, body?: Record<string, unknown>): Promise<T> {
-    const res = await fetch('/api/git' + endpoint, {
+    const res = await fetch(apiPath('/git') + endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: selectedProject.value?.path, ...body }),
@@ -40,7 +41,7 @@ export const useGitStore = defineStore('git', () => {
 
   async function checkGit(): Promise<boolean> {
     try {
-      const res = await fetch('/api/git/check', { method: 'POST' })
+      const res = await fetch(apiPath('/git/check'), { method: 'POST' })
       const data = await res.json()
       gitAvailable.value = data.available ? 'available' : 'unavailable'
       return data.available
@@ -217,7 +218,7 @@ export const useGitStore = defineStore('git', () => {
 
   async function execTerminalCmd(command: string): Promise<string> {
     try {
-      const res = await fetch('/api/terminal/exec', {
+      const res = await fetch(apiPath('/terminal/exec'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cwd: terminalCwd.value, command }),

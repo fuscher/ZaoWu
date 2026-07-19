@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
+import { apiPath } from '@/utils/api'
 
 export interface PluginInfo {
   name: string
@@ -79,7 +80,7 @@ export const usePluginsStore = defineStore('plugins', () => {
     loading.value = true
     error.value = null
     try {
-      const res = await fetch('/api/plugins')
+      const res = await fetch(apiPath('/plugins'))
       const data = await res.json()
       if (data.ok) {
         plugins.value = data.plugins ?? []
@@ -96,7 +97,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   /** 获取所有已启用插件的前端扩展声明 */
   async function fetchExtensions() {
     try {
-      const res = await fetch('/api/plugins/extensions')
+      const res = await fetch(apiPath('/plugins/extensions'))
       const data = await res.json()
       if (data.ok) {
         panels.value = (data.panels || []).sort(
@@ -122,7 +123,7 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   /** 启用插件 */
   async function enablePlugin(name: string) {
-    const res = await fetch(`/api/plugins/${name}/enable`, { method: 'POST' })
+    const res = await fetch(apiPath(`/plugins/${name}/enable`), { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
       await fetchPlugins()
@@ -133,7 +134,7 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   /** 禁用插件 */
   async function disablePlugin(name: string) {
-    const res = await fetch(`/api/plugins/${name}/disable`, { method: 'POST' })
+    const res = await fetch(apiPath(`/plugins/${name}/disable`), { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
       await fetchPlugins()
@@ -144,7 +145,7 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   /** 重载插件 */
   async function reloadPlugin(name: string) {
-    const res = await fetch(`/api/plugins/${name}/reload`, { method: 'POST' })
+    const res = await fetch(apiPath(`/plugins/${name}/reload`), { method: 'POST' })
     const data = await res.json()
     if (data.ok) {
       await fetchPlugins()
@@ -155,7 +156,7 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   /** 卸载插件 */
   async function uninstallPlugin(name: string) {
-    const res = await fetch(`/api/plugins/${name}`, { method: 'DELETE' })
+    const res = await fetch(apiPath(`/plugins/${name}`), { method: 'DELETE' })
     const data = await res.json()
     if (data.ok) {
       await fetchPlugins()
@@ -168,7 +169,7 @@ export const usePluginsStore = defineStore('plugins', () => {
   async function installPlugin(file: File) {
     const form = new FormData()
     form.append('file', file)
-    const res = await fetch('/api/plugins/install', { method: 'POST', body: form })
+    const res = await fetch(apiPath('/plugins/install'), { method: 'POST', body: form })
     const data = await res.json()
     if (data.ok) {
       await fetchPlugins()
@@ -179,7 +180,7 @@ export const usePluginsStore = defineStore('plugins', () => {
 
   /** 更新插件配置 */
   async function updateConfig(name: string, config: Record<string, any>) {
-    const res = await fetch(`/api/plugins/${name}/config`, {
+    const res = await fetch(apiPath(`/plugins/${name}/config`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config),

@@ -2,7 +2,7 @@
 
 验证一次完整的智能体交互：
 LLM 产生 delta + 工具调用 -> 工具执行 -> 结果返回 -> 最终总结，
-以及 conversations.json 的逐轮持久化。
+以及 SQLite 的逐轮持久化。
 """
 import asyncio
 import json
@@ -13,19 +13,18 @@ import pytest
 import agent_modules.agent_core.agent_service as agent_module
 from agent_modules.agent_core import AgentService
 from services.tool_registry import ToolRegistry
+from services.conversation_store import ConversationStore
+import server_quart
 
 
 @pytest.fixture
 def agent_env(tmp_path, monkeypatch):
-    """准备隔离的 conversations.json / providers.json 与项目目录。"""
+    """准备隔离的 SQLite store 与 providers.json + 项目目录。"""
     project_path = tmp_path / 'project'
     project_path.mkdir()
     (project_path / 'hello.txt').write_text('Hello from ZaoWu!', encoding='utf-8')
 
-    conv_file = tmp_path / 'conversations.json'
     provider_file = tmp_path / 'providers.json'
-
-    monkeypatch.setattr(agent_module, 'CONVERSATIONS_FILE', str(conv_file))
     monkeypatch.setattr(agent_module, 'PROVIDERS_FILE', str(provider_file))
 
     provider_file.write_text(json.dumps({
@@ -38,37 +37,48 @@ def agent_env(tmp_path, monkeypatch):
         }]
     }, ensure_ascii=False), encoding='utf-8')
 
-    conv_file.write_text(json.dumps({
-        'conversations': [{
+    # Create SQLite store with initial conversation
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    store = ConversationStore(str(tmp_path / 'test.db'))
+
+    async def _init():
+        await store.ensure_tables()
+        await store.create({
             'id': 'conv-1',
             'title': 'Test',
             'providerId': 'test-provider',
             'modelId': 'test-model',
             'agentConfig': {'enabled': True, 'maxIterations': 5},
-            'messages': [{
-                'id': 'msg-1',
-                'role': 'user',
-                'content': 'Read hello.txt',
-                'timestamp': 1,
-            }],
-        }]
-    }, ensure_ascii=False), encoding='utf-8')
+            'createdAt': '2024-01-01T00:00:00+00:00',
+            'updatedAt': '2024-01-01T00:00:00+00:00',
+        })
+        await store.append_message('conv-1', {
+            'id': 'msg-1', 'role': 'user',
+            'content': 'Read hello.txt', 'timestamp': 1,
+        })
 
-    return project_path
+    loop.run_until_complete(_init())
+    loop.close()
+
+    monkeypatch.setattr(server_quart, 'get_conversation_store', lambda: store)
+
+    return project_path, store
 
 
-def test_agent_end_to_end_read_file(agent_env, tmp_path):
+def test_agent_end_to_end_read_file(agent_env):
+    project_path, store = agent_env
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     service = AgentService(
         ToolRegistry.get_instance(),
-        project_path=str(agent_env),
-        limit_path=str(agent_env),
+        project_path=str(project_path),
+        limit_path=str(project_path),
         stop_event=asyncio.Event(),
     )
 
-    file_path = str(agent_env / 'hello.txt')
+    file_path = str(project_path / 'hello.txt')
 
     async def mock_stream_llm(provider, messages, tools, **kwargs):
         yield {'type': 'delta', 'delta': 'I will read the file for you.\n'}
@@ -110,11 +120,15 @@ def test_agent_end_to_end_read_file(agent_env, tmp_path):
     assert done_event['done'] is True
 
     # 验证持久化
-    conv_file = tmp_path / 'conversations.json'
-    data = json.loads(conv_file.read_text(encoding='utf-8'))
-    conv = data['conversations'][0]
-    roles = [m['role'] for m in conv['messages']]
+    async def _check():
+        conv = await store.get('conv-1')
+        return conv
+    loop2 = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop2)
+    conv = loop2.run_until_complete(_check())
+    loop2.close()
 
+    roles = [m['role'] for m in conv['messages']]
     assert 'assistant' in roles
     assert 'tool' in roles
 
@@ -127,17 +141,18 @@ def test_agent_end_to_end_read_file(agent_env, tmp_path):
 
 
 def test_agent_loop_detection_triggers_and_persists(agent_env):
+    project_path, _store = agent_env
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     service = AgentService(
         ToolRegistry.get_instance(),
-        project_path=str(agent_env),
-        limit_path=str(agent_env),
+        project_path=str(project_path),
+        limit_path=str(project_path),
         stop_event=asyncio.Event(),
     )
 
-    file_path = str(agent_env / 'hello.txt')
+    file_path = str(project_path / 'hello.txt')
 
     async def mock_stream_llm(provider, messages, tools, **kwargs):
         # LLM 始终返回同样的工具调用，触发循环检测
@@ -174,18 +189,19 @@ def test_agent_loop_detection_triggers_and_persists(agent_env):
 
 
 def test_agent_write_file_requires_confirmation_and_executes_when_approved(agent_env, tmp_path, monkeypatch):
+    project_path, _store = agent_env
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     service = AgentService(
         ToolRegistry.get_instance(),
-        project_path=str(agent_env),
-        limit_path=str(agent_env),
+        project_path=str(project_path),
+        limit_path=str(project_path),
         stop_event=asyncio.Event(),
     )
     monkeypatch.setattr(service, 'CONFIRMATION_TIMEOUT', 2)
 
-    file_path = str(agent_env / 'new.txt')
+    file_path = str(project_path / 'new.txt')
 
     async def mock_stream_llm(provider, messages, tools, **kwargs):
         yield {'type': 'delta', 'delta': 'I will create the file.\n'}
@@ -223,22 +239,23 @@ def test_agent_write_file_requires_confirmation_and_executes_when_approved(agent
     assert done['type'] == 'done'
 
     # 验证文件已写入
-    assert (agent_env / 'new.txt').read_text(encoding='utf-8') == 'approved content'
+    assert (project_path / 'new.txt').read_text(encoding='utf-8') == 'approved content'
 
 
 def test_agent_write_file_rejected_does_not_execute(agent_env, tmp_path, monkeypatch):
+    project_path, _store = agent_env
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
     service = AgentService(
         ToolRegistry.get_instance(),
-        project_path=str(agent_env),
-        limit_path=str(agent_env),
+        project_path=str(project_path),
+        limit_path=str(project_path),
         stop_event=asyncio.Event(),
     )
     monkeypatch.setattr(service, 'CONFIRMATION_TIMEOUT', 2)
 
-    file_path = str(agent_env / 'rejected.txt')
+    file_path = str(project_path / 'rejected.txt')
 
     async def mock_stream_llm(provider, messages, tools, **kwargs):
         yield {
@@ -275,4 +292,4 @@ def test_agent_write_file_rejected_does_not_execute(agent_env, tmp_path, monkeyp
     assert '拒绝' in tool_end['toolResult']['error']
 
     # 验证文件未写入
-    assert not (agent_env / 'rejected.txt').exists()
+    assert not (project_path / 'rejected.txt').exists()

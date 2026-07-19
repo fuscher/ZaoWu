@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
+import { apiPath } from '@/utils/api'
 
 export const useEditorStore = defineStore('editor', () => {
   const openFilePath = ref<string | null>(null)
@@ -21,7 +22,7 @@ export const useEditorStore = defineStore('editor', () => {
     error.value = ''
 
     try {
-      const res = await fetch(`/api/explorer/read-file?path=${encodeURIComponent(path)}`)
+      const res = await fetch(apiPath(`/explorer/read-file?path=${encodeURIComponent(path)}`))
       const data = await res.json()
       if (data.ok) {
         fileContent.value = data.content
@@ -46,7 +47,7 @@ export const useEditorStore = defineStore('editor', () => {
     if (!openFilePath.value || !isDirty.value) return
 
     try {
-      const res = await fetch('/api/explorer/save-file', {
+      const res = await fetch(apiPath('/explorer/save-file'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: openFilePath.value, content: fileContent.value }),
@@ -72,7 +73,7 @@ export const useEditorStore = defineStore('editor', () => {
     isLoading.value = true
     error.value = ''
     try {
-      const res = await fetch(`/api/explorer/read-file?path=${encodeURIComponent(openFilePath.value)}`)
+      const res = await fetch(apiPath(`/explorer/read-file?path=${encodeURIComponent(openFilePath.value)}`))
       const data = await res.json()
       if (data.ok) {
         fileContent.value = data.content

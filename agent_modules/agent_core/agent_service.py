@@ -2,7 +2,7 @@
 
 核心特性：
 - 死循环检测：同一工具 + 相同参数连续 3 次调用 → 自动中断
-- 逐轮持久化：每轮迭代结束后实时写入 conversations.json，确保崩溃可恢复
+- 逐轮持久化：每轮迭代结束后实时写入 SQLite，确保崩溃可恢复
 - 串行执行 + 错误不终止
 """
 import os
@@ -22,7 +22,6 @@ from agent_modules.agent_core.sandbox import SkillSandbox
 logger = logging.getLogger('agent_modules.agent_core.agent_service')
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CONVERSATIONS_FILE = os.path.join(BASE_DIR, 'conversations.json')
 PROVIDERS_FILE = os.path.join(BASE_DIR, 'providers.json')
 
 # 默认系统提示词
@@ -93,7 +92,7 @@ class AgentService:
     async def process_message(self, conv_id: str, content: str) -> AsyncGenerator[str, None]:
         """处理消息，执行智能体循环，yield SSE 事件字符串"""
         try:
-            conv = self._get_conversation(conv_id)
+            conv = await self._get_conversation(conv_id)
             if not conv:
                 yield self._error_event('conversation not found')
                 return
@@ -185,21 +184,21 @@ class AgentService:
                                 yield self._tool_call_end_event(
                                     assistant_msg_id, tc['requestId'], result
                                 )
-                                self._inject_tool_result(
+                                await self._inject_tool_result(
                                     messages, conv_id, tc, result
                                 )
                                 continue
 
                         result = await sandbox.execute(tc['name'], tc['arguments'])
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
-                        self._inject_tool_result(messages, conv_id, tc, result)
+                        await self._inject_tool_result(messages, conv_id, tc, result)
                 else:
                     # 无工具调用，退出循环
                     break
 
             # Step 3: 发送完成事件，持久化最终消息
             yield self._done_event(assistant_msg_id, full_text or '(tool execution completed)')
-            self._append_message(conv_id, {
+            await self._append_message(conv_id, {
                 'id': assistant_msg_id,
                 'role': 'assistant',
                 'content': full_text or '(tool execution completed)',
@@ -212,8 +211,8 @@ class AgentService:
 
     # ── 工具结果注入与持久化 ─────────────────────────────────
 
-    def _inject_tool_result(self, messages: list, conv_id: str,
-                            tc: dict, result: dict) -> None:
+    async def _inject_tool_result(self, messages: list, conv_id: str,
+                                   tc: dict, result: dict) -> None:
         """将 assistant tool_calls 与 tool 结果消息注入历史并持久化"""
         assistant_msg = {
             'role': 'assistant',
@@ -235,8 +234,8 @@ class AgentService:
         }
         messages.append(assistant_msg)
         messages.append(tool_msg)
-        self._append_message(conv_id, assistant_msg)
-        self._append_message(conv_id, tool_msg)
+        await self._append_message(conv_id, assistant_msg)
+        await self._append_message(conv_id, tool_msg)
 
     # ── 用户确认 ──────────────────────────────────────────────
 
@@ -283,12 +282,12 @@ class AgentService:
 
     # ── 消息构建 ──────────────────────────────────────────────
 
-    def _get_conversation(self, conv_id: str) -> Optional[dict]:
+    async def _get_conversation(self, conv_id: str) -> Optional[dict]:
+        from server_quart import get_conversation_store
         try:
-            with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return next((c for c in data.get('conversations', []) if c['id'] == conv_id), None)
+            return await get_conversation_store().get(conv_id)
         except Exception:
+            logger.exception('failed to read conversation %s', conv_id)
             return None
 
     def _get_provider(self, conv: dict) -> Optional[dict]:
@@ -426,32 +425,17 @@ class AgentService:
 
     # ── 逐轮持久化 ────────────────────────────────────────────
 
-    def _append_message(self, conv_id: str, msg: dict) -> None:
-        """追加单条消息到对话文件（实时写入）
-
-        复用 chat.py 的 _chat_lock 确保线程安全，在锁内直接内联原子写入
-        （tmp + os.replace），避免双重加锁死锁。
-        """
+    async def _append_message(self, conv_id: str, msg: dict) -> None:
+        """逐轮持久化：单行 INSERT 到 SQLite，不再全量读写 JSON。"""
         try:
-            from routes.chat import _chat_lock
+            from services.data_lock import conversation_lock as _chat_lock
+            from server_quart import get_conversation_store
             with _chat_lock:
-                if not os.path.exists(CONVERSATIONS_FILE):
-                    return
-                with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                conv = next((c for c in data.get('conversations', []) if c['id'] == conv_id), None)
-                if conv:
-                    if 'timestamp' not in msg:
-                        msg['timestamp'] = _now_ts()
-                    if 'messages' not in conv:
-                        conv['messages'] = []
-                    conv['messages'].append(msg)
-                    conv['updatedAt'] = datetime.now(timezone.utc).isoformat()
-                    # 原子写入（内联，不调用 _write_json 避免双重加锁）
-                    tmp = CONVERSATIONS_FILE + '.tmp'
-                    with open(tmp, 'w', encoding='utf-8') as f:
-                        json.dump(data, f, ensure_ascii=False, indent=2)
-                    os.replace(tmp, CONVERSATIONS_FILE)
+                if 'timestamp' not in msg:
+                    msg['timestamp'] = _now_ts()
+                if 'updatedAt' not in msg:
+                    msg['updatedAt'] = datetime.now(timezone.utc).isoformat()
+                await get_conversation_store().append_message(conv_id, msg)
         except Exception:
             logger.exception('failed to append message to conversation %s', conv_id)
 

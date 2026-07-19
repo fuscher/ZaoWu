@@ -11,12 +11,17 @@ chat_bp = Blueprint('chat', __name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROVIDERS_FILE = os.path.join(BASE_DIR, 'providers.json')
-CONVERSATIONS_FILE = os.path.join(BASE_DIR, 'conversations.json')
 CONFIG_FILE = os.path.join(BASE_DIR, 'chat_config.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'chat_presets.json')
 
-_chat_lock = threading.Lock()
+from services.data_lock import conversation_lock as _chat_lock
 _stop_events = {}
+
+
+def _get_store():
+    """延迟导入 ConversationStore（避免循环依赖）。"""
+    from server_quart import get_conversation_store
+    return get_conversation_store()
 
 
 def _read_json(filepath, default):
@@ -40,8 +45,6 @@ def _write_json(filepath, data):
 def _init_data_files():
     if not os.path.exists(PROVIDERS_FILE):
         _write_json(PROVIDERS_FILE, {'providers': []})
-    if not os.path.exists(CONVERSATIONS_FILE):
-        _write_json(CONVERSATIONS_FILE, {'conversations': []})
     if not os.path.exists(CONFIG_FILE):
         _write_json(CONFIG_FILE, {
             'defaultProviderId': '',
@@ -114,20 +117,10 @@ def get_models(provider_id):
 # ── Conversations ──────────────────────────────────────────
 
 @chat_bp.route('/conversations', methods=['GET'])
-def list_conversations():
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    convs = data.get('conversations', [])
-    convs.sort(key=lambda c: c.get('updatedAt', ''), reverse=True)
-    summary = [{
-        'id': c['id'],
-        'title': c.get('title', ''),
-        'providerId': c.get('providerId', ''),
-        'modelId': c.get('modelId', ''),
-        'createdAt': c.get('createdAt', ''),
-        'updatedAt': c.get('updatedAt', ''),
-        'messageCount': len(c.get('messages', [])),
-    } for c in convs]
-    return jsonify({'ok': True, 'conversations': summary})
+async def list_conversations():
+    store = _get_store()
+    convs = await store.list_all()
+    return jsonify({'ok': True, 'conversations': convs})
 
 
 @chat_bp.route('/conversations', methods=['POST'])
@@ -156,17 +149,13 @@ async def create_conversation():
         }),
     }
 
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    data['conversations'].append(conv)
-    _write_json(CONVERSATIONS_FILE, data)
-
+    await _get_store().create(conv)
     return jsonify({'ok': True, 'conversation': conv})
 
 
 @chat_bp.route('/conversations/<conv_id>', methods=['GET'])
-def get_conversation(conv_id):
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+async def get_conversation(conv_id):
+    conv = await _get_store().get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
     return jsonify({'ok': True, 'conversation': conv})
@@ -178,8 +167,8 @@ async def update_conversation(conv_id):
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
 
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+    store = _get_store()
+    conv = await store.get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
@@ -191,7 +180,6 @@ async def update_conversation(conv_id):
     if 'agentConfig' in body:
         agent_config = body['agentConfig'] or {}
         selected_skill = agent_config.get('selectedSkill')
-        # Treat an empty string as "no skill selected".
         if selected_skill == '':
             agent_config['selectedSkill'] = None
             selected_skill = None
@@ -206,29 +194,31 @@ async def update_conversation(conv_id):
         conv['agentConfig'] = agent_config
 
     conv['updatedAt'] = datetime.now(timezone.utc).isoformat()
-
-    _write_json(CONVERSATIONS_FILE, data)
+    await store.update(conv_id, conv)
     return jsonify({'ok': True, 'conversation': conv})
 
 
 @chat_bp.route('/conversations/<conv_id>', methods=['DELETE'])
-def delete_conversation(conv_id):
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    data['conversations'] = [c for c in data['conversations'] if c['id'] != conv_id]
-    _write_json(CONVERSATIONS_FILE, data)
+async def delete_conversation(conv_id):
+    store = _get_store()
+    if not await store.exists(conv_id):
+        return jsonify({'ok': False, 'error': 'conversation not found'}), 404
+    await store.delete(conv_id)
     return jsonify({'ok': True})
 
 
 @chat_bp.route('/conversations/<conv_id>/clear', methods=['POST'])
-def clear_conversation(conv_id):
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+async def clear_conversation(conv_id):
+    store = _get_store()
+    conv = await store.get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
+    await store.clear_messages(conv_id)
+    now = datetime.now(timezone.utc).isoformat()
+    await store.update(conv_id, {'updatedAt': now})
     conv['messages'] = []
-    conv['updatedAt'] = datetime.now(timezone.utc).isoformat()
-    _write_json(CONVERSATIONS_FILE, data)
+    conv['updatedAt'] = now
     return jsonify({'ok': True, 'conversation': conv})
 
 
@@ -240,8 +230,8 @@ async def send_message(conv_id):
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400
 
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+    store = _get_store()
+    conv = await store.get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
@@ -256,14 +246,17 @@ async def send_message(conv_id):
         'role': 'user',
         'content': body['content'],
         'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+        'updatedAt': now,
     }
     conv['messages'].append(user_msg)
 
-    if not conv['messages'] or len(conv['messages']) == 1:
-        conv['title'] = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
+    if not conv.get('messages') or sum(1 for m in conv['messages'] if m['role'] == 'user') == 1:
+        title = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
+        await store.update(conv_id, {'title': title, 'updatedAt': now})
+        conv['title'] = title
 
     conv['updatedAt'] = now
-    _write_json(CONVERSATIONS_FILE, data)
+    await store.append_message(conv_id, user_msg)
 
     assistant_msg_id = str(uuid.uuid4())
     stop_event = threading.Event()
@@ -378,21 +371,32 @@ async def send_message(conv_id):
             _save_assistant_message(conv_id, assistant_msg_id, full_content)
 
     def _save_assistant_message(cid, msg_id, content):
+        """保存助手消息。在同步生成器线程中运行，自适应桥接 async store。
+
+        优先使用 run_coroutine_threadsafe 在主循环上调度（Hypercorn 场景）；
+        如果没有运行中的事件循环则回退到 asyncio.run()（独立线程场景）。
+        """
+        import logging as _logging
+        _log = _logging.getLogger('zaowu.routes.chat')
         try:
-            d = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-            c = next((cv for cv in d['conversations'] if cv['id'] == cid), None)
-            if c:
-                c['messages'].append({
-                    'id': msg_id,
-                    'role': 'assistant',
-                    'content': content,
-                    'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
-                    'model': conv.get('modelId', ''),
-                })
-                c['updatedAt'] = datetime.now(timezone.utc).isoformat()
-                _write_json(CONVERSATIONS_FILE, d)
+            import asyncio as _asyncio
+            coro = _get_store().append_message(cid, {
+                'id': msg_id,
+                'role': 'assistant',
+                'content': content,
+                'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+                'model': conv.get('modelId', ''),
+                'updatedAt': datetime.now(timezone.utc).isoformat(),
+            })
+            try:
+                loop = _asyncio.get_running_loop()
+            except RuntimeError:
+                _asyncio.run(coro)
+            else:
+                future = _asyncio.run_coroutine_threadsafe(coro, loop)
+                future.result(timeout=10)
         except Exception:
-            pass
+            _log.exception('failed to persist assistant message for conversation %s', cid)
 
     return Response(
         generate(),
@@ -502,8 +506,8 @@ async def send_agent_message(conv_id):
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400
 
-    data = _read_json(CONVERSATIONS_FILE, {'conversations': []})
-    conv = next((c for c in data['conversations'] if c['id'] == conv_id), None)
+    store = _get_store()
+    conv = await store.get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
@@ -523,10 +527,12 @@ async def send_agent_message(conv_id):
     conv['messages'].append(user_msg)
 
     if len(conv['messages']) <= 2:
-        conv['title'] = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
+        title = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
+        await store.update(conv_id, {'title': title, 'updatedAt': now})
+        conv['title'] = title
 
     conv['updatedAt'] = now
-    _write_json(CONVERSATIONS_FILE, data)
+    await store.append_message(conv_id, user_msg)
 
     # 将"限缩过滤器"与"系统提示词展示路径"解耦
     # limit_path 来自 agentConfig.projectPath（未设置时为 None，触发多项目白名单）

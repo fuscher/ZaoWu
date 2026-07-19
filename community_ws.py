@@ -122,10 +122,11 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
         logger.warning('WebSocket rejected: invalid token')
         return True
 
-    # room_id is derived from the URL path (strip /api/community/ws/ prefix)
+    # room_id is derived from the URL path (strip /api/v1/community/ws/ prefix, v1-compatible)
+    import re
     path = scope.get('path', '')
-    ws_prefix = '/api/community/ws/'
-    room_id = path[len(ws_prefix):] if path.startswith(ws_prefix) else path.lstrip('/')
+    match = re.match(r'^/api(?:/v\d+)?/community/ws/(.+)$', path)
+    room_id = match.group(1) if match else path.lstrip('/')
 
     if session.get('room_id') != room_id:
         logger.warning('WebSocket rejected: token room mismatch')
@@ -187,9 +188,10 @@ def set_custom_message_handler(room: YRoom) -> None:
     deduplicates by roomId, so redundant broadcasts are harmless.
     """
     # Resolve room_id from room name (get_room_name returns full URL path)
+    import re
     room_name = websocket_server.get_room_name(room) or ''
-    ws_prefix = '/api/community/ws/'
-    room_id = room_name[len(ws_prefix):] if room_name.startswith(ws_prefix) else room_name.lstrip('/')
+    match = re.match(r'^/api(?:/v\d+)?/community/ws/(.+)$', room_name)
+    room_id = match.group(1) if match else room_name.lstrip('/')
 
     async def _handler(message: bytes) -> bool:
         if not message:
@@ -407,7 +409,7 @@ def build_ws_url(room_host_address: str, token: str) -> str:
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
         host = f'{host}:5000'
-    return f'ws://{host}/api/community/ws/{{room_id}}?token={token}'
+    return f'ws://{host}/api/v1/community/ws/{{room_id}}?token={token}'
 
 
 def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
@@ -433,7 +435,7 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
         host = f'{host}:5000'
-    return f'ws://{host}/api/community/ws/{room_id}?token={token}'
+    return f'ws://{host}/api/v1/community/ws/{room_id}?token={token}'
 
 
 def _resolve_host_address(default_host: str) -> str | None:
@@ -515,9 +517,10 @@ class ZaoWuASGIServer(ASGIServer):
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "websocket":
+            import re
             path = scope.get("path", "")
-            ws_prefix = '/api/community/ws/'
-            room_id = path[len(ws_prefix):] if path.startswith(ws_prefix) else path.lstrip('/')
+            match = re.match(r'^/api(?:/v\d+)?/community/ws/(.+)$', path)
+            room_id = match.group(1) if match else path.lstrip('/')
 
             token = _current_room_id.set(room_id)
             try:
@@ -533,7 +536,7 @@ class ZaoWuASGIServer(ASGIServer):
 def create_asgi_app():
     """Create the ASGI application wrapping pycrdt-websocket.
 
-    This ASGI app is mounted as middleware: requests to /api/community/ws/*
+    This ASGI app is mounted as middleware: requests to /api/v1/community/ws/*
     are handled by pycrdt-websocket; all other requests fall through to Quart.
     """
     _asgi = ZaoWuASGIServer(

@@ -4,6 +4,27 @@ import asyncio
 
 MAX_FILE_SIZE = 1024 * 1024  # 1MB
 
+# ── 已知二进制文件扩展名（文件浏览 / 搜索时自动跳过）─────────────────
+# 此常量是权威来源；新增或删除扩展名只需修改此处。
+
+BINARY_EXTENSIONS: frozenset[str] = frozenset({
+    '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.pdb', '.obj', '.o', '.a', '.lib',
+    '.class', '.pyc', '.pyo', '.jar', '.war', '.ear',
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.psd', '.ai',
+    '.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a',
+    '.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.mpg', '.mpeg',
+    '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.ttf', '.otf', '.woff', '.woff2', '.eot',
+    '.iso', '.img', '.vhd', '.vmdk', '.ova',
+})
+
+
+def is_binary_file(filepath: str) -> bool:
+    """检测文件是否为已知二进制类型（扩展名匹配）。"""
+    _, ext = os.path.splitext(filepath)
+    return ext.lower() in BINARY_EXTENSIONS
+
 
 def read_file_content(path: str) -> dict:
     """读取文件内容（纯函数，不依赖 request）"""
