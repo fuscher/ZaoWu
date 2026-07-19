@@ -1,6 +1,11 @@
 import { createApp } from 'vue'
+import * as Vue from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
+
+// 暴露 Vue 实例到全局，供运行时安装的插件 bundle 使用
+// 插件 bundle 通过 window.__zaoWu_vue 获取 Vue，避免重复打包
+;(window as any).__zaoWu_vue = Vue
 
 const app = createApp(App)
 

@@ -14,7 +14,7 @@ import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
 import GitBranchDialog from './GitBranchDialog.vue'
 import GitMissingDialog from './GitMissingDialog.vue'
 import GitNoRepoDialog from './GitNoRepoDialog.vue'
-import { RefreshCw, PackageOpen, Power, Trash2 } from '@lucide/vue'
+import { RefreshCw, PackageOpen, Power, Trash2, Upload } from '@lucide/vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { ViewType, Project } from '@/types'
 import type { PluginInfo } from '@/stores/plugins'
@@ -53,6 +53,36 @@ function handleUninstallConfirm() {
 
 function handleUninstallCancel() {
   uninstallTarget.value = null
+}
+
+// ── 插件安装 ──
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const installing = ref(false)
+const installError = ref<string | null>(null)
+
+function openInstallDialog() {
+  installError.value = null
+  fileInputRef.value?.click()
+}
+
+async function handleInstall(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+
+  installing.value = true
+  installError.value = null
+  try {
+    const result = await pluginsStore.installPlugin(file)
+    if (!result.ok) {
+      installError.value = result.error ?? t('plugins.installFailed')
+    }
+  } catch (e: any) {
+    installError.value = e.message ?? t('plugins.installFailed')
+  } finally {
+    installing.value = false
+    input.value = '' // 重置 input 以允许重新选择同一文件
+  }
 }
 
 function handleBannerClick(section: string) {
@@ -234,10 +264,24 @@ watch(
         <div class="plugin-management">
           <div class="plugin-section-header">
             <span>{{ t('plugins.installed') }}</span>
-            <button @click="pluginsStore.fetchPlugins()" class="icon-btn-sm" :title="t('plugins.refresh')">
-              <RefreshCw :size="14" />
-            </button>
+            <div class="plugin-header-actions">
+              <button @click="openInstallDialog" class="icon-btn-sm" :title="t('plugins.install')" :disabled="installing">
+                <Upload :size="14" />
+              </button>
+              <button @click="pluginsStore.fetchPlugins()" class="icon-btn-sm" :title="t('plugins.refresh')">
+                <RefreshCw :size="14" />
+              </button>
+            </div>
           </div>
+          <input
+            ref="fileInputRef"
+            type="file"
+            accept=".zip"
+            hidden
+            @change="handleInstall"
+          />
+          <div v-if="installing" class="plugin-loading">{{ t('plugins.installing') }}</div>
+          <div v-if="installError" class="plugin-error">{{ installError }}</div>
 
           <!-- 加载中 -->
           <div v-if="pluginsStore.loading" class="plugin-loading">{{ t('plugins.loading') }}</div>
@@ -538,6 +582,12 @@ watch(
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.6px;
+}
+
+.plugin-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .icon-btn-sm {

@@ -230,6 +230,10 @@
   "plugins": {
     "installed": "已安装",
     "refresh": "刷新",
+    "install": "安装插件",
+    "installing": "正在安装...",
+    "installSuccess": "插件安装成功",
+    "installFailed": "插件安装失败",
     "loading": "加载插件中...",
     "noPlugins": "未安装插件",
     "noSettings": "无插件设置",

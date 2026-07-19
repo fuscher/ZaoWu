@@ -164,6 +164,19 @@ export const usePluginsStore = defineStore('plugins', () => {
     return data
   }
 
+  /** 从 zip 文件安装插件 */
+  async function installPlugin(file: File) {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch('/api/plugins/install', { method: 'POST', body: form })
+    const data = await res.json()
+    if (data.ok) {
+      await fetchPlugins()
+      await fetchExtensions()
+    }
+    return data
+  }
+
   /** 更新插件配置 */
   async function updateConfig(name: string, config: Record<string, any>) {
     const res = await fetch(`/api/plugins/${name}/config`, {
@@ -198,6 +211,7 @@ export const usePluginsStore = defineStore('plugins', () => {
     disablePlugin,
     reloadPlugin,
     uninstallPlugin,
+    installPlugin,
     updateConfig,
   }
 })

@@ -40,6 +40,9 @@ node_modules/
 *.sln
 *.sw?
 
+# Claude Code
+.claude/
+
 # OS
 Thumbs.db
 Desktop.ini

@@ -300,6 +300,44 @@ class PluginManager:
 
         logger.info('plugin %s reloaded', name)
 
+    async def install_from_path(self, plugin_path: str) -> PluginRecord:
+        """Discover, load, and enable a newly installed plugin.
+
+        Called by the install API endpoint after a plugin's files have
+        been copied into the plugins directory.  Unlike :meth:`load_all`,
+        this loads exactly one plugin without re-scanning the entire
+        directory (which would hit the double-init guard).
+
+        Returns the :class:`PluginRecord` for the new plugin.
+        Raises :class:`PluginLoadError` on failure.
+        """
+        from .loader import _discover_one
+
+        name = os.path.basename(plugin_path)
+        d = _discover_one(name, plugin_path)
+        if not d.ok:
+            self._broken[name] = BrokenPlugin(
+                name=name, path=plugin_path, error=d.error or 'install failed',
+            )
+            raise PluginLoadError(f'install of {name!r} failed: {d.error}')
+
+        manifest = d.manifest
+        assert manifest is not None
+
+        # Merge default config (no saved state yet for a fresh install)
+        ctx = PluginContext(name=name, config=dict(manifest.config))
+        plugin_api.register_context(ctx)
+
+        record = PluginRecord(discovered=d, ctx=ctx, enabled=False)
+        self._records[name] = record
+        self._broken.pop(name, None)
+
+        await self._invoke(record, 'zaowu_plugin_loaded')
+        await self.enable(name, persist=True)
+
+        logger.info('plugin %s installed and enabled', name)
+        return record
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #

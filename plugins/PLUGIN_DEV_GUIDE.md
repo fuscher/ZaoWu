@@ -93,9 +93,14 @@ plugins/
     ├── manifest.json          # 必须 — 插件清单
     ├── __init__.py            # 必须 — 后端入口（钩子函数写在这里）
     └── frontend/              # 可选 — 前端 Vue 组件
-        ├── Panel.vue          # 侧栏面板组件
-        ├── Settings.vue       # 设置页面组件
-        └── StatusWidget.vue   # 状态栏小部件组件
+        ├── Panel.vue          # 侧栏面板组件（源码）
+        ├── Settings.vue       # 设置页面组件（源码）
+        ├── StatusWidget.vue   # 状态栏小部件组件（源码）
+        └── dist/              # 构建产物（运行时安装时必需）
+            ├── _manifest.json # 组件名 → bundle 路径映射
+            ├── Panel.js       # 编译后的自包含 JS bundle
+            ├── Settings.js
+            └── StatusWidget.js
 ```
 
 **规则：**
@@ -103,6 +108,7 @@ plugins/
 - `manifest.json` 和 `__init__.py` 是必须的，缺一不可。
 - `frontend/` 目录及其 `.vue` 文件均为可选，按需创建。
 - 前端组件的文件名必须与钩子函数中 `component` 字段的值对应（不含 `.vue` 后缀）。
+- `frontend/dist/` 是构建产物，通过 `scripts/build-plugin-frontend.js` 生成。**运行时安装的插件必须包含此目录**，构建时已有的插件可直接使用 `.vue` 源码。
 
 ---
 
@@ -122,6 +128,7 @@ plugins/
 | `enabled` | bool | — | 默认是否启用，默认 `true` |
 | `config` | object | — | 默认配置值，用户修改后保存在 `plugins/.plugin_state.json` |
 | `frontend` | object | — | 前端扩展声明（目前为预留字段，组件通过钩子函数注册） |
+| `frontendBundles` | object | — | 前端组件名 → JS bundle 路径映射，运行时安装的插件需声明此字段 |
 
 ### 示例
 
@@ -143,6 +150,10 @@ plugins/
   },
   "frontend": {
     "panels": []
+  },
+  "frontendBundles": {
+    "Panel": "frontend/dist/Panel.js",
+    "StatusWidget": "frontend/dist/StatusWidget.js"
   }
 }
 ```
@@ -347,7 +358,28 @@ def zaowu_resolve_host_address(default_host: str):
 
 ## 5. 前端组件扩展
 
-插件可以通过 `frontend/` 目录提供 Vue 3 单文件组件（SFC）。宿主在构建时通过 `import.meta.glob` 自动发现这些组件，无需手动注册。
+插件可以通过 `frontend/` 目录提供 Vue 3 单文件组件（SFC）。宿主采用**双轨加载机制**：
+
+1. **构建时加载**：宿主构建时通过 `import.meta.glob` 自动发现 `plugins/*/frontend/*.vue`，打包进主应用。适用于随应用分发的内置插件。
+2. **运行时加载**：构建后安装的插件通过 `frontend/dist/` 中的预编译 JS bundle 加载。宿主从后端获取 `_manifest.json` 发现组件，通过 `import()` 动态加载。
+
+### 5.0 前端组件构建（运行时安装必需）
+
+运行时安装的插件（构建后通过 zip 或粘贴安装）需要将 `.vue` SFC 预编译为 JS bundle。
+
+```bash
+# 在项目根目录运行
+node scripts/build-plugin-frontend.js ./plugins/my_plugin
+```
+
+这会将 `frontend/*.vue` 编译为 `frontend/dist/*.js`（自包含 bundle）并生成 `frontend/dist/_manifest.json`。
+
+生成的 bundle 从宿主的 `window.__zaoWu_vue` 获取 Vue 实例，无需在插件中打包 Vue。
+
+**限制：**
+- 仅支持单文件组件（不自动跟踪子组件依赖链）
+- `<script setup>` 中的 TypeScript 类型注解会被自动剥离
+- 子组件 import 会被转为动态 import（需确保路径可访问）
 
 ### 5.1 组件发现机制
 
@@ -1081,12 +1113,17 @@ async def zaowu_app_startup():
 1. **返回 Blueprint 列表**（推荐）— 宿主自动调用 `register_blueprint`
 2. **在钩子内手动调用 `plugin_api.register_blueprint()`** — 适用于需要动态前缀的场景
 
-### 12.9 前端组件的构建时发现
+### 12.9 前端组件的双轨加载
 
-前端组件通过 Vite 的 `import.meta.glob` 在构建时扫描。这意味着：
+前端组件采用双轨加载机制：
 
-- **新增插件后需要重新构建前端**才能被发现。
-- 组件路径必须匹配 `plugins/*/frontend/*.vue` 模式。
+- **构建时存在的插件**：通过 Vite 的 `import.meta.glob` 自动发现 `.vue` 源码，打包进主应用。
+- **运行时安装的插件**：通过后端 API 获取 `_manifest.json`，动态 `import()` 加载 `frontend/dist/` 中的预编译 JS bundle。
+
+这意味着：
+- 构建时已有的插件可以直接使用 `.vue` 源码，无需额外构建步骤。
+- 构建后安装的插件**必须包含 `frontend/dist/` 目录**（通过 `scripts/build-plugin-frontend.js` 生成）。
+- 组件路径必须匹配 `plugins/*/frontend/*.vue`（构建时）或 `plugins/*/frontend/dist/*.js`（运行时）。
 - 组件以异步组件方式加载（`defineAsyncComponent`），不会阻塞首屏。
 
 ### 12.10 配置持久化
@@ -1108,6 +1145,36 @@ async def zaowu_app_startup():
 ```
 
 手动编辑此文件后重启服务即可生效。
+
+### 12.11 插件安装方式
+
+插件支持以下两种安装方式：
+
+**方式一：手动粘贴（开发阶段 / 目录模式构建）**
+
+将插件目录直接复制到 `plugins/` 文件夹中，然后：
+- 重启应用，或
+- 调用 `POST /api/plugins/discover` 重新扫描
+
+> ⚠️ **PyInstaller 单文件模式**下，`plugins/` 位于系统临时目录，重启后手动粘贴的插件会丢失。请使用 zip 安装 API 或使用目录模式构建。
+
+**方式二：zip 安装 API（推荐，适用于所有构建模式）**
+
+```bash
+# 将插件目录打包为 zip
+cd plugins/my_plugin && zip -r ../../my_plugin.zip . && cd ../..
+
+# 通过 API 安装
+curl -X POST http://localhost:5000/api/plugins/install \
+  -F "file=@my_plugin.zip"
+```
+
+前端 UI 也提供了一键安装按钮（插件管理面板顶部的上传图标），支持选择 `.zip` 文件安装。
+
+**打包要求：**
+- zip 内可直接包含插件文件，也可嵌套一层目录
+- 必须包含 `manifest.json` 和 `__init__.py`
+- 前端组件需要预编译：先运行 `node scripts/build-plugin-frontend.js ./plugins/my_plugin`，再打包
 
 ---
 

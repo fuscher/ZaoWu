@@ -45,6 +45,7 @@ class Manifest:
     enabled: bool = True
     config: Dict[str, Any] = field(default_factory=dict)
     frontend: Dict[str, Any] = field(default_factory=dict)
+    frontend_bundles: Dict[str, str] = field(default_factory=dict)
     # Path to the source manifest.json (set by loader, not by users)
     source_path: Optional[str] = None
 
@@ -92,6 +93,12 @@ class Manifest:
         if not isinstance(frontend, dict):
             raise PluginManifestError('manifest field "frontend" must be an object')
 
+        frontend_bundles = data.get('frontendBundles', {})
+        if frontend_bundles is None:
+            frontend_bundles = {}
+        if not isinstance(frontend_bundles, dict):
+            raise PluginManifestError('manifest field "frontendBundles" must be an object')
+
         return cls(
             name=name,
             version=version,
@@ -101,6 +108,7 @@ class Manifest:
             enabled=bool(data.get('enabled', True)),
             config=config,
             frontend=frontend,
+            frontend_bundles={str(k): str(v) for k, v in frontend_bundles.items()},
             source_path=source_path,
         )
 
@@ -131,6 +139,7 @@ class Manifest:
             'enabled': self.enabled,
             'config': dict(self.config),
             'frontend': dict(self.frontend),
+            'frontendBundles': dict(self.frontend_bundles),
         }
 
     # ------------------------------------------------------------------ #
