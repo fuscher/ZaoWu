@@ -365,7 +365,16 @@ async def get_tree():
     if not data or 'path' not in data:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
+    # 安全校验：null 字节检测
+    if '\x00' in data['path']:
+        return jsonify({'ok': False, 'error': 'path contains null byte'}), 400
+
     path = os.path.realpath(data['path'])
+
+    # 安全校验：路径必须在已注册项目内（防止遍历任意目录）
+    if not is_path_in_projects(path):
+        return jsonify({'ok': False, 'error': 'path not in registered projects'}), 403
+
     depth = data.get('depth', 1)
 
     if not os.path.isdir(path):
@@ -396,7 +405,16 @@ def read_file():
     if not path:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
+    # 安全校验：null 字节检测
+    if '\x00' in path:
+        return jsonify({'ok': False, 'error': 'path contains null byte'}), 400
+
     real = os.path.realpath(path)
+
+    # 安全校验：路径必须在已注册项目内（防止路径遍历读取任意文件）
+    if not is_path_in_projects(real):
+        return jsonify({'ok': False, 'error': 'path not in registered projects'}), 403
+
     if not os.path.isfile(real):
         return jsonify({'ok': False, 'error': 'not a file'}), 400
 
@@ -486,7 +504,16 @@ async def delete_file():
     if not data or 'path' not in data:
         return jsonify({'ok': False, 'error': 'missing path'}), 400
 
+    # 安全校验：null 字节检测
+    if '\x00' in data['path']:
+        return jsonify({'ok': False, 'error': 'path contains null byte'}), 400
+
     real = os.path.realpath(data['path'])
+
+    # 安全校验：路径必须在已注册项目内（防止删除任意文件）
+    if not is_path_in_projects(real):
+        return jsonify({'ok': False, 'error': 'path not in registered projects'}), 403
+
     if not os.path.isfile(real):
         return jsonify({'ok': False, 'error': 'not a file'}), 400
 
@@ -508,8 +535,19 @@ async def rename_file():
     if not data or 'oldPath' not in data or 'newPath' not in data:
         return jsonify({'ok': False, 'error': 'missing oldPath or newPath'}), 400
 
+    # 安全校验：null 字节检测
+    if '\x00' in data['oldPath'] or '\x00' in data['newPath']:
+        return jsonify({'ok': False, 'error': 'path contains null byte'}), 400
+
     old_real = os.path.realpath(data['oldPath'])
     new_real = os.path.realpath(data['newPath'])
+
+    # 安全校验：源路径和目标路径都必须在已注册项目内
+    # （防止将文件移出项目或将外部文件移入项目）
+    if not is_path_in_projects(old_real):
+        return jsonify({'ok': False, 'error': 'source path not in registered projects'}), 403
+    if not is_path_in_projects(new_real):
+        return jsonify({'ok': False, 'error': 'target path not in registered projects'}), 403
 
     if not os.path.exists(old_real):
         return jsonify({'ok': False, 'error': 'source file not found'}), 400

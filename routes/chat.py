@@ -75,7 +75,39 @@ async def save_providers():
     body = await request.get_json(silent=True)
     if not body or 'providers' not in body:
         return jsonify({'ok': False, 'error': 'missing providers'}), 400
-    _write_json(PROVIDERS_FILE, {'providers': body['providers']})
+
+    providers = body['providers']
+    if not isinstance(providers, list):
+        return jsonify({'ok': False, 'error': 'providers must be a list'}), 400
+
+    # 逐条校验 provider 字段，防止恶意 apiBase 注入
+    validated = []
+    for p in providers:
+        if not isinstance(p, dict):
+            return jsonify({'ok': False, 'error': 'each provider must be an object'}), 400
+        # id: 必须是非空字符串
+        pid = p.get('id')
+        if not isinstance(pid, str) or not pid.strip():
+            return jsonify({'ok': False, 'error': 'provider id is required'}), 400
+        # name: 可选，但必须是字符串
+        pname = p.get('name', pid)
+        if not isinstance(pname, str):
+            return jsonify({'ok': False, 'error': 'provider name must be a string'}), 400
+        # apiBase: 必须是合法 HTTPS/HTTP URL
+        api_base = p.get('apiBase', '')
+        if isinstance(api_base, str) and api_base.strip():
+            if not api_base.strip().startswith(('http://', 'https://')):
+                return jsonify({'ok': False, 'error': f'provider {pid}: apiBase must start with http:// or https://'}), 400
+            # 防止内网地址注入（攻击者设置 apiBase 为内部服务，窃取 apiKey）
+            if '\x00' in api_base or '\r' in api_base or '\n' in api_base:
+                return jsonify({'ok': False, 'error': f'provider {pid}: apiBase contains invalid characters'}), 400
+        # apiKey: 类型校验
+        api_key = p.get('apiKey', '')
+        if not isinstance(api_key, str):
+            return jsonify({'ok': False, 'error': f'provider {pid}: apiKey must be a string'}), 400
+        validated.append(p)
+
+    _write_json(PROVIDERS_FILE, {'providers': validated})
     return jsonify({'ok': True})
 
 
@@ -436,9 +468,52 @@ async def save_config():
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
     config = _read_json(CONFIG_FILE, {})
-    for key in ('defaultProviderId', 'defaultModelId', 'temperature', 'maxTokens', 'topP', 'systemPrompt'):
-        if key in body:
-            config[key] = body[key]
+
+    # 逐字段校验参数类型和范围，防止越界值导致 LLM 异常行为
+    if 'defaultProviderId' in body:
+        v = body['defaultProviderId']
+        if not isinstance(v, str):
+            return jsonify({'ok': False, 'error': 'defaultProviderId must be a string'}), 400
+        config['defaultProviderId'] = v
+
+    if 'defaultModelId' in body:
+        v = body['defaultModelId']
+        if not isinstance(v, str):
+            return jsonify({'ok': False, 'error': 'defaultModelId must be a string'}), 400
+        config['defaultModelId'] = v
+
+    if 'temperature' in body:
+        v = body['temperature']
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'temperature must be a number'}), 400
+        if not (0.0 <= v <= 2.0):
+            return jsonify({'ok': False, 'error': 'temperature must be between 0 and 2'}), 400
+        config['temperature'] = float(v)
+
+    if 'maxTokens' in body:
+        v = body['maxTokens']
+        if not isinstance(v, int) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
+        if not (1 <= v <= 128000):
+            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 128000'}), 400
+        config['maxTokens'] = v
+
+    if 'topP' in body:
+        v = body['topP']
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'topP must be a number'}), 400
+        if not (0.0 <= v <= 1.0):
+            return jsonify({'ok': False, 'error': 'topP must be between 0 and 1'}), 400
+        config['topP'] = float(v)
+
+    if 'systemPrompt' in body:
+        v = body['systemPrompt']
+        if not isinstance(v, str):
+            return jsonify({'ok': False, 'error': 'systemPrompt must be a string'}), 400
+        if len(v) > 10000:
+            return jsonify({'ok': False, 'error': 'systemPrompt exceeds max length 10000'}), 400
+        config['systemPrompt'] = v
+
     _write_json(CONFIG_FILE, config)
     return jsonify({'ok': True, 'config': config})
 

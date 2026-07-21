@@ -10,7 +10,7 @@ function detectLanguage(): string {
 export const useSettingsStore = defineStore('settings', () => {
   const defaults: BackgroundSettings = {
     enabled: true,
-    effect: 'linewaves',
+    effect: 'silk',
     persist: false,
     language: detectLanguage(),
     theme: 'dark',

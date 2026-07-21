@@ -102,19 +102,32 @@ def _generate_token() -> str:
 
 
 def _get_local_ip() -> str:
-    """Best-effort local IP detection for LAN collaboration."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """Best-effort local IP detection for LAN collaboration.
+
+    使用国内可达的地址探测本机 IP（114.114.114.114 是国内公共 DNS，
+    在中国大陆网络下稳定可达，替代了原 8.8.8.8 在国内受限的问题）。
+    """
+    # 国内公共 DNS 地址列表（按优先级）
+    _probe_targets = [
+        ('114.114.114.114', 53),   # 国内公共 DNS，最稳定
+        ('223.5.5.5', 53),         # 阿里 DNS
+        ('8.8.8.8', 80),           # Google DNS（国际回退）
+    ]
+    for addr, port in _probe_targets:
         try:
-            s.connect(('8.8.8.8', 80))
-            return s.getsockname()[0]
-        finally:
-            s.close()
-    except Exception:
-        try:
-            return socket.gethostbyname(socket.gethostname())
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((addr, port))
+                return s.getsockname()[0]
+            finally:
+                s.close()
         except Exception:
-            return '127.0.0.1'
+            continue
+    # 所有探测目标均失败 → 回退到 hostname 解析
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except Exception:
+        return '127.0.0.1'
 
 
 def _now_ms() -> int:

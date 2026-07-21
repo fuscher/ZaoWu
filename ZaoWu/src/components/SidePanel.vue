@@ -373,15 +373,6 @@ watch(
             <div class="list-desc">{{ t('settings.aiModelsBannerDesc') }}</div>
           </div>
         </div>
-        <div class="list-item" @click="handleBannerClick('skills')">
-          <div class="list-icon">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.8 4.2H13L9.5 8l1.5 4.5L7 10.5 3 12.5 4.5 8 1 5.5h4.2L7 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-          </div>
-          <div class="list-text">
-            <div class="list-title">{{ t('settings.skillsBannerTitle') }}</div>
-            <div class="list-desc">{{ t('settings.skillsBannerDesc') }}</div>
-          </div>
-        </div>
         <div class="list-item" @click="handleBannerClick('community')">
           <div class="list-icon">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M4 3.5a2 2 0 100 4 2 2 0 000-4zM10 3.5a2 2 0 100 4 2 2 0 000-4zM4 8.5a2 2 0 100 4 2 2 0 000-4z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -398,6 +389,15 @@ watch(
           <div class="list-text">
             <div class="list-title">{{ t('settings.pluginsBannerTitle') }}</div>
             <div class="list-desc">{{ t('settings.pluginsBannerDesc') }}</div>
+          </div>
+        </div>
+        <div class="list-item" @click="handleBannerClick('skills')">
+          <div class="list-icon">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1l1.8 4.2H13L9.5 8l1.5 4.5L7 10.5 3 12.5 4.5 8 1 5.5h4.2L7 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+          </div>
+          <div class="list-text">
+            <div class="list-title">{{ t('settings.skillsBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.skillsBannerDesc') }}</div>
           </div>
         </div>
       </template>

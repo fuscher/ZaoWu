@@ -231,8 +231,14 @@ def _search_code_tool(query: str, project_path: str = None) -> dict:
 
 @tool(name='web_search', tags=['search', 'web', 'read'])
 def _web_search_tool(query: str, max_results: int = 5) -> dict:
-    """使用 DuckDuckGo 搜索公开网页。无需 API key，适合轻量查询。
-    如需搜索 GitHub 社区内容，可在 query 中加入 ``site:github.com``。
+    """搜索公开网页，支持多引擎自动降级。无需 API key。
+
+    搜索引擎降级链（可通过 settings.json 的 searchEngine 配置覆盖）：
+    1. DuckDuckGo（国际通用）
+    2. Bing China（国内稳定）
+    主引擎失败后自动切换备用引擎，支持代理配置（settings.json 的 searchProxy）。
+
+    如需限定站点，可在 query 中加入 ``site:github.com``。
 
     Args:
         query: 搜索关键词

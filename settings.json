@@ -6,6 +6,8 @@
   "theme": "dark",
   "searchMaxFileSizeKB": 1024,
   "searchResultLimit": 500,
+  "searchEngine": "",
+  "searchProxy": "",
   "communityMaxUsers": 5,
   "communityDefaultRole": "collaborator",
   "communityFileSizeLimitKB": 512,
