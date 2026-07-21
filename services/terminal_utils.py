@@ -3,7 +3,7 @@ import os
 import shlex
 import asyncio
 
-from routes.terminal import validate_terminal_path, BLOCKED_PATTERNS, ALLOWED_COMMANDS
+from routes.terminal import validate_terminal_path, BLOCKED_PATTERNS, ALLOWED_COMMANDS, _SHELL_OPERATORS
 
 # 智能体模式扩展白名单——在终端面板白名单基础上增加 AI 编程常用工具
 AGENT_ALLOWED_COMMANDS = set(ALLOWED_COMMANDS) | {
@@ -14,9 +14,6 @@ AGENT_ALLOWED_COMMANDS = set(ALLOWED_COMMANDS) | {
     'docker', 'kubectl',
 }
 
-# Shell 操作符检测——防止管道/链式命令绕过白名单
-_SHELL_OPERATORS = ('|', '&&', '||', ';', '`', '$(')
-
 
 def agent_is_command_safe(command: str) -> tuple:
     """智能体模式命令安全校验（扩展白名单 + 管道检测）
@@ -24,6 +21,7 @@ def agent_is_command_safe(command: str) -> tuple:
     与 routes/terminal.py 的 is_command_safe 的区别：
     1. 使用 AGENT_ALLOWED_COMMANDS（包含 pytest/mypy/ruff 等开发工具）
     2. 检测 shell 操作符（|, &&, ||, ;, `, $()），防止管道命令绕过白名单
+       （_SHELL_OPERATORS 现从 routes/terminal.py 导入，单一来源）
     """
     cmd = command.strip()
     if not cmd:

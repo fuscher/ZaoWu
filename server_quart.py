@@ -180,6 +180,131 @@ async def _shutdown_ws_server():
 
 
 @app.before_serving
+async def _mount_cors_guard():
+    """Origin 白名单中间件 — 防止恶意网页跨域调用本地 API。
+
+    策略：
+    - 无 Origin 头的请求（PyWebView 内部导航、curl、Postman）→ 放行
+    - Origin 在白名单内（127.0.0.1 / localhost 任意端口）→ 放行并添加 CORS 响应头
+    - Origin 不在白名单 → 拒绝写操作（POST/PUT/PATCH/DELETE），返回 403
+
+    这是针对本地桌面应用的安全加固：服务监听 0.0.0.0，若不限制 Origin，
+    用户浏览器访问的恶意网站可通过 JS 调用 http://127.0.0.1:5000 的所有 API
+    （包括 /api/terminal/exec 执行命令），构成远程代码执行风险。
+    """
+    from urllib.parse import urlparse
+
+    # 允许的 Origin host（端口任意，因为服务可能在不同端口启动）
+    _ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '0.0.0.0'}
+    # 允许的 scheme
+    _ALLOWED_SCHEMES = {'http', 'https', 'ws', 'wss'}
+
+    def _is_origin_allowed(origin: str) -> bool:
+        """校验 Origin 是否为本地来源。"""
+        if not origin:
+            return False
+        try:
+            parsed = urlparse(origin)
+            host = parsed.hostname or ''
+            scheme = parsed.scheme or ''
+            return host in _ALLOWED_HOSTS and scheme in _ALLOWED_SCHEMES
+        except Exception:
+            return False
+
+    original_asgi = app.asgi_app
+
+    async def _cors_guard(scope, receive, send):
+        scope_type = scope.get('type', '')
+
+        # 非 HTTP/WS 请求直接放行
+        if scope_type not in ('http', 'websocket'):
+            await original_asgi(scope, receive, send)
+            return
+
+        # 提取 Origin 头（headers 是 list[tuple[bytes, bytes]]）
+        headers = scope.get('headers', [])
+        origin = ''
+        for key, value in headers:
+            if key == b'origin':
+                origin = value.decode('utf-8', errors='replace')
+                break
+
+        if origin:
+            # 有 Origin 头 — 浏览器请求，必须校验
+            if not _is_origin_allowed(origin):
+                if scope_type == 'http':
+                    method = scope.get('method', 'GET')
+                    # 对写操作（可能修改数据/执行命令）严格拒绝
+                    if method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+                        await send({
+                            'type': 'http.response.start',
+                            'status': 403,
+                            'headers': [
+                                (b'content-type', b'application/json'),
+                                (b'access-control-allow-origin', b'null'),
+                            ],
+                        })
+                        await send({
+                            'type': 'http.response.body',
+                            'body': b'{"ok":false,"error":"origin not allowed"}',
+                        })
+                        return
+                # 对 GET 请求也拒绝（防止读取敏感数据）
+                if scope_type == 'websocket':
+                    # WebSocket 拒绝连接
+                    await send({'type': 'websocket.close', 'code': 4003})
+                    return
+                await send({
+                    'type': 'http.response.start',
+                    'status': 403,
+                    'headers': [
+                        (b'content-type', b'application/json'),
+                        (b'access-control-allow-origin', b'null'),
+                    ],
+                })
+                await send({
+                    'type': 'http.response.body',
+                    'body': b'{"ok":false,"error":"origin not allowed"}',
+                })
+                return
+
+            # Origin 合法 — 添加 CORS 响应头
+            # 对 OPTIONS 预检请求直接返回 204
+            if scope_type == 'http' and scope.get('method') == 'OPTIONS':
+                await send({
+                    'type': 'http.response.start',
+                    'status': 204,
+                    'headers': [
+                        (b'access-control-allow-origin', origin.encode('utf-8')),
+                        (b'access-control-allow-methods', b'GET, POST, PUT, PATCH, DELETE, OPTIONS'),
+                        (b'access-control-allow-headers', b'Content-Type, Authorization'),
+                        (b'access-control-max-age', b'86400'),
+                    ],
+                })
+                await send({'type': 'http.response.body', 'body': b''})
+                return
+
+            # 包装 send 以注入 CORS 头到正常响应
+            cors_origin = origin.encode('utf-8')
+
+            async def _send_with_cors(message):
+                if message.get('type') == 'http.response.start':
+                    existing_headers = message.get('headers', [])
+                    existing_headers.append((b'access-control-allow-origin', cors_origin))
+                    existing_headers.append((b'access-control-allow-credentials', b'true'))
+                    message['headers'] = existing_headers
+                await send(message)
+
+            await original_asgi(scope, receive, _send_with_cors)
+            return
+
+        # 无 Origin 头 — 非浏览器请求（PyWebView/curl），直接放行
+        await original_asgi(scope, receive, send)
+
+    app.asgi_app = _cors_guard
+
+
+@app.before_serving
 async def _mount_ws_middleware():
     """Mount the pycrdt-websocket ASGI app as middleware before Quart starts.
 

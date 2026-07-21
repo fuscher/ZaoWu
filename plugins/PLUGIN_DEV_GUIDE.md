@@ -20,6 +20,7 @@
 11. [完整示例：天气插件](#11-完整示例天气插件)
 12. [注意事项与常见问题](#12-注意事项与常见问题)
 13. [插件 API 能力速查表](#13-插件-api-能力速查表)
+14. [安全注意事项](#14-安全注意事项)
 
 ---
 
@@ -316,6 +317,31 @@ def zaowu_register_routes():
 
     return [bp]
 ```
+
+> **⚠️ 安全提示：输入校验**
+>
+> 插件路由**必须**对所有 `request.get_json()` 输入进行校验，不要直接 `data.get('key', '')` 取值后使用。
+> 项目提供 `services/input_validation.py` 工具模块，支持类型检查、长度限制、路径安全校验等：
+>
+> ```python
+> from services.input_validation import require_str, require_path, require_command, validate_json_body
+>
+> @bp.route('/exec', methods=['POST'])
+> async def exec_cmd():
+>     data = await request.get_json(silent=True)
+>     ok, err = validate_json_body(data)          # 校验非空 dict
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     ok, err = require_str(data, 'name', max_len=100)  # 校验字符串字段
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     ok, err = require_path(data, 'path')         # 校验路径字段（防 null 字节注入）
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     # ... 安全使用 data['name'] 和 data['path']
+> ```
+>
+> 详见 [第 14 节：安全注意事项](#14-安全注意事项)。
 
 ### 4.6 WebSocket 消息钩子
 
@@ -756,6 +782,22 @@ def zaowu_handle_ws_message(msg_type, payload):
         }
     return None
 ```
+
+> **🔒 Token 传递安全**
+>
+> 协作房间的 WebSocket 连接需要 token 认证。宿主支持两种 token 传递方式：
+>
+> 1. **`Sec-WebSocket-Protocol` 子协议（推荐）** — token 不进入 URL，不会泄露到访问日志：
+>    ```javascript
+>    // 前端连接时通过子协议传递 token
+>    const ws = new WebSocket(wsUrl, ['auth.' + token])
+>    ```
+> 2. **URL query 参数（向后兼容）** — `?token=xxx`，会记录在访问日志/Referer 中，**已弃用**
+>
+> 服务端 `on_connect` 会优先从 `Sec-WebSocket-Protocol` 读取 token。插件如需自定义
+> WS 认证逻辑，应遵循相同的安全原则：**避免在 URL 中传递敏感凭证**。
+>
+> 详见 [第 14 节：安全注意事项](#14-安全注意事项)。
 
 ---
 
@@ -1208,6 +1250,244 @@ curl -X POST http://localhost:5000/api/plugins/install \
 | 读取插件配置 | `usePluginsStore().fetchPlugins()` | Pinia store |
 | 修改插件配置 | `usePluginsStore().updateConfig(name, config)` | 持久化到服务端 |
 | 使用宿主 CSS 变量 | `var(--text-primary)` 等 | 自动适配明暗主题 |
+
+---
+
+## 14. 安全注意事项
+
+插件运行在宿主进程中，拥有与宿主相同的系统权限。**安全漏洞不仅影响插件本身，还可能危及整个宿主应用和用户系统。** 本节列出插件开发必须遵循的安全准则。
+
+### 14.1 输入校验 — 所有外部输入都不可信
+
+**规则：** 插件路由接收的所有 `request.get_json()` 输入都必须经过类型和内容校验，禁止直接 `data.get('key', '')` 取值后使用。
+
+**使用 `services/input_validation.py` 工具（推荐）：**
+
+```python
+from services.input_validation import (
+    require_str,        # 必填字符串校验
+    get_str,            # 可选字符串校验
+    require_path,       # 路径校验（防 null 字节注入）
+    require_command,    # 命令校验（防 CRLF 注入）
+    require_int,        # 整数校验（含范围限制）
+    validate_json_body, # 请求体校验
+)
+
+@bp.route('/process', methods=['POST'])
+async def process():
+    data = await request.get_json(silent=True)
+
+    # 1. 校验请求体是有效 JSON 对象
+    ok, err = validate_json_body(data)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 2. 校验必填字符串字段（含长度限制）
+    ok, err = require_str(data, 'name', max_len=100)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 3. 校验路径字段（防止 null 字节注入）
+    ok, err = require_path(data, 'target_path')
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 4. 校验可选整数字段（含范围限制）
+    ok, err, count = require_int(data, 'count', min_val=1, max_val=1000)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 安全使用已校验的字段
+    return jsonify({'ok': True, 'name': data['name']})
+```
+
+**校验工具说明：**
+
+| 函数 | 用途 | 安全检查 |
+|------|------|----------|
+| `require_str(data, key, max_len)` | 必填字符串 | 类型检查、非空、长度限制 |
+| `get_str(data, key, default, max_len)` | 可选字符串 | 同上，缺失返回默认值 |
+| `require_path(data, key, max_len=4096)` | 文件路径 | 同上 + null 字节检测 |
+| `require_command(data, key, max_len=2000)` | 命令字符串 | 同上 + CRLF 控制字符检测 |
+| `require_int(data, key, min_val, max_val)` | 整数 | 类型转换 + 范围限制 |
+| `validate_json_body(data)` | 请求体 | 非空 dict 校验 |
+
+> **注意：** 路径遍历（`../`）的防护由宿主的 `is_path_in_projects()` 负责，插件应调用该函数或 `plugin_api.get_projects()` 确保路径在合法项目范围内。
+
+### 14.2 命令执行安全
+
+**规则：** 插件如需执行系统命令，**必须**使用宿主提供的安全校验机制，禁止直接 `subprocess.run(command, shell=True)`。
+
+**安全执行方式（按推荐顺序）：**
+
+```python
+# 方式一：使用 services/terminal_utils.py（推荐，已封装安全校验）
+from services.terminal_utils import agent_is_command_safe, execute_command
+
+def zaowu_register_routes():
+    from quart import Blueprint, jsonify, request
+
+    bp = Blueprint('my_plugin', __name__, url_prefix='/api/plugins/my_plugin')
+
+    @bp.route('/run', methods=['POST'])
+    async def run():
+        data = await request.get_json(silent=True)
+        command = data.get('command', '')
+
+        # 安全校验：白名单 + shell 操作符检测
+        safe, err = agent_is_command_safe(command)
+        if not safe:
+            return jsonify({'ok': False, 'error': err}), 400
+
+        # 安全执行（异步，自动超时）
+        result = await execute_command(command, cwd='/project/path')
+        return jsonify(result)
+
+    return [bp]
+```
+
+**禁止的做法：**
+
+```python
+# ❌ 危险：shell=True + 无校验，可被命令注入攻击
+subprocess.run(user_input, shell=True)
+
+# ❌ 危险：即使有白名单，不检测 shell 操作符也可被绕过
+# 攻击示例：'git status && rm -rf /'
+cmd_parts = user_input.split()
+if cmd_parts[0] in ALLOWED:
+    subprocess.run(user_input, shell=True)  # 仍可被 && | ; 绕过
+```
+
+**`agent_is_command_safe` 提供的防护：**
+1. **黑名单子串检查** — 拦截 `rm -rf`、`format`、`shutdown` 等危险命令
+2. **Shell 操作符检测** — 拒绝 `|`、`&&`、`||`、`;`、反引号、`$()`，防止命令链接
+3. **白名单检查** — 使用 `shlex.split` 正确解析，校验首词
+
+### 14.3 路径安全
+
+**规则：** 所有文件系统操作必须验证路径在合法项目范围内，防止路径遍历攻击。
+
+```python
+import os
+from routes.explorer import is_path_in_projects
+
+def safe_file_read(path: str) -> str:
+    """安全读取文件 — 路径必须在已注册项目内。"""
+    real = os.path.realpath(path)
+    if not is_path_in_projects(real):
+        raise PermissionError(f'path outside project scope: {path}')
+    with open(real, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+**防护要点：**
+- 使用 `os.path.realpath()` 解析符号链接和 `..`
+- 调用 `is_path_in_projects()` 确保路径在已注册项目内
+- 拒绝包含 null 字节（`\x00`）的路径（使用 `require_path` 校验）
+
+### 14.4 Token 与认证
+
+**规则：** 协作房间的 WebSocket token 不应通过 URL query 参数传递（会泄露到访问日志/Referer）。
+
+**推荐的 token 传递方式：**
+
+```javascript
+// 前端：通过 Sec-WebSocket-Protocol 子协议传递 token
+const ws = new WebSocket(wsUrl, ['auth.' + token])
+```
+
+```python
+# 后端：服务端 on_connect 会优先从 Sec-WebSocket-Protocol 读取 token
+# 插件如需自定义认证，应遵循相同原则
+```
+
+**REST 接口的 token 传递：**
+
+```python
+# ✅ 推荐：通过 Authorization 头
+@bp.route('/protected', methods=['GET'])
+async def protected():
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+    token = auth[7:]
+
+# ❌ 危险：通过 URL query 参数（会泄露到日志）
+@bp.route('/protected', methods=['GET'])
+async def protected():
+    token = request.args.get('token', '')  # 会记录在访问日志中！
+```
+
+### 14.5 CORS 与跨域防护
+
+宿主已配置 Origin 白名单中间件，仅允许本地来源（`127.0.0.1`、`localhost`）的浏览器请求。这防止了恶意网页跨域调用本地 API。
+
+**插件无需额外配置 CORS**，但应注意：
+- 插件路由继承宿主的 CORS 防护
+- 如插件需要允许特定外部来源，应通过 `zaowu_mount_asgi_middleware` 钩子谨慎添加
+- **不要**在插件中移除或绕过宿主的 Origin 校验
+
+### 14.6 敏感信息处理
+
+**规则：** 禁止在代码或配置中硬编码 API Key、密码、token 等敏感信息。
+
+```python
+# ❌ 危险：硬编码密钥
+API_KEY = 'sk-xxxxxxxxxxxx'
+
+# ✅ 安全：从运行时配置读取（providers.json，已被 .gitignore 排除）
+import json, os
+from zaowu_paths import get_project_root
+
+def load_api_key():
+    config_path = os.path.join(get_project_root(), 'providers.json')
+    with open(config_path, 'r', encoding='utf-8') as f:
+        providers = json.load(f).get('providers', [])
+    # 用户在 UI 中配置，明文存储在 gitignored 文件中
+    return providers[0].get('apiKey', '') if providers else ''
+```
+
+**安全检查清单：**
+- [ ] 代码中无硬编码的 API Key / 密码 / token
+- [ ] 敏感配置存储在 `.gitignore` 排除的文件中（`providers.json`、`settings.json`）
+- [ ] 日志中不输出敏感信息（`plugin_api.logger.info(f'key={api_key}')` 是错误的）
+- [ ] 错误响应中不泄露内部实现细节（如堆栈跟踪、SQL 语句）
+
+### 14.7 SQL 安全
+
+**规则：** 禁止用 f-string 或字符串拼接构造 SQL 语句，必须使用参数化查询。
+
+```python
+import aiosqlite
+
+# ✅ 安全：参数化查询
+async def get_user(db_path: str, user_id: str):
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            'SELECT * FROM users WHERE id = ?',
+            (user_id,)  # 参数化
+        )
+        return await cursor.fetchone()
+
+# ❌ 危险：f-string 拼接（SQL 注入风险）
+await db.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+```
+
+### 14.8 安全自查清单
+
+发布插件前，请逐项确认：
+
+| 检查项 | 说明 |
+|--------|------|
+| 输入校验 | 所有 `request.get_json()` 输入已使用 `services/input_validation` 校验 |
+| 命令执行 | 如有命令执行，使用 `agent_is_command_safe` 校验，无 `shell=True` 裸调用 |
+| 路径安全 | 文件操作使用 `os.path.realpath` + `is_path_in_projects` 校验 |
+| Token 安全 | WebSocket token 通过 `Sec-WebSocket-Protocol` 传递，REST token 通过 `Authorization` 头 |
+| 无硬编码密钥 | 代码中无 API Key / 密码 / token 字面量 |
+| SQL 参数化 | 数据库查询使用 `?` 占位符，无 f-string 拼接 |
+| 日志安全 | 日志中不输出敏感信息 |
+| 错误处理 | 异常捕获具体（非宽泛 `except Exception`），错误响应不泄露内部细节 |
 
 ---
 

@@ -273,7 +273,15 @@ async def api_generate_invite(room_id):
 
 @community_bp.route('/rooms/<room_id>/ws-url', methods=['GET'])
 async def api_get_ws_url(room_id):
-    token = request.args.get('token', '')
+    # 优先从 Authorization 头读取 token（推荐方式，避免 URL 泄露）
+    auth_header = request.headers.get('Authorization', '')
+    token = ''
+    if auth_header.startswith('Bearer '):
+        token = auth_header[7:].strip()
+    # 向后兼容：query 参数 fallback（已弃用，未来版本将移除）
+    if not token:
+        token = request.args.get('token', '')
+
     session = validate_token(token)
     if not session or session['room_id'] != room_id:
         return jsonify({'ok': False, 'error': 'invalid token'}), 403

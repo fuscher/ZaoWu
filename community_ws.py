@@ -104,16 +104,38 @@ def _fire_user_hook(hook_name: str, room_id: str, user_id: str) -> None:
 async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     """ASGI connect hook.  Returns True to *reject* the WebSocket.
 
-    Extracts the token from the query string, validates it against
-    room_service, and ensures the user belongs to the requested room.
+    Token 提取优先级（从安全到兼容）：
+    1. Sec-WebSocket-Protocol 子协议（格式: auth.<token>）— 不进入 URL/日志
+    2. query string 的 token 参数 — 向后兼容，但会泄露到访问日志/Referer
+
+    安全建议：生产环境应使用 wss:// 加密 + Sec-WebSocket-Protocol 传递 token，
+    或使用短期 token（TTL < 60s）降低 query string 泄露风险。
     """
-    query_bytes = scope.get('query_string', b'')
-    if isinstance(query_bytes, bytes):
-        query_str = query_bytes.decode('utf-8', errors='replace')
-    else:
-        query_str = str(query_bytes)
-    params = parse_qs(query_str)
-    token = (params.get('token') or [None])[0]
+    token = None
+
+    # 1. 优先从 Sec-WebSocket-Protocol 子协议读取（更安全，不进入 URL）
+    headers = scope.get('headers', [])
+    for key, value in headers:
+        if key == b'sec-websocket-protocol':
+            proto = value.decode('utf-8', errors='replace')
+            for part in proto.split(','):
+                part = part.strip()
+                if part.startswith('auth.'):
+                    token = part[5:]
+                    break
+            if token:
+                break
+
+    # 2. 向后兼容：从 query string 读取 token
+    if not token:
+        query_bytes = scope.get('query_string', b'')
+        if isinstance(query_bytes, bytes):
+            query_str = query_bytes.decode('utf-8', errors='replace')
+        else:
+            query_str = str(query_bytes)
+        params = parse_qs(query_str)
+        token = (params.get('token') or [None])[0]
+
     if not token:
         logger.warning('WebSocket rejected: missing token')
         return True
@@ -395,6 +417,11 @@ def _client_user_id(_client: Any) -> str | None:
 def build_ws_url(room_host_address: str, token: str) -> str:
     """Construct a WebSocket URL for connecting to a community room.
 
+    .. deprecated::
+        建议前端改用 ``new WebSocket(url, ['auth.' + token])`` 通过
+        Sec-WebSocket-Protocol 子协议传递 token，避免 token 出现在 URL 中
+        （URL 会记录在访问日志、浏览器历史、Referer 头中）。
+
     Args:
         room_host_address: host:port string (e.g. '192.168.1.100:5000').
         token: Session token for authentication.
@@ -415,6 +442,15 @@ def build_ws_url(room_host_address: str, token: str) -> str:
 
 def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
     """Build the full WebSocket URL for a specific room.
+
+    .. note:: 安全提示
+        返回的 URL 包含 token 查询参数，会暴露在访问日志和浏览器历史中。
+        推荐前端使用此 URL 连接时，通过 Sec-WebSocket-Protocol 传递 token::
+
+            const ws = new WebSocket(wsUrl, ['auth.' + token])
+
+        服务端 ``on_connect`` 会优先从 Sec-WebSocket-Protocol 读取 token。
+        此处仍保留 token 在 URL 中仅为向后兼容。
 
     Args:
         room_id: The collaboration room id.

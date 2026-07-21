@@ -22,6 +22,7 @@
 11. [Complete Example: Weather Plugin](#11-complete-example-weather-plugin)
 12. [Caveats and FAQ](#12-caveats-and-faq)
 13. [Plugin API Capability Reference](#13-plugin-api-capability-reference)
+14. [Security Best Practices](#14-security-best-practices)
 
 ---
 
@@ -319,6 +320,33 @@ def zaowu_register_routes():
 
     return [bp]
 ```
+
+> **⚠️ Security Note: Input Validation**
+>
+> Plugin routes **must** validate all `request.get_json()` inputs — never use
+> `data.get('key', '')` directly without type and content checks. The project
+> provides `services/input_validation.py` with helpers for type checking, length
+> limits, and path safety:
+>
+> ```python
+> from services.input_validation import require_str, require_path, require_command, validate_json_body
+>
+> @bp.route('/exec', methods=['POST'])
+> async def exec_cmd():
+>     data = await request.get_json(silent=True)
+>     ok, err = validate_json_body(data)          # validate non-empty dict
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     ok, err = require_str(data, 'name', max_len=100)  # validate string field
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     ok, err = require_path(data, 'path')         # validate path (null-byte safe)
+>     if not ok:
+>         return jsonify({'ok': False, 'error': err}), 400
+>     # ... safely use data['name'] and data['path']
+> ```
+>
+> See [Section 14: Security Best Practices](#14-security-best-practices).
 
 ### 4.6 WebSocket Message Hooks
 
@@ -759,6 +787,26 @@ def zaowu_handle_ws_message(msg_type, payload):
         }
     return None
 ```
+
+> **🔒 Token Transmission Security**
+>
+> Collaboration room WebSocket connections require token authentication. The host
+> supports two token transmission methods:
+>
+> 1. **`Sec-WebSocket-Protocol` subprotocol (recommended)** — token stays out of
+>    the URL, preventing leakage to access logs:
+>    ```javascript
+>    // Frontend: pass token via subprotocol
+>    const ws = new WebSocket(wsUrl, ['auth.' + token])
+>    ```
+> 2. **URL query parameter (legacy)** — `?token=xxx`, recorded in access logs and
+>    Referer headers, **deprecated**
+>
+> The server-side `on_connect` reads the token from `Sec-WebSocket-Protocol`
+> first. Plugins implementing custom WS auth should follow the same principle:
+> **never pass credentials in URLs**.
+>
+> See [Section 14: Security Best Practices](#14-security-best-practices).
 
 ---
 
@@ -1211,6 +1259,258 @@ The frontend UI also provides a one-click install button (upload icon at the top
 | Read plugin config | `usePluginsStore().fetchPlugins()` | Pinia store |
 | Modify plugin config | `usePluginsStore().updateConfig(name, config)` | Persisted to server |
 | Use host CSS variables | `var(--text-primary)` etc. | Auto-adapts to dark/light themes |
+
+---
+
+## 14. Security Best Practices
+
+Plugins run inside the host process with the same system privileges as the host.
+**A security vulnerability affects not just the plugin, but the entire host
+application and the user's system.** This section lists mandatory security
+guidelines for plugin development.
+
+### 14.1 Input Validation — All External Input is Untrusted
+
+**Rule:** All `request.get_json()` inputs received by plugin routes must be
+validated for type and content. Never use `data.get('key', '')` directly without
+checks.
+
+**Using `services/input_validation.py` (recommended):**
+
+```python
+from services.input_validation import (
+    require_str,        # required string validation
+    get_str,            # optional string validation
+    require_path,       # path validation (null-byte safe)
+    require_command,    # command validation (CRLF safe)
+    require_int,        # integer validation (with range)
+    validate_json_body, # request body validation
+)
+
+@bp.route('/process', methods=['POST'])
+async def process():
+    data = await request.get_json(silent=True)
+
+    # 1. Validate request body is a valid JSON object
+    ok, err = validate_json_body(data)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 2. Validate required string field (with length limit)
+    ok, err = require_str(data, 'name', max_len=100)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 3. Validate path field (prevents null-byte injection)
+    ok, err = require_path(data, 'target_path')
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # 4. Validate optional integer field (with range)
+    ok, err, count = require_int(data, 'count', min_val=1, max_val=1000)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+
+    # Safely use validated fields
+    return jsonify({'ok': True, 'name': data['name']})
+```
+
+**Validation helpers:**
+
+| Function | Purpose | Security checks |
+|----------|---------|-----------------|
+| `require_str(data, key, max_len)` | Required string | Type check, non-empty, length limit |
+| `get_str(data, key, default, max_len)` | Optional string | Same as above, returns default if missing |
+| `require_path(data, key, max_len=4096)` | File path | Same + null-byte detection |
+| `require_command(data, key, max_len=2000)` | Command string | Same + CRLF control char detection |
+| `require_int(data, key, min_val, max_val)` | Integer | Type conversion + range check |
+| `validate_json_body(data)` | Request body | Non-empty dict validation |
+
+> **Note:** Path traversal (`../`) protection is handled by the host's
+> `is_path_in_projects()`. Plugins should call this function or
+> `plugin_api.get_projects()` to ensure paths stay within legitimate project scopes.
+
+### 14.2 Command Execution Security
+
+**Rule:** Plugins that execute system commands **must** use the host's security
+validation mechanisms. Never call `subprocess.run(command, shell=True)` directly.
+
+**Safe execution methods (in recommended order):**
+
+```python
+# Method 1: Use services/terminal_utils.py (recommended, security baked in)
+from services.terminal_utils import agent_is_command_safe, execute_command
+
+def zaowu_register_routes():
+    from quart import Blueprint, jsonify, request
+
+    bp = Blueprint('my_plugin', __name__, url_prefix='/api/plugins/my_plugin')
+
+    @bp.route('/run', methods=['POST'])
+    async def run():
+        data = await request.get_json(silent=True)
+        command = data.get('command', '')
+
+        # Security check: whitelist + shell operator detection
+        safe, err = agent_is_command_safe(command)
+        if not safe:
+            return jsonify({'ok': False, 'error': err}), 400
+
+        # Safe execution (async, auto-timeout)
+        result = await execute_command(command, cwd='/project/path')
+        return jsonify(result)
+
+    return [bp]
+```
+
+**Forbidden patterns:**
+
+```python
+# ❌ Dangerous: shell=True with no validation, command injection vulnerable
+subprocess.run(user_input, shell=True)
+
+# ❌ Dangerous: even with a whitelist, no shell operator detection is bypassable
+# Attack example: 'git status && rm -rf /'
+cmd_parts = user_input.split()
+if cmd_parts[0] in ALLOWED:
+    subprocess.run(user_input, shell=True)  # still bypassable via && | ;
+```
+
+**Protections provided by `agent_is_command_safe`:**
+1. **Blocklist substring check** — intercepts `rm -rf`, `format`, `shutdown`, etc.
+2. **Shell operator detection** — rejects `|`, `&&`, `||`, `;`, backticks, `$()`
+3. **Whitelist check** — uses `shlex.split` for correct parsing, validates first token
+
+### 14.3 Path Safety
+
+**Rule:** All filesystem operations must verify paths are within legitimate
+project scopes to prevent path traversal attacks.
+
+```python
+import os
+from routes.explorer import is_path_in_projects
+
+def safe_file_read(path: str) -> str:
+    """Safely read a file — path must be within a registered project."""
+    real = os.path.realpath(path)
+    if not is_path_in_projects(real):
+        raise PermissionError(f'path outside project scope: {path}')
+    with open(real, 'r', encoding='utf-8') as f:
+        return f.read()
+```
+
+**Key points:**
+- Use `os.path.realpath()` to resolve symlinks and `..`
+- Call `is_path_in_projects()` to ensure the path is within a registered project
+- Reject paths containing null bytes (`\x00`) — use `require_path` for validation
+
+### 14.4 Tokens and Authentication
+
+**Rule:** Collaboration room WebSocket tokens must not be passed via URL query
+parameters (they leak to access logs and Referer headers).
+
+**Recommended token transmission:**
+
+```javascript
+// Frontend: pass token via Sec-WebSocket-Protocol subprotocol
+const ws = new WebSocket(wsUrl, ['auth.' + token])
+```
+
+```python
+# Backend: the server's on_connect reads token from Sec-WebSocket-Protocol first
+# Plugins implementing custom auth should follow the same principle
+```
+
+**REST API token transmission:**
+
+```python
+# ✅ Recommended: via Authorization header
+@bp.route('/protected', methods=['GET'])
+async def protected():
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer '):
+        return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+    token = auth[7:]
+
+# ❌ Dangerous: via URL query parameter (leaks to logs)
+@bp.route('/protected', methods=['GET'])
+async def protected():
+    token = request.args.get('token', '')  # recorded in access logs!
+```
+
+### 14.5 CORS and Cross-Origin Protection
+
+The host is configured with an Origin allowlist middleware that permits only
+local sources (`127.0.0.1`, `localhost`) for browser requests. This prevents
+malicious web pages from making cross-origin calls to the local API.
+
+**Plugins do not need additional CORS configuration**, but should note:
+- Plugin routes inherit the host's CORS protection
+- If a plugin needs to allow a specific external origin, add it carefully via
+  the `zaowu_mount_asgi_middleware` hook
+- **Never** remove or bypass the host's Origin validation in plugins
+
+### 14.6 Sensitive Information Handling
+
+**Rule:** Never hardcode API keys, passwords, or tokens in code or configuration.
+
+```python
+# ❌ Dangerous: hardcoded key
+API_KEY = 'sk-xxxxxxxxxxxx'
+
+# ✅ Safe: read from runtime config (providers.json, gitignored)
+import json, os
+from zaowu_paths import get_project_root
+
+def load_api_key():
+    config_path = os.path.join(get_project_root(), 'providers.json')
+    with open(config_path, 'r', encoding='utf-8') as f:
+        providers = json.load(f).get('providers', [])
+    # User configures via UI, stored in plaintext in a gitignored file
+    return providers[0].get('apiKey', '') if providers else ''
+```
+
+**Security checklist:**
+- [ ] No hardcoded API keys / passwords / tokens in code
+- [ ] Sensitive config stored in gitignored files (`providers.json`, `settings.json`)
+- [ ] Logs do not output sensitive info (`plugin_api.logger.info(f'key={api_key}')` is wrong)
+- [ ] Error responses do not leak internal implementation details (stack traces, SQL)
+
+### 14.7 SQL Safety
+
+**Rule:** Never construct SQL statements with f-strings or string concatenation.
+Always use parameterized queries.
+
+```python
+import aiosqlite
+
+# ✅ Safe: parameterized query
+async def get_user(db_path: str, user_id: str):
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            'SELECT * FROM users WHERE id = ?',
+            (user_id,)  # parameterized
+        )
+        return await cursor.fetchone()
+
+# ❌ Dangerous: f-string interpolation (SQL injection risk)
+await db.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+```
+
+### 14.8 Security Self-Check List
+
+Before publishing a plugin, confirm each item:
+
+| Check | Description |
+|-------|-------------|
+| Input validation | All `request.get_json()` inputs validated with `services/input_validation` |
+| Command execution | Uses `agent_is_command_safe` if executing commands, no raw `shell=True` |
+| Path safety | File operations use `os.path.realpath` + `is_path_in_projects` |
+| Token security | WS token via `Sec-WebSocket-Protocol`, REST token via `Authorization` header |
+| No hardcoded secrets | No API key / password / token literals in code |
+| SQL parameterized | Database queries use `?` placeholders, no f-string interpolation |
+| Log safety | Logs do not output sensitive information |
+| Error handling | Specific exception catching (not broad `except Exception`), errors don't leak internals |
 
 ---
 

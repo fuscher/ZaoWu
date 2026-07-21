@@ -7,6 +7,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify
+from services.input_validation import require_path as _require_path, require_str as _require_str, validate_json_body as _validate_body
 
 from plugin_system import get_plugin_manager
 from zaowu_paths import get_project_root
@@ -136,8 +137,12 @@ def get_projects():
 @explorer_bp.route('/add-project', methods=['POST'])
 async def add_project():
     data = await request.get_json(silent=True)
-    if not data or 'path' not in data:
-        return jsonify({'ok': False, 'error': 'missing path'}), 400
+    ok, err = _validate_body(data)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    ok, err = _require_path(data, 'path')
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
 
     path = validate_path(data['path'])
     if not path:
@@ -441,8 +446,14 @@ def _fire_file_hook(hook_name: str, *args) -> None:
 @explorer_bp.route('/save-file', methods=['POST'])
 async def save_file():
     data = await request.get_json(silent=True)
-    if not data or 'path' not in data or 'content' not in data:
-        return jsonify({'ok': False, 'error': 'missing path or content'}), 400
+    ok, err = _validate_body(data)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    ok, err = _require_path(data, 'path')
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    if 'content' not in data:
+        return jsonify({'ok': False, 'error': 'missing content'}), 400
 
     real = os.path.realpath(data['path'])
 
