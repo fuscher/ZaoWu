@@ -1,8 +1,11 @@
 """Unit tests for room_service — room lifecycle, user management, token validation."""
+import json
 import pytest
 from services.room_service import (
     RoomServiceError,
     ABSOLUTE_MAX_USERS,
+    TOKEN_TTL_MS,
+    MAX_FAILURES_PER_MINUTE,
     create_room,
     list_rooms,
     get_room,
@@ -18,6 +21,11 @@ from services.room_service import (
     validate_token,
     set_user_status,
     cleanup_inactive_rooms,
+    lookup_room_by_invite_code,
+    set_room_host_user_id,
+    is_host,
+    _load_persisted_state,
+    _migrate_host_user_ids,
 )
 
 
@@ -39,6 +47,10 @@ def _clean_rooms(monkeypatch):
     )
     monkeypatch.setattr(
         'services.room_service._sessions',
+        {},
+    )
+    monkeypatch.setattr(
+        'services.room_service._join_failures',
         {},
     )
 
@@ -290,6 +302,7 @@ class TestRoomLifecycle:
         assert len(new) == 6
         assert new != 'ABCDEF'
 
+
     def test_cleanup_closes_inactive_rooms(self, monkeypatch):
         from datetime import datetime, timezone
         now = int(datetime.now(timezone.utc).timestamp() * 1000)
@@ -306,3 +319,277 @@ class TestRoomLifecycle:
         monkeypatch.setattr('services.room_service._write_rooms', lambda data: None)
         closed = cleanup_inactive_rooms()
         assert closed >= 1
+
+
+class TestTokenExpiry:
+    def test_expired_token_is_invalid(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            # Simulate an old creation time
+            rs._sessions[token]['created_at'] = rs._now_ms() - TOKEN_TTL_MS - 1
+            assert validate_token(token) is None
+            assert token not in rs._sessions
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_cleanup_removes_expired_sessions(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            rs._sessions[token]['created_at'] = rs._now_ms() - TOKEN_TTL_MS - 1
+            monkeypatch.setattr('services.room_service._write_rooms', lambda data: None)
+            cleanup_inactive_rooms()
+            assert token not in rs._sessions
+        finally:
+            rs._read_rooms = orig_read
+
+
+class TestInviteCodeBruteForce:
+    def test_too_many_failed_joins_blocks_attempts(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            for _ in range(MAX_FAILURES_PER_MINUTE):
+                with pytest.raises(RoomServiceError, match='invalid invite code'):
+                    join_room(room['id'], 'WRONG', 'Bob')
+            # The next attempt within the window should be rate-limited
+            with pytest.raises(RoomServiceError, match='too many attempts'):
+                join_room(room['id'], room['invite_code'], 'Bob')
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_successful_join_clears_failure_history(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            with pytest.raises(RoomServiceError):
+                join_room(room['id'], 'WRONG', 'Bob')
+            # Successful join should clear the failure record
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            assert user['name'] == 'Alice'
+            assert room['id'] not in rs._join_failures
+        finally:
+            rs._read_rooms = orig_read
+
+
+class TestLookupByInviteCode:
+    def test_finds_active_room_by_code(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        monkeypatch.setattr(
+            'services.room_service._read_rooms',
+            lambda: {'rooms': [room]},
+        )
+        found = lookup_room_by_invite_code(room['invite_code'])
+        assert found is not None
+        assert found['id'] == room['id']
+
+    def test_lookup_is_case_insensitive(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        monkeypatch.setattr(
+            'services.room_service._read_rooms',
+            lambda: {'rooms': [room]},
+        )
+        found = lookup_room_by_invite_code(room['invite_code'].lower())
+        assert found is not None
+        assert found['id'] == room['id']
+
+    def test_missing_code_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            'services.room_service._read_rooms',
+            lambda: {'rooms': []},
+        )
+        assert lookup_room_by_invite_code('ABCDEF') is None
+
+
+class TestHostUserIdPersistence:
+    def test_host_user_id_persisted_on_room(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        writes = []
+        rs._write_rooms = lambda data: writes.append(data)
+        try:
+            host_user, token = join_room(room['id'], room['invite_code'], 'Host')
+            host_user = update_user(room['id'], host_user['id'], role='host')
+            updated_room = set_room_host_user_id(room['id'], host_user['id'])
+            assert updated_room['host_user_id'] == host_user['id']
+            # Verify the write propagated to the rooms file
+            assert len(writes) >= 1
+            persisted = next(
+                (r for r in writes[-1]['rooms'] if r['id'] == room['id']),
+                None,
+            )
+            assert persisted is not None
+            assert persisted['host_user_id'] == host_user['id']
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_is_host_uses_persisted_host_user_id(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            host_user, _ = join_room(room['id'], room['invite_code'], 'Host')
+            host_user = update_user(room['id'], host_user['id'], role='host')
+            set_room_host_user_id(room['id'], host_user['id'])
+            assert is_host(room['id'], host_user['id']) is True
+            assert is_host(room['id'], 'someone-else') is False
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_host_leaving_closes_room_and_removes_sessions(self, monkeypatch):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            host_user, host_token = join_room(room['id'], room['invite_code'], 'Host')
+            host_user = update_user(room['id'], host_user['id'], role='host')
+            set_room_host_user_id(room['id'], host_user['id'])
+            guest, guest_token = join_room(room['id'], room['invite_code'], 'Alice')
+
+            leave_room(room['id'], host_user['id'])
+
+            # Room should be closed
+            assert get_room(room['id'])['status'] == 'closed'
+            # All users and sessions removed
+            assert get_user(room['id'], host_user['id']) is None
+            assert get_user(room['id'], guest['id']) is None
+            assert validate_token(host_token) is None
+            assert validate_token(guest_token) is None
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_migrate_host_user_ids_backfills_legacy_room(self, monkeypatch, tmp_path):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+        try:
+            host_user, _ = join_room(room['id'], room['invite_code'], 'Host')
+            host_user = update_user(room['id'], host_user['id'], role='host')
+            # Simulate a legacy room with no host_user_id
+            room['host_user_id'] = ''
+            # Persist the user so _migrate_host_user_ids can find the host
+            rs._users_by_room[room['id']] = {host_user['id']: host_user}
+            _migrate_host_user_ids()
+            assert room['host_user_id'] == host_user['id']
+        finally:
+            rs._read_rooms = orig_read
+
+
+class TestSessionPersistence:
+    def test_sessions_persisted_to_disk(self, monkeypatch, tmp_path):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+
+        data_dir = tmp_path / 'data' / 'collaboration'
+        data_dir.mkdir(parents=True)
+        sessions_file = data_dir / 'community_sessions.json'
+        users_file = data_dir / 'community_users.json'
+        monkeypatch.setattr('services.room_service.SESSIONS_FILE', str(sessions_file))
+        monkeypatch.setattr('services.room_service.USERS_FILE', str(users_file))
+
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            assert sessions_file.exists()
+            with open(sessions_file, 'r', encoding='utf-8') as f:
+                sessions = json.load(f)
+            assert token in sessions
+            assert sessions[token]['user_id'] == user['id']
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_load_persisted_state_restores_sessions(self, monkeypatch, tmp_path):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+
+        data_dir = tmp_path / 'data' / 'collaboration'
+        data_dir.mkdir(parents=True)
+        sessions_file = data_dir / 'community_sessions.json'
+        users_file = data_dir / 'community_users.json'
+        monkeypatch.setattr('services.room_service.SESSIONS_FILE', str(sessions_file))
+        monkeypatch.setattr('services.room_service.USERS_FILE', str(users_file))
+
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            # Simulate restart: clear in-memory state and reload
+            rs._sessions = {}
+            rs._users_by_room = {}
+            _load_persisted_state()
+            assert user['id'] in rs._users_by_room.get(room['id'], {})
+            assert validate_token(token) is not None
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_load_persisted_state_drops_expired_sessions(self, monkeypatch, tmp_path):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+
+        data_dir = tmp_path / 'data' / 'collaboration'
+        data_dir.mkdir(parents=True)
+        sessions_file = data_dir / 'community_sessions.json'
+        users_file = data_dir / 'community_users.json'
+        monkeypatch.setattr('services.room_service.SESSIONS_FILE', str(sessions_file))
+        monkeypatch.setattr('services.room_service.USERS_FILE', str(users_file))
+
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            # Make the session expired
+            rs._sessions[token]['created_at'] = rs._now_ms() - TOKEN_TTL_MS - 1
+            rs._persist_sessions()
+
+            # Simulate restart
+            rs._sessions = {}
+            rs._users_by_room = {}
+            _load_persisted_state()
+            assert validate_token(token) is None
+            assert token not in rs._sessions
+        finally:
+            rs._read_rooms = orig_read
+
+    def test_load_persisted_state_marks_users_offline(self, monkeypatch, tmp_path):
+        room = create_room('Test', 'p1', 'h1')
+        import services.room_service as rs
+        orig_read = rs._read_rooms
+        rs._read_rooms = lambda: {'rooms': [room]}
+
+        data_dir = tmp_path / 'data' / 'collaboration'
+        data_dir.mkdir(parents=True)
+        sessions_file = data_dir / 'community_sessions.json'
+        users_file = data_dir / 'community_users.json'
+        monkeypatch.setattr('services.room_service.SESSIONS_FILE', str(sessions_file))
+        monkeypatch.setattr('services.room_service.USERS_FILE', str(users_file))
+
+        try:
+            user, token = join_room(room['id'], room['invite_code'], 'Alice')
+            assert user['status'] == 'online'
+            rs._persist_users()
+
+            # Simulate restart
+            rs._users_by_room = {}
+            _load_persisted_state()
+            loaded_user = get_user(room['id'], user['id'])
+            assert loaded_user is not None
+            assert loaded_user['status'] == 'offline'
+        finally:
+            rs._read_rooms = orig_read

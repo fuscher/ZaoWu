@@ -1,24 +1,29 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { X } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
+import * as communityApi from '@/services/community'
 import type { CollaborationRoom } from '@/types'
 
+const props = defineProps<{ initialCode?: string }>()
 const emit = defineEmits<{ close: []; joined: [] }>()
 const { t } = useI18n()
 const store = useCommunityStore()
 
-const inviteLink = ref('')
+const inviteLink = ref(props.initialCode || '')
 const userName = ref('')
 const loading = ref(false)
+const lookupLoading = ref(false)
 const error = ref('')
 const selectedRoom = ref<CollaborationRoom | null>(null)
+const lookedUpRoom = ref<CollaborationRoom | null>(null)
 
 // When the user clicks a room card in the side panel before clicking "Join",
 // this sets the selected room and auto-fills the invite code.
 function selectRoom(room: CollaborationRoom | null) {
   selectedRoom.value = room
+  lookedUpRoom.value = null
   if (room && room.inviteCode) {
     inviteLink.value = `${room.id}:${room.inviteCode}`
   }
@@ -27,7 +32,8 @@ function selectRoom(room: CollaborationRoom | null) {
 defineExpose({ selectRoom })
 
 const parsed = computed(() => {
-  const link = inviteLink.value.trim()
+  error.value = ''
+  const link = inviteLink.value.trim().replace(/^ZW[-\s]?/i, '')
   if (!link) {
     // If a room was pre-selected but the user cleared the input,
     // still use the selected room's data.
@@ -71,16 +77,50 @@ const parsed = computed(() => {
     }
   }
 
-  // Plain invite code (6-8 uppercase alphanumeric) — works when room was pre-selected
+  // Plain invite code (6-8 uppercase alphanumeric) — smart match against known
+  // rooms, or fall back to a backend lookup if one has completed.
   const plainCodeMatch = link.match(/^[A-Za-z0-9]{6,8}$/)
-  if (plainCodeMatch && selectedRoom.value) {
-    return {
-      roomId: selectedRoom.value.id,
-      inviteCode: link.toUpperCase(),
+  if (plainCodeMatch) {
+    const code = link.toUpperCase()
+    // 1. Pre-selected room matches the code
+    if (selectedRoom.value?.inviteCode === code) {
+      return { roomId: selectedRoom.value.id, inviteCode: code }
+    }
+    // 2. Active room list contains a matching code
+    const matched = store.rooms.find((r) => r.inviteCode === code)
+    if (matched) {
+      return { roomId: matched.id, inviteCode: code }
+    }
+    // 3. Backend lookup result (async, triggered on input)
+    if (lookedUpRoom.value?.inviteCode === code) {
+      return { roomId: lookedUpRoom.value.id, inviteCode: code }
     }
   }
 
   return null
+})
+
+// As the user types a plain invite code, try to resolve it on the backend.
+let _lookupTimeout: ReturnType<typeof setTimeout> | null = null
+watch(inviteLink, (value) => {
+  lookedUpRoom.value = null
+  const raw = value.trim().toUpperCase().replace(/^ZW[-\s]?/, '')
+  if (!raw.match(/^[A-Za-z0-9]{6,8}$/)) return
+  if (store.rooms.some((r) => r.inviteCode === raw)) return
+  if (_lookupTimeout) clearTimeout(_lookupTimeout)
+  _lookupTimeout = setTimeout(async () => {
+    lookupLoading.value = true
+    try {
+      const data = await communityApi.lookupRoom(raw)
+      if (inviteLink.value.trim().toUpperCase().replace(/^ZW[-\s]?/, '') === raw) {
+        lookedUpRoom.value = data.room
+      }
+    } catch {
+      // ignore — user will see the normal "invalid" hint if lookup fails
+    } finally {
+      lookupLoading.value = false
+    }
+  }, 300)
 })
 
 async function submit() {

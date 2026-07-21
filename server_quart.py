@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import os
 import sys
 import json
 import locale
 import asyncio
 import logging
+import ipaddress
+from urllib.parse import urlparse
 from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
 from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir
@@ -90,9 +94,11 @@ async def index():
     with open(html_path, 'r', encoding='utf-8') as f:
         html = f.read()
     settings_json = json.dumps(read_settings())
+    join_code = request.args.get('join', '')
+    join_json = json.dumps(join_code)
     injected = html.replace(
         '<script ',
-        f'<script>window.__SETTINGS__ = {settings_json};</script>\n    <script ',
+        f'<script>window.__SETTINGS__ = {settings_json}; window.__JOIN_CODE__ = {join_json};</script>\n    <script ',
         1,
     )
     return injected
@@ -144,6 +150,65 @@ async def _startup_logging():
 
 
 @app.before_serving
+async def _recover_room_state():
+    """On startup, load persisted users/sessions and close stale active rooms.
+
+    A room is considered stale and auto-closed when either:
+      - It has no persisted YStore document (never had an active WS connection).
+      - Its ``updated_at`` is older than the configured inactivity timeout.
+    """
+    from services.room_service import (
+        _read_rooms,
+        _write_rooms,
+        _load_persisted_state,
+        _room_inactive_timeout_minutes,
+    )
+    import os
+
+    try:
+        # Load users/sessions first so host_user_id backfill runs before recovery.
+        _load_persisted_state()
+
+        data = _read_rooms()
+        data_dir = os.path.join(BASE_DIR, 'data', 'collaboration')
+        now = int(__import__('time').time() * 1000)
+        timeout_ms = _room_inactive_timeout_minutes() * 60 * 1000
+        changed = False
+        closed_reasons = {'no_ystore': 0, 'inactive': 0}
+
+        for room in data.get('rooms', []):
+            if room.get('status') != 'active':
+                continue
+
+            db_path = os.path.join(data_dir, f'{room["id"]}.sqlite')
+            has_ystore = os.path.exists(db_path)
+            is_inactive = now - room.get('updated_at', 0) > timeout_ms
+
+            if not has_ystore:
+                room['status'] = 'closed'
+                room['updated_at'] = now
+                changed = True
+                closed_reasons['no_ystore'] += 1
+            elif is_inactive:
+                room['status'] = 'closed'
+                room['updated_at'] = now
+                changed = True
+                closed_reasons['inactive'] += 1
+
+        if changed:
+            _write_rooms(data)
+            total = closed_reasons['no_ystore'] + closed_reasons['inactive']
+            logging.getLogger(__name__).info(
+                'room state recovery: closed %d stale active rooms (no_ystore=%d, inactive=%d)',
+                total,
+                closed_reasons['no_ystore'],
+                closed_reasons['inactive'],
+            )
+    except Exception:
+        logging.getLogger(__name__).exception('room state recovery failed; continuing')
+
+
+@app.before_serving
 async def _startup_ws_server():
     """Start pycrdt-websocket's WebsocketServer before Quart begins serving.
 
@@ -161,6 +226,15 @@ async def _startup_ws_server():
         room = await _original_get_room(name)
         if not room.on_message:
             community_ws.set_custom_message_handler(room)
+        # Enable per-room document persistence (YStore)
+        if not getattr(room, '_ystore_set', False):
+            import re
+            match = re.match(r'^/api(?:/v\d+)?/community/ws/(.+)$', name)
+            if match:
+                ystore = community_ws.make_ystore(match.group(1))
+                if ystore:
+                    room.ystore = ystore
+            room._ystore_set = True
         return room
     websocket_server.get_room = _get_room_with_handler  # type: ignore[assignment]
 
@@ -179,38 +253,56 @@ async def _shutdown_ws_server():
         pass  # cross-thread Subscription drop on Windows — harmless
 
 
-@app.before_serving
+def _is_origin_allowed(origin: str) -> bool:
+    """校验 Origin 是否为本地或私网来源。
+
+    放行范围：
+    - localhost / 0.0.0.0 字符串
+    - loopback IP（127.x.x.x）
+    - RFC1918 私网 IP（10/8, 172.16/12, 192.168/16 等）
+    - link-local IP（169.254.x.x）
+
+    拒绝：公网域名、公网 IP。
+
+    DNS rebinding 无法绕过此检查，因为它改变的是解析后的目标 IP，
+    而不是浏览器发送的 Origin 头。
+    """
+    _ALLOWED_HOSTS = {'localhost', '0.0.0.0'}
+    _ALLOWED_SCHEMES = {'http', 'https', 'ws', 'wss'}
+
+    if not origin:
+        return False
+    try:
+        parsed = urlparse(origin)
+        host = parsed.hostname or ''
+        scheme = parsed.scheme or ''
+        if not scheme or scheme not in _ALLOWED_SCHEMES:
+            return False
+        # localhost 字符串始终放行
+        if host in _ALLOWED_HOSTS:
+            return True
+        # loopback / RFC1918 私网 / link-local IP 放行（LAN 协作）
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        # host 不是 IP（公网域名等）→ 拒绝
+        return False
+    except Exception:
+        return False
+
+
 async def _mount_cors_guard():
     """Origin 白名单中间件 — 防止恶意网页跨域调用本地 API。
 
     策略：
     - 无 Origin 头的请求（PyWebView 内部导航、curl、Postman）→ 放行
-    - Origin 在白名单内（127.0.0.1 / localhost 任意端口）→ 放行并添加 CORS 响应头
-    - Origin 不在白名单 → 拒绝写操作（POST/PUT/PATCH/DELETE），返回 403
+    - Origin 为本地或私网来源 → 放行并添加 CORS 响应头，支持 LAN 跨设备协作
+    - Origin 为公网域名/公网 IP → 拒绝
 
     这是针对本地桌面应用的安全加固：服务监听 0.0.0.0，若不限制 Origin，
     用户浏览器访问的恶意网站可通过 JS 调用 http://127.0.0.1:5000 的所有 API
     （包括 /api/terminal/exec 执行命令），构成远程代码执行风险。
     """
-    from urllib.parse import urlparse
-
-    # 允许的 Origin host（端口任意，因为服务可能在不同端口启动）
-    _ALLOWED_HOSTS = {'127.0.0.1', 'localhost', '0.0.0.0'}
-    # 允许的 scheme
-    _ALLOWED_SCHEMES = {'http', 'https', 'ws', 'wss'}
-
-    def _is_origin_allowed(origin: str) -> bool:
-        """校验 Origin 是否为本地来源。"""
-        if not origin:
-            return False
-        try:
-            parsed = urlparse(origin)
-            host = parsed.hostname or ''
-            scheme = parsed.scheme or ''
-            return host in _ALLOWED_HOSTS and scheme in _ALLOWED_SCHEMES
-        except Exception:
-            return False
-
     original_asgi = app.asgi_app
 
     async def _cors_guard(scope, receive, send):
@@ -302,6 +394,25 @@ async def _mount_cors_guard():
         await original_asgi(scope, receive, send)
 
     app.asgi_app = _cors_guard
+
+
+@app.before_serving
+async def _start_room_cleanup_scheduler():
+    """Start a background task that closes inactive rooms and expired tokens."""
+    from services.room_service import cleanup_inactive_rooms
+
+    async def _loop():
+        await asyncio.sleep(60)  # wait 1 minute after startup
+        while True:
+            await asyncio.sleep(600)  # every 10 minutes
+            try:
+                closed = await asyncio.to_thread(cleanup_inactive_rooms)
+                if closed:
+                    logging.getLogger(__name__).info('auto-cleanup: closed %d rooms', closed)
+            except Exception:
+                logging.getLogger(__name__).exception('room cleanup scheduler failed')
+
+    asyncio.ensure_future(_loop())
 
 
 @app.before_serving

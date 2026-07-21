@@ -13,6 +13,7 @@ export interface UseCollaborationOptions {
   roomId: string
   userId: string
   wsUrl: string
+  token: string
   userName: string
   userColor: string
 }
@@ -59,22 +60,29 @@ export function useCollaboration(options: UseCollaborationOptions) {
   // y-websocket constructs the WebSocket URL as:
   //   serverUrl + '/' + roomname + '?' + urlParams
   // Our wsUrl from the REST API has the form:
-  //   ws://host:port/api/v1/community/ws/<roomId>?token=<token>
+  //   ws://host:port/api/v1/community/ws/<roomId>
   //
   // We need to split this into:
   //   serverUrl = ws://host:port/api/v1/community/ws    (path without roomId)
   //   roomname  = <roomId>                            (will be appended by y-websocket)
-  //   params    = { token: <token> }                  (y-websocket appends as query string)
   const parser = new URL(options.wsUrl)
   const wsPath = parser.pathname
   // The path is /api/v1/community/ws/<roomId> — split off the roomId
   const lastSlash = wsPath.lastIndexOf('/')
   const basePath = wsPath.slice(0, lastSlash)           // /api/v1/community/ws
-  const token = parser.searchParams.get('token') || ''
 
   // Build the clean server base URL: ws://host:port/api/v1/community/ws
   const serverUrl = `ws://${parser.host}${basePath}`
 
+  // Use the token passed by the caller. Fallback to URL query string only for
+  // backwards compatibility with old server responses.
+  const token = options.token || parser.searchParams.get('token') || ''
+
+  // Pass the token as a URL query parameter.
+  // Note: We previously used Sec-WebSocket-Protocol, but pycrdt-websocket's
+  // ASGIServer does not echo the selected subprotocol in websocket.accept, so
+  // browsers reject the handshake per RFC 6455 §4.1. Query string is acceptable
+  // for the LAN desktop use case and is already supported by on_connect.
   const provider = new WebsocketProvider(
     serverUrl,
     options.roomId,
@@ -82,6 +90,11 @@ export function useCollaboration(options: UseCollaborationOptions) {
     {
       awareness,
       params: token ? { token } : {},
+      maxBackoffTime: 30000,
+      // Let y-websocket manage connection lifecycle (initial connect + reconnect).
+      // connect: false would require manual provider.connect() and can prevent
+      // transient-disconnection auto-recovery in some y-websocket versions.
+      connect: true,
     },
   )
 
@@ -354,6 +367,15 @@ export function useCollaboration(options: UseCollaborationOptions) {
             )
           })
         }
+        break
+      }
+      case 'room_closed': {
+        // The host closed the room; disconnect and reset the local session.
+        import('@/stores/community').then(({ useCommunityStore }) => {
+          const communityStore = useCommunityStore()
+          communityStore.resetSession()
+        })
+        disconnect()
         break
       }
     }

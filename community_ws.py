@@ -18,6 +18,7 @@ import asyncio
 import contextvars
 import json
 import os
+import uuid
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -63,13 +64,25 @@ _room_project_paths: dict[str, str] = {}
 # Room close callbacks (for cleanup when room_service.close_room is called)
 _room_close_callbacks: dict[str, Callable[[], None]] = {}
 
-# ContextVar for binding room_id to the current WebSocket connection (on_disconnect)
+# ContextVars for binding room_id/user_id to the current WebSocket connection.
+# These are set in ZaoWuASGIServer.__call__ and read in the on_disconnect callback.
 _current_room_id: contextvars.ContextVar[str] = contextvars.ContextVar('_current_room_id', default='')
-
-# Module-level room → user mapping for disconnect hook
-_room_users: dict[str, str] = {}
+_current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar('_current_user_id', default='')
 
 # ── Plugin hook helpers ─────────────────────────────────────────────
+
+def _schedule_async(coro: Awaitable[Any]) -> None:
+    """Schedule a coroutine in the current or main event loop (fire-and-forget)."""
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)  # type: ignore[arg-type]
+    except RuntimeError:
+        mgr = get_plugin_manager()
+        if mgr is not None and hasattr(mgr, '_main_loop') and mgr._main_loop is not None:
+            mgr._main_loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(coro, loop=mgr._main_loop)  # type: ignore[arg-type]
+            )
+
 
 def _fire_user_hook(hook_name: str, room_id: str, user_id: str) -> None:
     """触发用户协作事件 hook（fire-and-forget，不阻塞 WS 处理）。
@@ -90,30 +103,26 @@ def _fire_user_hook(hook_name: str, room_id: str, user_id: str) -> None:
         except Exception:
             pass
 
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_run_hooks())
-    except RuntimeError:
-        if hasattr(mgr, '_main_loop') and mgr._main_loop is not None:
-            mgr._main_loop.call_soon_threadsafe(
-                lambda: asyncio.ensure_future(_run_hooks(), loop=mgr._main_loop)
-            )
+    _schedule_async(_run_hooks())
 
 # ── Auth hook ────────────────────────────────────────────────────────
 
 async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     """ASGI connect hook.  Returns True to *reject* the WebSocket.
 
-    Token 提取优先级（从安全到兼容）：
-    1. Sec-WebSocket-Protocol 子协议（格式: auth.<token>）— 不进入 URL/日志
-    2. query string 的 token 参数 — 向后兼容，但会泄露到访问日志/Referer
+    Token 提取：
+    1. Sec-WebSocket-Protocol 子协议（格式: auth.<token>）。
+       注意：pycrdt-websocket 的 ASGIServer 不在 websocket.accept 中回显
+       子协议，浏览器会按 RFC 6455 §4.1 拒绝握手，因此该路径在当前依赖版本
+       下实际不可用，仅保留作为后端兼容逻辑。
+    2. query string 的 token 参数 — 这是当前实际可用的方案。
+       token 会出现在 URL/访问日志/Referer 中，请在 LAN/桌面场景下使用。
 
-    安全建议：生产环境应使用 wss:// 加密 + Sec-WebSocket-Protocol 传递 token，
-    或使用短期 token（TTL < 60s）降低 query string 泄露风险。
+    安全建议：生产环境使用 wss:// 加密 + 短期 token（TTL < 60s）降低泄露风险。
     """
     token = None
 
-    # 1. 优先从 Sec-WebSocket-Protocol 子协议读取（更安全，不进入 URL）
+    # 1. 从 Sec-WebSocket-Protocol 子协议读取（当前依赖版本下浏览器握手会失败）
     headers = scope.get('headers', [])
     for key, value in headers:
         if key == b'sec-websocket-protocol':
@@ -164,8 +173,10 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
     # Mark user online — persisted in-memory for room_service queries
     room_service.set_user_status(room_id, user_id, 'online')
 
-    # Track user in module-level registry for disconnect hook
-    _room_users[room_id] = user_id
+    # Bind user_id to the current async context for the disconnect hook.
+    # on_connect runs inside the same ASGI task as ZaoWuASGIServer.__call__,
+    # so the ContextVar is visible to _on_disconnect_with_cleanup.
+    _current_user_id.set(user_id)
 
     # Attach metadata to scope so message handlers can use it
     scope['zaowu_room_id'] = room_id
@@ -181,10 +192,11 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
         if project_path and os.path.isdir(project_path):
             _room_project_paths[room_id] = os.path.normpath(project_path)
 
-    # Register room close callback for search cleanup
+    # Register room close callback for search cleanup and room_closed broadcast
     def _on_room_close():
         _room_project_paths.pop(room_id, None)
-        _room_users.pop(room_id, None)
+        # Notify connected clients asynchronously
+        _schedule_async(_broadcast_room_closed(room_id))
     _room_close_callbacks[room_id] = _on_room_close
 
     # Fire user-joined hook
@@ -196,6 +208,11 @@ async def on_connect(message: dict[str, Any], scope: dict[str, Any]) -> bool:
 # ── Custom message handler (0xF0 prefix) ────────────────────────────
 
 ZAOWU_PREFIX: int = 0xF0
+
+# File diff limits (I-08)
+MAX_DIFF_SIZE = 10 * 1024 * 1024  # 10 MB per write
+MIN_DIFF_INTERVAL = 0.1  # seconds between writes from the same user
+_user_diff_timestamps: dict[str, float] = {}
 
 
 def set_custom_message_handler(room: YRoom) -> None:
@@ -289,6 +306,10 @@ async def _handle_file_diff(room: YRoom, payload: dict[str, Any]) -> None:
 
     Path-traversal protection: all paths are validated against the
     room's project root directory before any filesystem operation.
+
+    The diff is broadcast to all other clients regardless of whether the
+    local server has the project open, because collaborators may still need
+    to apply the change to their own working copies.
     """
     room_id = payload.get('roomId', '')
     if not room_id:
@@ -299,6 +320,34 @@ async def _handle_file_diff(room: YRoom, payload: dict[str, Any]) -> None:
     if not can_edit(user.get('permissions', {})):
         return
 
+    # Rate limit per user
+    if user_id:
+        now = __import__('time').time()
+        last = _user_diff_timestamps.get(user_id, 0)
+        if now - last < MIN_DIFF_INTERVAL:
+            logger.debug('file_diff rate limited for user %s', user_id)
+            return
+        _user_diff_timestamps[user_id] = now
+
+    content = payload.get('content')
+    path = payload.get('path')
+    delete_flag = payload.get('delete')
+    old_path = payload.get('oldPath')
+    new_path = payload.get('newPath')
+
+    # Size limit (write ops only)
+    if path and content is not None and delete_flag is not True:
+        content_bytes = str(content).encode('utf-8')
+        if len(content_bytes) > MAX_DIFF_SIZE:
+            logger.warning('file_diff rejected: size %d exceeds %d', len(content_bytes), MAX_DIFF_SIZE)
+            return
+
+    # Broadcast to all clients EXCEPT the sender before attempting local
+    # filesystem application. Other clients need the diff even if this server
+    # instance does not have the project directory locally available.
+    await _broadcast_custom(room, payload, exclude_user=user_id)
+
+    # Local filesystem application (best-effort)
     room_meta = room_service.get_room(room_id)
     if not room_meta:
         return
@@ -309,17 +358,18 @@ async def _handle_file_diff(room: YRoom, payload: dict[str, Any]) -> None:
         return
 
     try:
-        content = payload.get('content')
-        path = payload.get('path')
-        delete_flag = payload.get('delete')
-        old_path = payload.get('oldPath')
-        new_path = payload.get('newPath')
-
         if path and content is not None and delete_flag is not True:
             target = _safe_path(project_path, path)
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            with open(target, 'w', encoding='utf-8') as f:
-                f.write(str(content))
+            # Atomic write: temp file + replace
+            tmp = target + '.tmp.' + str(uuid.uuid4())[:8]
+            try:
+                with open(tmp, 'wb') as f:
+                    f.write(str(content).encode('utf-8'))
+                os.replace(tmp, target)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
         elif path and delete_flag:
             target = _safe_path(project_path, path)
             if os.path.isfile(target):
@@ -329,12 +379,9 @@ async def _handle_file_diff(room: YRoom, payload: dict[str, Any]) -> None:
             new = _safe_path(project_path, new_path)
             if os.path.isfile(old):
                 os.makedirs(os.path.dirname(new), exist_ok=True)
-                os.rename(old, new)
+                os.replace(old, new)
     except (ValueError, OSError) as exc:
         logger.warning('File diff application failed: %s', exc)
-
-    # Broadcast to all clients EXCEPT the sender
-    await _broadcast_custom(room, payload, exclude_user=user_id)
 
 
 def _resolve_project_path(room_id: str, project_root: str) -> str:
@@ -398,33 +445,38 @@ async def _broadcast_custom(
             logger.debug('Failed to send custom message to client', exc_info=True)
 
 
-def _client_user_id(_client: Any) -> str | None:
+def _client_user_id(client: Any) -> str | None:
     """Best-effort extraction of user_id from a pycrdt Channel.
 
-    The Channel.path contains the room path, not user info. For exclusion
-    purposes we maintain a reverse mapping of client -> user_id.
+    The user_id was attached to the ASGI scope during on_connect.  Some
+    pycrdt-websocket Channel implementations expose that scope, allowing us
+    to skip the sender when broadcasting file_diff.
     """
-    # In the current pycrdt-websocket model, clients are identified by
-    # their Channel object. Since we don't store user metadata on the
-    # Channel directly, broadcast exclusion uses the sender's user_id
-    # from the message payload context (handled inline in _handle_file_diff
-    # via the exclude_user parameter).
-    return None
+    # Try the scope attached to the channel/connection
+    scope = getattr(client, 'scope', None)
+    if scope and isinstance(scope, dict):
+        user_id = scope.get('zaowu_user_id')
+        if user_id:
+            return user_id
+    # Fallback to a manually bound attribute (set by integrations that can
+    # intercept the channel creation).
+    return getattr(client, '_zaowu_user_id', None)
 
 
 # ── WebSocket URL builder ────────────────────────────────────────────
 
-def build_ws_url(room_host_address: str, token: str) -> str:
+def build_ws_url(room_host_address: str, token: str | None = None) -> str:
     """Construct a WebSocket URL for connecting to a community room.
 
-    .. deprecated::
-        建议前端改用 ``new WebSocket(url, ['auth.' + token])`` 通过
-        Sec-WebSocket-Protocol 子协议传递 token，避免 token 出现在 URL 中
-        （URL 会记录在访问日志、浏览器历史、Referer 头中）。
+    The token is appended as a URL query parameter when provided. Note that
+    Sec-WebSocket-Protocol cannot be used for token transfer because
+    pycrdt-websocket's ASGIServer does not echo the selected subprotocol in
+    websocket.accept, which causes browsers to reject the handshake per
+    RFC 6455 §4.1.
 
     Args:
         room_host_address: host:port string (e.g. '192.168.1.100:5000').
-        token: Session token for authentication.
+        token: Optional session token for backwards compatibility.
 
     Returns:
         Full ws:// URL string.
@@ -437,25 +489,23 @@ def build_ws_url(room_host_address: str, token: str) -> str:
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
         host = f'{host}:5000'
-    return f'ws://{host}/api/v1/community/ws/{{room_id}}?token={token}'
+    url = f'ws://{host}/api/v1/community/ws/{{room_id}}'
+    if token:
+        url = f'{url}?token={token}'
+    return url
 
 
-def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
-    """Build the full WebSocket URL for a specific room.
-
-    .. note:: 安全提示
-        返回的 URL 包含 token 查询参数，会暴露在访问日志和浏览器历史中。
-        推荐前端使用此 URL 连接时，通过 Sec-WebSocket-Protocol 传递 token::
-
-            const ws = new WebSocket(wsUrl, ['auth.' + token])
-
-        服务端 ``on_connect`` 会优先从 Sec-WebSocket-Protocol 读取 token。
-        此处仍保留 token 在 URL 中仅为向后兼容。
+def build_ws_url_for_room(room_id: str, host_address: str, token: str | None = None) -> str:
+    """Build the WebSocket URL for a specific room.
 
     Args:
         room_id: The collaboration room id.
         host_address: host:port string.
-        token: Session token.
+        token: Optional session token. If provided, the token is appended as a
+            query parameter. Note that Sec-WebSocket-Protocol is not viable
+            here because pycrdt-websocket's ASGIServer does not echo the
+            selected subprotocol in websocket.accept, causing browsers to
+            reject the handshake per RFC 6455 §4.1.
 
     Returns:
         Full ws:// URL with room_id substituted.
@@ -472,7 +522,10 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str) -> str:
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
         host = f'{host}:5000'
-    return f'ws://{host}/api/v1/community/ws/{room_id}?token={token}'
+    url = f'ws://{host}/api/v1/community/ws/{room_id}'
+    if token:
+        url = f'{url}?token={token}'
+    return url
 
 
 def _resolve_host_address(default_host: str) -> str | None:
@@ -530,16 +583,35 @@ async def _send_room_info(room: YRoom, room_id: str) -> None:
     await _broadcast_custom(room, payload, exclude_user=None)
 
 
+async def _broadcast_room_closed(room_id: str) -> None:
+    """Broadcast a room_closed message to all connected clients."""
+    import re
+    room_name = f'/api/v1/community/ws/{room_id}'
+    try:
+        room = await websocket_server.get_room(room_name)
+    except Exception:
+        return
+    if room is None:
+        return
+    payload = {
+        'type': 'room_closed',
+        'roomId': room_id,
+        'payload': {},
+        'timestamp': int(__import__('time').time() * 1000),
+    }
+    await _broadcast_custom(room, payload, exclude_user=None)
+
+
 # ── ZaoWuASGIServer (on_disconnect cleanup via ContextVar) ──────────
 
 def _on_disconnect_with_cleanup(message: dict[str, Any]) -> None:
     """on_disconnect callback: clean up search registration via ContextVar room_id."""
     room_id = _current_room_id.get('')
+    user_id = _current_user_id.get('')
     if room_id:
         _room_project_paths.pop(room_id, None)
         _room_close_callbacks.pop(room_id, None)
         # Fire user-left hook
-        user_id = _room_users.pop(room_id, '')
         if user_id:
             _fire_user_hook('zaowu_on_user_left', room_id, user_id)
 
@@ -550,20 +622,44 @@ class ZaoWuASGIServer(ASGIServer):
     Each WebSocket connection sets the ContextVar in __call__; the on_disconnect
     callback reads it from the same coroutine context. No instance-level state
     is modified, so multiple concurrent connections are safe.
+
+    Additionally, we attach the ASGI ``scope`` to the ``ASGIWebsocket`` instance
+    so that ``_client_user_id`` can map clients back to their authenticated
+    ``zaowu_user_id`` and correctly honour ``exclude_user`` in broadcasts.
     """
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "websocket":
             import re
+            from inspect import isawaitable
+            from pycrdt.websocket.asgi_server import ASGIWebsocket
+
             path = scope.get("path", "")
             match = re.match(r'^/api(?:/v\d+)?/community/ws/(.+)$', path)
             room_id = match.group(1) if match else path.lstrip('/')
 
-            token = _current_room_id.set(room_id)
+            room_token = _current_room_id.set(room_id)
+            user_token = _current_user_id.set('')
             try:
-                await super().__call__(scope, receive, send)
+                msg = await receive()
+                if msg["type"] != "websocket.connect":
+                    return
+
+                if self._on_connect is not None:
+                    close = self._on_connect(msg, scope)
+                    if isawaitable(close):
+                        close = await close
+                    if close:
+                        return
+
+                await send({"type": "websocket.accept"})
+                # Attach scope so broadcast helpers can read zaowu_user_id.
+                websocket = ASGIWebsocket(receive, send, path, self._on_disconnect)
+                websocket.scope = scope  # type: ignore[attr-defined]
+                await self._websocket_server.serve(websocket)
             finally:
-                _current_room_id.reset(token)
+                _current_user_id.reset(user_token)
+                _current_room_id.reset(room_token)
         else:
             await super().__call__(scope, receive, send)
 

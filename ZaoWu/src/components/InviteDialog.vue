@@ -14,7 +14,7 @@ const copied = ref(false)
 
 const inviteLink = computed(() => {
   const host = props.room.hostAddress || window.location.host
-  return `zaowu://join?host=${encodeURIComponent(host)}&room=${encodeURIComponent(props.room.id)}&token=${encodeURIComponent(props.room.inviteCode)}`
+  return `http://${host}/?join=${encodeURIComponent(props.room.inviteCode)}`
 })
 
 async function refresh() {
@@ -45,8 +45,8 @@ function close() {
         <div class="field">
           <span>{{ t('community.inviteCode') }}</span>
           <div class="copy-row">
-            <code>{{ room.inviteCode }}</code>
-            <button class="icon-btn" :title="t('community.copy')" @click="copy(room.inviteCode)">
+            <code>ZW-{{ room.inviteCode }}</code>
+            <button class="icon-btn" :title="t('community.copy')" @click="copy(`ZW-${room.inviteCode}`)">
               <Copy :size="14" />
             </button>
             <button v-if="store.isHost" class="icon-btn" :title="t('community.refreshInviteCode')" @click="refresh">

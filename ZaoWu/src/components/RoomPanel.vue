@@ -17,6 +17,7 @@ const showJoin = ref(false)
 const showInvite = ref(false)
 const selectedRoom = ref<CollaborationRoom | null>(null)
 const confirmTarget = ref<CollaborationRoom | null>(null)
+const initialJoinCode = ref('')
 
 onMounted(() => {
   store.loadRooms()
@@ -77,6 +78,13 @@ onMounted(() => {
   _visibilityInterval = setInterval(() => {
     store.loadRooms()
   }, 5000)
+
+  // Handle ?join=CODE deep links
+  const pendingCode = store.consumePendingJoinCode()
+  if (pendingCode) {
+    initialJoinCode.value = pendingCode
+    showJoin.value = true
+  }
 })
 
 onUnmounted(() => {
@@ -155,7 +163,7 @@ function copyInviteCode(code: string) {
     </div>
 
     <RoomCreateDialog v-if="showCreate" @close="showCreate = false" @created="handleRoomCreated" />
-    <JoinDialog v-if="showJoin" ref="joinDialog" @close="showJoin = false" @joined="handleJoined" />
+    <JoinDialog v-if="showJoin" ref="joinDialog" :initial-code="initialJoinCode" @close="showJoin = false" @joined="handleJoined" />
     <InviteDialog v-if="showInvite && selectedRoom" :room="selectedRoom" @close="showInvite = false" />
     <ConfirmDialog
       :visible="!!confirmTarget"

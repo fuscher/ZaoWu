@@ -21,6 +21,7 @@ export interface CollaborationRoom {
   name: string
   projectId: string
   hostId: string
+  hostUserId?: string
   hostAddress: string
   status: CollaborationRoomStatus
   inviteCode: string
@@ -66,6 +67,7 @@ export type WSMessageType =
   | 'permission_change'
   | 'room_state'
   | 'room_info'
+  | 'room_closed'
   | 'ping'
   | 'pong'
   | 'error'

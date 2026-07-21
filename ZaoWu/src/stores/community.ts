@@ -24,6 +24,7 @@ export const useCommunityStore = defineStore('community', () => {
   const users = ref<CollaborationUser[]>([])
   const error = ref('')
   const inviteCode = ref('')
+  const pendingJoinCode = ref('')
 
   const isHost = computed(() => currentUser.value?.role === 'host')
   const isInRoom = computed(() => currentRoom.value !== null)
@@ -100,9 +101,9 @@ export const useCommunityStore = defineStore('community', () => {
   }
 
   async function leaveRoom() {
-    if (currentRoom.value && currentUser.value) {
+    if (currentRoom.value && currentUser.value && token.value) {
       try {
-        await communityApi.leaveRoom(currentRoom.value.id, currentUser.value.id)
+        await communityApi.leaveRoom(currentRoom.value.id, currentUser.value.id, token.value)
       } catch {
         // ignore
       }
@@ -111,8 +112,9 @@ export const useCommunityStore = defineStore('community', () => {
   }
 
   async function closeRoom(roomId: string) {
+    if (!token.value) return
     try {
-      await communityApi.closeRoom(roomId)
+      await communityApi.closeRoom(roomId, token.value)
       rooms.value = rooms.value.filter((r) => r.id !== roomId)
       if (currentRoom.value?.id === roomId) {
         resetSession()
@@ -125,9 +127,9 @@ export const useCommunityStore = defineStore('community', () => {
   }
 
   async function updateUserRole(userId: string, role: CollaborationRole, permissions?: Partial<PermissionMatrix>) {
-    if (!currentRoom.value) return
+    if (!currentRoom.value || !token.value) return
     try {
-      const data = await communityApi.updateUser(currentRoom.value.id, userId, { role, permissions })
+      const data = await communityApi.updateUser(currentRoom.value.id, userId, { role, permissions }, token.value)
       const idx = users.value.findIndex((u) => u.id === userId)
       if (idx >= 0) {
         users.value[idx] = data.user
@@ -141,9 +143,9 @@ export const useCommunityStore = defineStore('community', () => {
   }
 
   async function removeUser(userId: string) {
-    if (!currentRoom.value) return
+    if (!currentRoom.value || !token.value) return
     try {
-      await communityApi.removeUser(currentRoom.value.id, userId)
+      await communityApi.removeUser(currentRoom.value.id, userId, token.value)
       users.value = users.value.filter((u) => u.id !== userId)
       error.value = ''
     } catch (err) {
@@ -153,9 +155,9 @@ export const useCommunityStore = defineStore('community', () => {
   }
 
   async function refreshInviteCode() {
-    if (!currentRoom.value) return
+    if (!currentRoom.value || !token.value) return
     try {
-      const data = await communityApi.generateInviteCode(currentRoom.value.id)
+      const data = await communityApi.generateInviteCode(currentRoom.value.id, token.value)
       inviteCode.value = data.inviteCode
       currentRoom.value.inviteCode = data.inviteCode
       error.value = ''
@@ -197,6 +199,12 @@ export const useCommunityStore = defineStore('community', () => {
     inviteCode.value = ''
   }
 
+  function consumePendingJoinCode() {
+    const code = pendingJoinCode.value
+    pendingJoinCode.value = ''
+    return code
+  }
+
   return {
     rooms,
     currentRoom,
@@ -225,5 +233,7 @@ export const useCommunityStore = defineStore('community', () => {
     addUser,
     removeUserLocal,
     resetSession,
+    pendingJoinCode,
+    consumePendingJoinCode,
   }
 })

@@ -1,6 +1,7 @@
 """Community collaboration REST API blueprint."""
 import uuid
-from quart import Blueprint, request, jsonify
+from functools import wraps
+from quart import Blueprint, request, jsonify, g
 
 from services.room_service import (
     RoomServiceError,
@@ -8,6 +9,7 @@ from services.room_service import (
     list_rooms,
     get_room,
     update_room,
+    set_room_host_user_id,
     close_room,
     join_room,
     leave_room,
@@ -17,6 +19,8 @@ from services.room_service import (
     generate_invite_code,
     validate_token,
     cleanup_inactive_rooms,
+    is_host,
+    lookup_room_by_invite_code,
 )
 from services.permission_service import PermissionServiceError
 from community_ws import build_ws_url_for_room
@@ -54,6 +58,7 @@ _SNAKE_TO_CAMEL = {
     'invite_code': 'inviteCode',
     'project_id': 'projectId',
     'host_id': 'hostId',
+    'host_user_id': 'hostUserId',
     'host_address': 'hostAddress',
     'max_users': 'maxUsers',
     'default_role': 'defaultRole',
@@ -62,6 +67,32 @@ _SNAKE_TO_CAMEL = {
     'user_id': 'userId',
     'room_id': 'roomId',
 }
+
+
+def require_token(f):
+    """Decorator that requires a valid Bearer token in the Authorization header."""
+    @wraps(f)
+    async def wrapper(*args, **kwargs):
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return jsonify({'ok': False, 'error': 'unauthorized'}), 401
+        token = auth[7:].strip()
+        session = validate_token(token)
+        if not session:
+            return jsonify({'ok': False, 'error': 'invalid or expired token'}), 401
+        g.zaowu_session = session
+        return await f(*args, **kwargs)
+    return wrapper
+
+
+def _require_host(room_id: str) -> tuple[bool, tuple]:
+    """Return (ok, error_response) for operations restricted to the room host."""
+    session = g.get('zaowu_session')
+    if not session:
+        return False, (jsonify({'ok': False, 'error': 'unauthorized'}), 401)
+    if not is_host(room_id, session['user_id']):
+        return False, (jsonify({'ok': False, 'error': 'forbidden'}), 403)
+    return True, ()
 
 
 def _to_camel(obj):
@@ -109,21 +140,23 @@ async def api_create_room():
     # Auto-join the host as first participant so they get credentials immediately
     user_name = body.get('userName', 'Host')
     try:
-        host_user_id = _host_id()
         host_user, token = join_room(room['id'], room['invite_code'], user_name)
-        # Override the auto-assigned role and id to match room.host_id
+        # Override the auto-assigned role to host
         host_user = update_user(room['id'], host_user['id'], role='host')
-        # Store a mapping so leave_room can match host_user.id to room.host_id
-        # (host_id = machine UUID, user.id = random UUID, they differ by design)
-        import services.room_service as _svc
-        _svc._host_user_map[room['id']] = host_user['id']
+        # Persist the host's in-room user id on the room so host checks are
+        # stable across restarts and do not rely on the runtime _host_user_map.
+        room = set_room_host_user_id(room['id'], host_user['id'])
     except RoomServiceError:
         return jsonify({'ok': False, 'error': 'failed to join host to room'}), 500
 
+    # Return WebSocket URL without token; the frontend appends the token as a
+    # URL query parameter (e.g. ?token=<token>) when opening the WebSocket.
+    # Note: Sec-WebSocket-Protocol is not viable here because pycrdt-websocket's
+    # ASGIServer does not echo the selected subprotocol in websocket.accept,
+    # causing browsers to reject the handshake per RFC 6455 §4.1.
     ws_url = build_ws_url_for_room(
         room['id'],
         room.get('host_address') or request.host,
-        token,
     )
 
     return jsonify({
@@ -142,7 +175,27 @@ async def api_list_rooms():
     return jsonify({'ok': True, 'rooms': _to_camel(rooms)})
 
 
+@community_bp.route('/rooms/lookup', methods=['GET'])
+async def api_lookup_room():
+    code = request.args.get('code', '').strip().upper()
+    if not code or len(code) < 6:
+        return jsonify({'ok': False, 'error': 'invalid code'}), 400
+    matched = lookup_room_by_invite_code(code)
+    if not matched:
+        return jsonify({'ok': False, 'error': 'room not found'}), 404
+    return jsonify({
+        'ok': True,
+        'room': _to_camel({
+            'id': matched['id'],
+            'name': matched['name'],
+            'host_address': matched['host_address'],
+            'invite_code': matched['invite_code'],
+        }),
+    })
+
+
 @community_bp.route('/rooms/<room_id>', methods=['GET'])
+@require_token
 async def api_get_room(room_id):
     room = get_room(room_id)
     if not room:
@@ -157,7 +210,11 @@ async def api_get_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>', methods=['PATCH'])
+@require_token
 async def api_update_room(room_id):
+    ok, err = _require_host(room_id)
+    if not ok:
+        return err
     body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
@@ -171,7 +228,11 @@ async def api_update_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>', methods=['DELETE'])
+@require_token
 async def api_close_room(room_id):
+    ok, err = _require_host(room_id)
+    if not ok:
+        return err
     try:
         close_room(room_id)
     except RoomServiceError as e:
@@ -196,7 +257,7 @@ async def api_join_room(room_id):
         return jsonify({'ok': False, 'error': str(e)}), 400
 
     room = get_room(room_id)
-    ws_url = build_ws_url_for_room(room_id, room.get('host_address', request.host), token)
+    ws_url = build_ws_url_for_room(room_id, room.get('host_address', request.host))
     room_state = {
         'users': get_room_users(room_id),
         'permissions': user.get('permissions', {}),
@@ -211,23 +272,24 @@ async def api_join_room(room_id):
 
 
 @community_bp.route('/rooms/<room_id>/leave', methods=['POST'])
+@require_token
 async def api_leave_room(room_id):
     body = await request.get_json(silent=True) or {}
     user_id = body.get('userId')
     if not user_id:
         return jsonify({'ok': False, 'error': 'missing userId'}), 400
 
-    import services.room_service as _svc
+    session = g.get('zaowu_session')
+    # 普通用户只能让自己离开；host 可以踢人或让自己离开（触发关房）
+    if user_id != session['user_id'] and not is_host(room_id, session['user_id']):
+        return jsonify({'ok': False, 'error': 'forbidden'}), 403
 
-    # The host_id stored in the room is a machine UUID (from _host_id()).
-    # The user_id passed from the frontend is the *host user's* assigned
-    # UUID.  We need to check _host_user_map so that when the host-user
-    # leaves, the entire room is closed.
     leave_room(room_id, user_id)
     return jsonify({'ok': True})
 
 
 @community_bp.route('/rooms/<room_id>/users', methods=['GET'])
+@require_token
 async def api_get_users(room_id):
     if not get_room(room_id):
         return jsonify({'ok': False, 'error': 'room not found'}), 404
@@ -235,7 +297,11 @@ async def api_get_users(room_id):
 
 
 @community_bp.route('/rooms/<room_id>/users/<user_id>', methods=['PATCH'])
+@require_token
 async def api_update_user(room_id, user_id):
+    ok, err = _require_host(room_id)
+    if not ok:
+        return err
     body = await request.get_json(silent=True)
     if not body:
         return jsonify({'ok': False, 'error': 'missing body'}), 400
@@ -254,7 +320,11 @@ async def api_update_user(room_id, user_id):
 
 
 @community_bp.route('/rooms/<room_id>/users/<user_id>', methods=['DELETE'])
+@require_token
 async def api_remove_user(room_id, user_id):
+    ok, err = _require_host(room_id)
+    if not ok:
+        return err
     try:
         remove_user(room_id, user_id)
     except RoomServiceError as e:
@@ -263,33 +333,16 @@ async def api_remove_user(room_id, user_id):
 
 
 @community_bp.route('/rooms/<room_id>/invite', methods=['POST'])
+@require_token
 async def api_generate_invite(room_id):
+    ok, err = _require_host(room_id)
+    if not ok:
+        return err
     try:
         invite_code = generate_invite_code(room_id)
     except RoomServiceError as e:
         return jsonify({'ok': False, 'error': str(e)}), 404
     return jsonify({'ok': True, 'inviteCode': invite_code})
-
-
-@community_bp.route('/rooms/<room_id>/ws-url', methods=['GET'])
-async def api_get_ws_url(room_id):
-    # 优先从 Authorization 头读取 token（推荐方式，避免 URL 泄露）
-    auth_header = request.headers.get('Authorization', '')
-    token = ''
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:].strip()
-    # 向后兼容：query 参数 fallback（已弃用，未来版本将移除）
-    if not token:
-        token = request.args.get('token', '')
-
-    session = validate_token(token)
-    if not session or session['room_id'] != room_id:
-        return jsonify({'ok': False, 'error': 'invalid token'}), 403
-    room = get_room(room_id)
-    if not room:
-        return jsonify({'ok': False, 'error': 'room not found'}), 404
-    ws_url = build_ws_url_for_room(room_id, room.get('host_address', request.host), token)
-    return jsonify({'ok': True, 'wsUrl': ws_url})
 
 
 @community_bp.route('/cleanup', methods=['POST'])

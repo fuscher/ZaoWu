@@ -10,7 +10,7 @@ from services.skill_registry import SkillDefinition, SkillRegistry
 
 # Importing server_quart triggers plugin manager construction; this is safe in
 # tests because it only reads the plugins/ directory.
-from server_quart import _is_safe_skills_dir
+from server_quart import _is_safe_skills_dir, _is_origin_allowed
 
 
 @pytest.fixture(autouse=True)
@@ -263,3 +263,32 @@ def test_startup_plugins_skips_deleted_plugin_skills(project_tree, tmp_path):
 
     registry = SkillRegistry.get_instance()
     assert registry.get('removed_plugin_skill') is None
+
+
+def test_is_origin_allowed_local_and_private():
+    """Localhost, loopback, RFC1918 private and link-local origins are allowed."""
+    allowed = [
+        'http://localhost:5000',
+        'http://0.0.0.0:5000',
+        'http://127.0.0.1:5000',
+        'http://192.168.1.5:5000',
+        'http://10.0.0.1:5000',
+        'http://172.16.0.1:5000',
+        'http://169.254.1.1:5000',
+        'ws://192.168.1.5:5000',
+    ]
+    for origin in allowed:
+        assert _is_origin_allowed(origin) is True, origin
+
+
+def test_is_origin_allowed_rejects_public():
+    """Public domains and public IPs are rejected."""
+    rejected = [
+        'https://evil.com',
+        'http://8.8.8.8',
+        'http://1.1.1.1',
+        'ftp://192.168.1.5',  # invalid scheme
+        '',
+    ]
+    for origin in rejected:
+        assert _is_origin_allowed(origin) is False, origin

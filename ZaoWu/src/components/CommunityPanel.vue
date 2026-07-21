@@ -32,10 +32,12 @@ const collab = computed(() => {
     roomId: store.currentRoom.id,
     userId: store.currentUser.id,
     wsUrl: store.wsUrl,
+    token: store.token,
     userName: store.currentUser.name,
     userColor: store.currentUser.color,
   })
-  c.connect()
+  // With connect: true, y-websocket starts connecting automatically.
+  // We keep the exposed connect() helper for explicit reconnection if needed.
   store.setConnectionStatus(c.status.value)
   _collab.value = c
   _watching.value = true
@@ -147,7 +149,8 @@ async function leave() {
 
 function copyInviteLink() {
   if (!store.currentRoom) return
-  const link = `zaowu://join?host=${encodeURIComponent(store.currentRoom.hostAddress)}&room=${encodeURIComponent(store.currentRoom.id)}&token=${encodeURIComponent(store.currentRoom.inviteCode)}`
+  const host = store.currentRoom.hostAddress || window.location.host
+  const link = `http://${host}/?join=${encodeURIComponent(store.currentRoom.inviteCode)}`
   navigator.clipboard.writeText(link)
 }
 </script>

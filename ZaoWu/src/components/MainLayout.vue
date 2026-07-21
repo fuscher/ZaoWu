@@ -12,6 +12,7 @@ import CommunityPanel from './CommunityPanel.vue'
 import PluginManagementDetail from './PluginManagementDetail.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
+import { useCommunityStore } from '@/stores/community'
 import { useI18n } from '@/i18n'
 import { pluginEventBus } from '@/plugin-system/events'
 
@@ -23,6 +24,7 @@ const sideCollapsed = ref(false)
 const highlightSection = ref<string | null>(null)
 const selectedPluginName = ref<string | null>(null)
 const editorStore = useEditorStore()
+const communityStore = useCommunityStore()
 const { t } = useI18n()
 const clickHint = computed(() => t('filePreview.clickHint'))
 
@@ -49,6 +51,14 @@ onMounted(() => {
     activeView.value = 'plugins'
     sideCollapsed.value = false
   })
+
+  // Handle shared HTTP join links such as http://host/?join=ABCDEF
+  const joinCode = (window as any).__JOIN_CODE__
+  if (joinCode && typeof joinCode === 'string') {
+    communityStore.pendingJoinCode = joinCode
+    activeView.value = 'community'
+    sideCollapsed.value = false
+  }
 })
 </script>
 

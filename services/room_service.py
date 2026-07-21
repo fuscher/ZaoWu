@@ -26,10 +26,21 @@ class RoomServiceError(Exception):
 BASE_DIR = get_project_root()
 ROOMS_FILE = os.path.join(BASE_DIR, 'community_rooms.json')
 DATA_DIR = os.path.join(BASE_DIR, 'data', 'collaboration')
+USERS_FILE = os.path.join(DATA_DIR, 'community_users.json')
+SESSIONS_FILE = os.path.join(DATA_DIR, 'community_sessions.json')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 
 ABSOLUTE_MAX_USERS = 10
 INVITE_CODE_LENGTH = 6
+
+# Token 有效期（2 小时）
+TOKEN_TTL_MS = 2 * 60 * 60 * 1000
+
+# 邀请码安全字符集：排除 0/O/1/I/5/S/L 等易混淆字符
+_SAFE_CHARS = 'ABCDEFGHJKMNPQRTUVWXYZ2346789'
+
+# 同一房间每分钟最多允许 5 次错误邀请码尝试
+MAX_FAILURES_PER_MINUTE = 5
 
 _room_lock = threading.RLock()
 
@@ -92,9 +103,99 @@ def _write_rooms(data: Dict[str, Any]) -> None:
         os.replace(tmp, ROOMS_FILE)
 
 
+def _read_json_file(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def _write_json_file(path: str, data: Dict[str, Any]) -> None:
+    _ensure_data_dir()
+    with _room_lock:
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+
+
+def _persist_users() -> None:
+    """Persist in-memory users to disk."""
+    _write_json_file(USERS_FILE, _users_by_room)
+
+
+def _persist_sessions() -> None:
+    """Persist in-memory sessions to disk."""
+    _write_json_file(SESSIONS_FILE, _sessions)
+
+
+def _load_persisted_state() -> None:
+    """Load users/sessions from disk on startup and prune stale data.
+
+    Users are loaded as ``offline`` because no WebSocket connection is active
+    yet. Expired sessions are dropped immediately.
+    """
+    global _users_by_room, _sessions
+
+    now = _now_ms()
+
+    raw_users = _read_json_file(USERS_FILE)
+    loaded_users: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for room_id, users in raw_users.items():
+        if not isinstance(users, dict):
+            continue
+        loaded_users[room_id] = {}
+        for user_id, user in users.items():
+            if isinstance(user, dict):
+                user = dict(user)
+                user['status'] = 'offline'
+                loaded_users[room_id][user_id] = user
+    _users_by_room = loaded_users
+
+    raw_sessions = _read_json_file(SESSIONS_FILE)
+    loaded_sessions: Dict[str, Dict[str, Any]] = {}
+    for token, session in raw_sessions.items():
+        if not isinstance(session, dict):
+            continue
+        # Drop expired tokens
+        if now - session.get('created_at', 0) > TOKEN_TTL_MS:
+            continue
+        # Only keep sessions whose room still exists and user was loaded
+        room_id = session.get('room_id', '')
+        user_id = session.get('user_id', '')
+        if room_id in _users_by_room and user_id in _users_by_room[room_id]:
+            loaded_sessions[token] = session
+    _sessions = loaded_sessions
+
+    _migrate_host_user_ids()
+    _persist_users()
+    _persist_sessions()
+
+
+def _migrate_host_user_ids() -> None:
+    """Backfill host_user_id for rooms created before that field existed.
+
+    Uses the persisted user list to find the host user of each active room.
+    """
+    data = _read_rooms()
+    changed = False
+    for room in data.get('rooms', []):
+        if room.get('status') != 'active' or room.get('host_user_id'):
+            continue
+        users = _users_by_room.get(room['id'], {})
+        host_user = next((u for u in users.values() if u.get('role') == 'host'), None)
+        if host_user:
+            room['host_user_id'] = host_user['id']
+            changed = True
+    if changed:
+        _write_rooms(data)
+
+
 def _generate_invite_code(length: int = INVITE_CODE_LENGTH) -> str:
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
+    return ''.join(random.choice(_SAFE_CHARS) for _ in range(length))
 
 
 def _generate_token() -> str:
@@ -156,6 +257,7 @@ def _new_room(
         'name': name,
         'project_id': project_id,
         'host_id': host_id,
+        'host_user_id': '',  # set when the host actually joins the room
         'host_address': host_address,
         'status': 'active',
         'invite_code': _generate_invite_code(),
@@ -221,6 +323,21 @@ def update_room(room_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
     return room
 
 
+def set_room_host_user_id(room_id: str, host_user_id: str) -> Dict[str, Any]:
+    """Persist the in-room user UUID of the host after they join.
+
+    This eliminates the need for the runtime-only ``_host_user_map``.
+    """
+    data = _read_rooms()
+    room = next((r for r in data.get('rooms', []) if r['id'] == room_id), None)
+    if not room:
+        raise RoomServiceError('room not found')
+    room['host_user_id'] = host_user_id
+    room['updated_at'] = _now_ms()
+    _write_rooms(data)
+    return room
+
+
 def close_room(room_id: str) -> None:
     data = _read_rooms()
     room = next((r for r in data.get('rooms', []) if r['id'] == room_id), None)
@@ -262,6 +379,7 @@ def generate_invite_code(room_id: str) -> str:
 _users_by_room: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _sessions: Dict[str, Dict[str, Any]] = {}
 _host_user_map: Dict[str, str] = {}  # room_id -> host user UUID (created by routes/community.py)
+_join_failures: Dict[str, List[int]] = {}  # room_id -> list of failed attempt timestamps
 
 
 def _get_room_users(room_id: str) -> Dict[str, Dict[str, Any]]:
@@ -289,8 +407,21 @@ def join_room(
         raise RoomServiceError('room not found')
     if room['status'] != 'active':
         raise RoomServiceError('room is not active')
+
+    # 邀请码暴力穷举防护
+    now = _now_ms()
+    failures = _join_failures.get(room_id, [])
+    failures = [t for t in failures if now - t < 60_000]
+    if len(failures) >= MAX_FAILURES_PER_MINUTE:
+        raise RoomServiceError('too many attempts, please wait')
+
     if room['invite_code'] != invite_code.upper():
+        failures.append(now)
+        _join_failures[room_id] = failures
         raise RoomServiceError('invalid invite code')
+
+    # 成功匹配后清除失败记录
+    _join_failures.pop(room_id, None)
 
     users = _get_room_users(room_id)
     if len(users) >= room['max_users']:
@@ -316,6 +447,8 @@ def join_room(
     }
 
     refresh_room_activity(room_id)
+    _persist_users()
+    _persist_sessions()
     return user, token
 
 
@@ -328,17 +461,20 @@ def leave_room(room_id: str, user_id: str) -> None:
     """
     room = get_room(room_id)
 
-    # Check if the leaver is the host — match by host_id (machine UUID) or
-    # by the _host_user_map entry (routes/community.py records which user
-    # UUID belongs to the host of each room).
-    is_host = False
+    # Check if the leaver is the host.
+    # Prefer the persisted host_user_id; fall back to legacy checks for
+    # rooms created before this field existed.
+    is_host_user = False
     if room:
-        if room.get('host_id') == user_id:
-            is_host = True
-        if _host_user_map.get(room_id) == user_id:
-            is_host = True
+        host_user_id = room.get('host_user_id')
+        if host_user_id:
+            is_host_user = host_user_id == user_id
+        elif room.get('host_id') == user_id:
+            is_host_user = True
+        elif _host_user_map.get(room_id) == user_id:
+            is_host_user = True
 
-    if is_host:
+    if is_host_user:
         # Host left — close the room and evict everyone
         users = _get_room_users(room_id)
         expired_sessions = [
@@ -349,6 +485,8 @@ def leave_room(room_id: str, user_id: str) -> None:
         users.clear()
         _host_user_map.pop(room_id, None)
         close_room(room_id)
+        _persist_users()
+        _persist_sessions()
         return
 
     # Regular user — mark offline, keep session for potential reconnection
@@ -360,6 +498,9 @@ def leave_room(room_id: str, user_id: str) -> None:
     for token in expired:
         _sessions.pop(token, None)
 
+    _persist_users()
+    _persist_sessions()
+
 
 def remove_user(room_id: str, user_id: str) -> None:
     users = _get_room_users(room_id)
@@ -368,6 +509,8 @@ def remove_user(room_id: str, user_id: str) -> None:
     expired = [t for t, s in _sessions.items() if s['room_id'] == room_id and s['user_id'] == user_id]
     for token in expired:
         _sessions.pop(token, None)
+    _persist_users()
+    _persist_sessions()
 
 
 def get_room_users(room_id: str) -> List[Dict[str, Any]]:
@@ -398,7 +541,14 @@ def update_user(
 
 
 def validate_token(token: str) -> Optional[Dict[str, Any]]:
-    return _sessions.get(token)
+    session = _sessions.get(token)
+    if not session:
+        return None
+    if _now_ms() - session.get('created_at', 0) > TOKEN_TTL_MS:
+        _sessions.pop(token, None)
+        _persist_sessions()
+        return None
+    return session
 
 
 def set_user_status(room_id: str, user_id: str, status: str) -> None:
@@ -407,17 +557,64 @@ def set_user_status(room_id: str, user_id: str, status: str) -> None:
         user['status'] = status
 
 
+def is_host(room_id: str, user_id: str) -> bool:
+    """Check whether ``user_id`` is the host of the room.
+
+    The canonical source is the persisted ``host_user_id`` field on the room.
+    For rooms created before that field existed, we fall back to the runtime
+    ``_host_user_map`` or the legacy machine-UUID comparison.
+    """
+    room = get_room(room_id)
+    if not room:
+        return False
+    host_user_id = room.get('host_user_id')
+    if host_user_id:
+        return host_user_id == user_id
+    if room.get('host_id') == user_id:
+        return True
+    return _host_user_map.get(room_id) == user_id
+
+
+def lookup_room_by_invite_code(invite_code: str) -> Optional[Dict[str, Any]]:
+    """Find an active room by its invite code (case-insensitive)."""
+    code = invite_code.strip().upper()
+    if not code:
+        return None
+    for room in list_rooms():
+        if room.get('invite_code', '').upper() == code:
+            return room
+    return None
+
+
 def cleanup_inactive_rooms() -> int:
-    """Close rooms that have been inactive beyond the timeout threshold."""
+    """Close rooms that have been inactive beyond the timeout threshold.
+
+    Also removes expired sessions/tokens to prevent stale credentials.
+    """
     data = _read_rooms()
     now = _now_ms()
     timeout_ms = _room_inactive_timeout_minutes() * 60 * 1000
     closed = 0
+    closed_room_ids: List[str] = []
     for room in data.get('rooms', []):
         if room['status'] == 'active' and now - room.get('updated_at', 0) > timeout_ms:
             room['status'] = 'closed'
             room['updated_at'] = now
+            closed_room_ids.append(room['id'])
             closed += 1
+
     if closed:
         _write_rooms(data)
+
+    # 清理过期 token：与已关闭房间关联，或超过 TOKEN_TTL_MS 的独立会话
+    expired_tokens = [
+        t for t, s in _sessions.items()
+        if s.get('room_id') in closed_room_ids or now - s.get('created_at', 0) > TOKEN_TTL_MS
+    ]
+    for token in expired_tokens:
+        _sessions.pop(token, None)
+
+    if expired_tokens:
+        _persist_sessions()
+
     return closed
