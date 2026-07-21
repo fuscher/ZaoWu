@@ -74,7 +74,8 @@ def search_project(query: str, project_path: str = None) -> dict:
 
 def _read_settings() -> dict:
     """读取 settings.json"""
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    from zaowu_paths import get_project_root
+    base_dir = get_project_root()
     settings_file = os.path.join(base_dir, 'settings.json')
     if os.path.exists(settings_file):
         try:

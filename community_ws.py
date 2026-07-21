@@ -28,10 +28,11 @@ from pycrdt.websocket import ASGIServer, WebsocketServer, YRoom
 from services import room_service
 from services.permission_service import can_edit
 from plugin_system import get_plugin_manager
+from zaowu_paths import get_project_root
 
 logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = get_project_root()
 DATA_DIR = os.path.join(BASE_DIR, 'data', 'collaboration')
 
 def _ws_exception_handler(exc: Exception, log: logging.Logger) -> bool:

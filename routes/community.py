@@ -33,7 +33,8 @@ def _now_ms() -> int:
 def _host_id() -> str:
     """Return a stable host user id for this server instance."""
     import os
-    marker = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.host_id')
+    from zaowu_paths import get_project_root
+    marker = os.path.join(get_project_root(), '.host_id')
     try:
         if os.path.exists(marker):
             with open(marker, 'r', encoding='utf-8') as f:

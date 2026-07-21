@@ -15,7 +15,9 @@ import os
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from zaowu_paths import get_project_root
+
+BASE_DIR = get_project_root()
 LOG_FILE = os.path.join(BASE_DIR, 'logs', 'app.ndjson')
 
 MAX_LOG_SIZE = 2 * 1024 * 1024   # 2MB 滚动

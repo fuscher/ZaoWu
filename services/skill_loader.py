@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from services.skill_registry import SkillDefinition, SkillRegistry
+from zaowu_paths import get_agent_modules_dir
 
 
 MODULE_PREFIX = 'zaowu_skill_'
@@ -33,10 +34,12 @@ SKILL_STATE_FILENAME = '.skill_state.json'
 MAX_SKILL_NAME_LENGTH = 50
 
 # Default skills directory, centralised here to avoid circular imports between
-# ``server_quart`` and ``routes.agent_skills``.
+# ``server_quart`` and ``routes.agent_skills``.  In a PyInstaller bundle the
+# skills live inside ``_internal/agent_modules/skills``; in development they are
+# at the repository root.
 DEFAULT_SKILLS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'agent_modules', 'skills',
+    get_agent_modules_dir(),
+    'skills',
 )
 
 logger = logging.getLogger('services.skill_loader')

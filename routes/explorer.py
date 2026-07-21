@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify
 
 from plugin_system import get_plugin_manager
+from zaowu_paths import get_project_root
 
 explorer_bp = Blueprint('explorer', __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 PROJECTS_FILE = os.path.join(BASE_DIR, 'projects.json')
 
 _project_lock = __import__('threading').Lock()

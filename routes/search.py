@@ -3,10 +3,11 @@ import json
 import threading
 import uuid
 from quart import Blueprint, request, jsonify
+from zaowu_paths import get_project_root
 
 search_bp = Blueprint('search', __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 
 _search_events = {}

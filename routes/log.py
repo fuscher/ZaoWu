@@ -2,10 +2,11 @@ import os
 import json
 import logging
 from quart import Blueprint, jsonify
+from zaowu_paths import get_project_root
 
 log_bp = Blueprint('log', __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 LOG_FILE = os.path.join(BASE_DIR, 'log.json')
 
 _logger = logging.getLogger('zaowu.routes.log')

@@ -6,10 +6,11 @@ import threading
 import requests
 from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify, Response
+from zaowu_paths import get_project_root
 
 chat_bp = Blueprint('chat', __name__)
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 PROVIDERS_FILE = os.path.join(BASE_DIR, 'providers.json')
 CONFIG_FILE = os.path.join(BASE_DIR, 'chat_config.json')
 PRESETS_FILE = os.path.join(BASE_DIR, 'chat_presets.json')

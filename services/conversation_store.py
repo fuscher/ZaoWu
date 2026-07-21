@@ -21,9 +21,11 @@ from typing import Any, Dict, List, Optional, AsyncIterator
 
 import aiosqlite
 
+from zaowu_paths import get_project_root
+
 logger = logging.getLogger('zaowu.services.conversation_store')
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 DEFAULT_DB_PATH = os.path.join(BASE_DIR, 'data', 'conversations.db')
 
 # ── SQL ───────────────────────────────────────────────────────────

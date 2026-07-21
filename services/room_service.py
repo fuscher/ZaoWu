@@ -16,13 +16,14 @@ from .permission_service import (
     VALID_ROLES,
     PermissionServiceError,
 )
+from zaowu_paths import get_project_root
 
 
 class RoomServiceError(Exception):
     pass
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_project_root()
 ROOMS_FILE = os.path.join(BASE_DIR, 'community_rooms.json')
 DATA_DIR = os.path.join(BASE_DIR, 'data', 'collaboration')
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')

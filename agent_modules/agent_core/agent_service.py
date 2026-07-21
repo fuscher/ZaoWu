@@ -18,10 +18,11 @@ from services.tool_registry import ToolRegistry
 from services.tool_executor import ToolExecutor
 from services.skill_registry import SkillDefinition
 from agent_modules.agent_core.sandbox import SkillSandbox
+from zaowu_paths import get_project_root
 
 logger = logging.getLogger('agent_modules.agent_core.agent_service')
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE_DIR = get_project_root()
 PROVIDERS_FILE = os.path.join(BASE_DIR, 'providers.json')
 
 # 默认系统提示词

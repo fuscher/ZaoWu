@@ -1,17 +1,19 @@
 import os
+import sys
 import json
 import locale
 import asyncio
 import logging
 from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
+from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir
 
 app = Quart(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DIST_DIR = os.path.join(BASE_DIR, 'ZaoWu', 'dist')
+BASE_DIR = get_project_root()
+DIST_DIR = get_dist_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
-PLUGINS_DIR = os.path.join(BASE_DIR, 'plugins')
+PLUGINS_DIR = get_plugins_dir()
 
 API_VERSION = 'v1'
 
