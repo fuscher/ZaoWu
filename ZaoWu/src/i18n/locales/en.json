@@ -414,6 +414,7 @@
   "agent": {
     "title": "Agent",
     "agentMode": "Agent Mode",
+    "agentModeActive": "Agent mode active",
     "agentModeDesc": "AI can read files, search code, execute commands",
     "agentThinking": "Agent thinking...",
     "skill": "Skill",

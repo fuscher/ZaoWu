@@ -25,7 +25,10 @@ function handleStop() {
   chatStore.stopStreaming()
 }
 
-function toggleAgentMode() {
+async function toggleAgentMode() {
+  if (!chatStore.currentConversation) {
+    await chatStore.createNewConversation()
+  }
   chatStore.agentMode = !chatStore.agentMode
 }
 
@@ -80,7 +83,7 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
 
         <select
-          v-if="chatStore.agentMode && chatStore.availableSkills.length > 0"
+          v-if="chatStore.agentMode"
           v-model="chatStore.selectedSkill"
           class="skill-select"
           :title="t('agent.skill')"
@@ -96,7 +99,15 @@ function handleKeydown(e: KeyboardEvent) {
           </option>
         </select>
       </div>
-      <span class="hint">{{ chatStore.agentMode ? t('agent.agentThinking') : t('chat.shortcutHint') }}</span>
+      <span class="hint">
+        {{
+          chatStore.isStreaming
+            ? t('agent.agentThinking')
+            : chatStore.agentMode
+              ? t('agent.agentModeActive')
+              : t('chat.shortcutHint')
+        }}
+      </span>
     </div>
   </div>
 </template>

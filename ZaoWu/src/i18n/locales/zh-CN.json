@@ -414,6 +414,7 @@
   "agent": {
     "title": "智能体",
     "agentMode": "智能体模式",
+    "agentModeActive": "智能体模式已开启",
     "agentModeDesc": "AI 可读取文件、搜索代码、执行命令",
     "agentThinking": "智能体正在思考...",
     "skill": "选择技能",
