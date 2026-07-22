@@ -28,47 +28,67 @@ const renderedContent = computed(() => {
   return md.render(props.message.content)
 })
 
-/** Stage 8: 从已持久化的消息中还原工具调用卡片 */
-const historicalToolCalls = computed(() => {
-  const items: { toolCall?: ToolCall; toolResult?: ToolResult }[] = []
+/**
+ * Stage 9: 从已持久化的消息中配对还原工具调用+结果卡片。
+ *
+ * 修复点：
+ * - F06: 将分开存储的 tool_call（assistant 消息）和 tool 结果（tool 消息）按
+ *   tool_call_id 合并为一张卡片，而非各自独立渲染。
+ * - F09: tool 角色消息的 content 不再通过 Markdown 渲染，避免与卡片双重显示。
+ */
+const pairedToolCalls = computed(() => {
+  type Pair = { toolCall: ToolCall; toolResult?: ToolResult }
+  const pairs: Pair[] = []
 
-  if (props.message.role === 'assistant' && props.message.tool_calls) {
-    for (const tc of props.message.tool_calls) {
-      const fn = (tc as any).function
-      let args: Record<string, unknown> = {}
-      try {
-        args = fn?.arguments ? JSON.parse(fn.arguments) : (tc as any).arguments || {}
-      } catch {
-        args = {}
-      }
-      items.push({
-        toolCall: {
-          requestId: tc.id,
-          name: fn?.name || (tc as any).name || 'unknown',
-          arguments: args,
-        },
-      })
-    }
-  } else if (props.message.role === 'tool') {
-    const content = props.message.content || ''
-    let success = true
+  if (props.message.role !== 'assistant' || !props.message.tool_calls) return pairs
+
+  // 查找后续的 tool 结果消息（它们紧跟在 assistant 消息后面）
+  const allMessages = chatStore.currentMessages
+  const msgIndex = allMessages.findIndex((m) => m.id === props.message.id)
+  if (msgIndex === -1) return pairs
+
+  for (const tc of props.message.tool_calls) {
+    const fn = (tc as any).function
+    let args: Record<string, unknown> = {}
     try {
-      const parsed = JSON.parse(content)
-      success = parsed.success !== false
+      args = fn?.arguments ? JSON.parse(fn.arguments) : (tc as any).arguments || {}
     } catch {
-      success = true
+      args = {}
     }
-    items.push({
-      toolResult: {
-        requestId: props.message.tool_call_id || '',
-        tool: props.message.name || 'unknown',
-        success,
-        content,
-      },
-    })
+
+    const toolCall: ToolCall = {
+      requestId: tc.id,
+      name: fn?.name || (tc as any).name || 'unknown',
+      arguments: args,
+    }
+
+    // 在后续消息中查找匹配的 tool 结果（按 tool_call_id 配对）
+    let toolResult: ToolResult | undefined
+    for (let i = msgIndex + 1; i < allMessages.length; i++) {
+      const m = allMessages[i]
+      if (!m) break
+      if (m.role !== 'tool') break
+      if (m.tool_call_id === tc.id) {
+        let success = true
+        try {
+          const parsed = JSON.parse(m.content)
+          success = parsed.success !== false
+        } catch {
+          success = true
+        }
+        toolResult = {
+          requestId: m.tool_call_id || '',
+          tool: m.name || 'unknown',
+          success,
+          content: m.content,
+        }
+        break
+      }
+    }
+    pairs.push({ toolCall, toolResult })
   }
 
-  return items
+  return pairs
 })
 
 const isUser = computed(() => props.message.role === 'user')
@@ -100,20 +120,25 @@ const displayName = computed(() => {
         <span v-if="message.model && !isUser" class="model-tag">{{ message.model }}</span>
       </div>
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
+      <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
+      <div v-else-if="message.role === 'tool'" class="content-text tool-result-text" />
       <div v-else class="content-md" v-html="renderedContent" />
-      <!-- Stage 8: Tool call cards for agent mode -->
-      <div v-if="!isUser && chatStore.agentMode && (chatStore.currentToolResults.size > 0 || chatStore.pendingConfirmations.size > 0)" class="tool-calls">
+      <!-- Stage 9: 实时工具调用卡片（仅当前正在流式生成的消息） -->
+      <div
+        v-if="!isUser && isStreaming && chatStore.streamingMessageId === message.id"
+        class="tool-calls"
+      >
         <ToolCallCard
-          v-for="[requestId, result] in chatStore.currentToolResults"
+          v-for="[requestId, result] in chatStore.toolResultsFor(message.id)"
           :key="requestId"
-          :tool-call="chatStore.currentToolCalls.get(requestId)"
+          :tool-call="chatStore.toolCallsFor(message.id).get(requestId)"
           :tool-result="result"
-          :requires-approval="chatStore.pendingConfirmations.has(requestId)"
+          :requires-approval="chatStore.pendingFor(message.id).has(requestId)"
           @approve="chatStore.confirmTool($event, true)"
           @reject="chatStore.confirmTool($event, false)"
         />
         <ToolCallCard
-          v-for="[requestId, toolCall] in chatStore.pendingConfirmations"
+          v-for="[requestId, toolCall] in chatStore.pendingFor(message.id)"
           :key="`pending-${requestId}`"
           :tool-call="toolCall"
           :requires-approval="true"
@@ -121,13 +146,13 @@ const displayName = computed(() => {
           @reject="chatStore.confirmTool($event, false)"
         />
       </div>
-      <!-- Stage 8: Historical tool calls persisted in messages -->
-      <div v-if="!isUser && historicalToolCalls.length > 0" class="tool-calls">
+      <!-- Stage 9: 历史工具调用配对卡片（合并 call + result） -->
+      <div v-if="!isUser && pairedToolCalls.length > 0" class="tool-calls">
         <ToolCallCard
-          v-for="(item, index) in historicalToolCalls"
+          v-for="(pair, index) in pairedToolCalls"
           :key="index"
-          :tool-call="item.toolCall"
-          :tool-result="item.toolResult"
+          :tool-call="pair.toolCall"
+          :tool-result="pair.toolResult"
         />
       </div>
       <div v-if="isStreaming && !isUser" class="streaming-indicator">

@@ -419,6 +419,8 @@
     "agentThinking": "Agent thinking...",
     "skill": "Skill",
     "noSkill": "No skill",
+    "autoApproveWrites": "Auto-approve writes",
+    "autoApproveWritesDesc": "Write files without confirmation (commands still require approval)",
     "agentExecuting": "Executing tools...",
     "requiresApproval": "Requires Approval",
     "parameters": "Parameters",

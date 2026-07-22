@@ -285,6 +285,7 @@ export interface AgentConfig {
   requiresApproval?: boolean
   selectedSkill?: string
   skillConfig?: Record<string, Record<string, any>>
+  autoApproveWrites?: boolean
 }
 
 export interface Skill {

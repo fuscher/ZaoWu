@@ -60,7 +60,7 @@ class AgentService:
     """智能体核心服务"""
 
     LOOP_THRESHOLD = 3  # 同一工具+参数连续调用达到此次数时自动中断
-    CONFIRMATION_TIMEOUT = 300  # 用户确认等待超时（秒）
+    CONFIRMATION_TIMEOUT = 60  # F11: 用户确认等待超时（秒），从 300 缩短到 60
     REQUIRES_APPROVAL_TOOLS = {'write_file', 'run_command'}
 
     def __init__(self, tool_registry: ToolRegistry, project_path: str = None,
@@ -78,6 +78,10 @@ class AgentService:
         # 用户确认状态：request_id -> asyncio.Event
         self._confirmation_events: Dict[str, asyncio.Event] = {}
         self._confirmation_results: Dict[str, bool] = {}
+        # F12: 跟踪已发出但尚未解决的确认 request_id，避免缓存过期 id / 处理 event 尚未创建的竞态
+        self._pending_confirmation_ids: set = set()
+        # F04: 自动批准写入文件（由 process_message 读取 agentConfig.autoApproveWrites 设置）
+        self._auto_approve_writes = False
         # Skill 注册表，可选依赖；未提供时 AgentService 行为与之前一致
         if skill_registry is None:
             from services.skill_registry import SkillRegistry
@@ -109,6 +113,9 @@ class AgentService:
             ).get('id', '')
 
             messages = self._build_messages(conv, content)
+            # F04: 读取自动批准写入配置（仅影响 write_file，run_command 仍需确认）
+            agent_config = conv.get('agentConfig') or {}
+            self._auto_approve_writes = agent_config.get('autoApproveWrites', False)
             sandbox = self._build_sandbox(conv)
             tool_specs = sandbox.build_openai_tools_spec()
 
@@ -116,7 +123,7 @@ class AgentService:
 
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
-            max_iterations = (conv.get('agentConfig') or {}).get('maxIterations', 10)
+            max_iterations = agent_config.get('maxIterations', 10)
 
             # full_text 在循环外初始化，跨迭代累加，保留中间推理过程
             full_text = ''
@@ -153,46 +160,73 @@ class AgentService:
 
                 # Step 2: 如果有工具调用
                 if collected_tool_calls:
-                    # 2a: 循环检测
-                    for tc in collected_tool_calls:
-                        args_hash = self._hash_args(tc['arguments'])
-                        key = (tc['name'], args_hash)
-                        tool_call_history.append(key)
-                        if tool_call_history.count(key) >= self.LOOP_THRESHOLD:
+                    # 2a: F05 连续死循环检测 — 检测尾部连续重复（跨迭代延续），而非全局累计计数
+                    # 从 tool_call_history 尾部延续 streak，使跨迭代的单次重复调用也能被检测到，
+                    # 同时避免 A-B-A-B-A 交替模式被误判（streak 在每次切换时重置）。
+                    keys = [
+                        (tc['name'], self._hash_args(tc['arguments']))
+                        for tc in collected_tool_calls
+                    ]
+                    streak = 0
+                    last_key = None
+                    if tool_call_history:
+                        last_key = tool_call_history[-1]
+                        for k in reversed(tool_call_history):
+                            if k == last_key:
+                                streak += 1
+                            else:
+                                break
+                    for key in keys:
+                        if key == last_key:
+                            streak += 1
+                        else:
+                            last_key = key
+                            streak = 1
+                        if streak >= self.LOOP_THRESHOLD:
                             yield self._text_event(
-                                f'[系统] 检测到重复调用 `{tc["name"]}` 已达 '
+                                f'[系统] 检测到连续重复调用 `{key[0]}` 已达 '
                                 f'{self.LOOP_THRESHOLD} 次，已自动中断循环'
                             )
                             yield self._done_event(assistant_msg_id,
                                                    full_text or '(loop detected, stopped)')
                             return
+                    # 通过检测后插入到调用历史（用于后续轮的 streak 延续）
+                    tool_call_history.extend(keys)
 
                     # 2b: 发送 tool_call_start 事件
                     for tc in collected_tool_calls:
                         yield self._tool_call_start_event(assistant_msg_id, tc)
 
-                    # 2c: 串行执行工具（危险工具需用户确认）
+                    # 2c: F04+F12+F13 串行执行工具（危险工具需用户确认），收集结果后批量注入
+                    tool_results = []
                     for tc in collected_tool_calls:
                         if tc['name'] in self.REQUIRES_APPROVAL_TOOLS:
-                            yield self._requires_confirmation_event(assistant_msg_id, tc)
-                            approved = await self._wait_for_confirmation(tc['requestId'])
-                            if not approved:
-                                result = {
-                                    'success': False,
-                                    'error': '用户已拒绝执行该操作',
-                                    'content': '',
-                                }
-                                yield self._tool_call_end_event(
-                                    assistant_msg_id, tc['requestId'], result
-                                )
-                                await self._inject_tool_result(
-                                    messages, conv_id, tc, result
-                                )
-                                continue
+                            # F04: run_command 永远需要确认，write_file 可被 autoApproveWrites 跳过
+                            if not (tc['name'] == 'write_file' and self._auto_approve_writes):
+                                # F12: 先注册 pending id，处理用户批准早于 event 创建的竞态
+                                self._pending_confirmation_ids.add(tc['requestId'])
+                                yield self._requires_confirmation_event(assistant_msg_id, tc)
+                                approved = await self._wait_for_confirmation(tc['requestId'])
+                                if not approved:
+                                    result = {
+                                        'success': False,
+                                        'error': '用户已拒绝执行该操作',
+                                        'content': '',
+                                    }
+                                    yield self._tool_call_end_event(
+                                        assistant_msg_id, tc['requestId'], result
+                                    )
+                                    tool_results.append(result)
+                                    continue
 
                         result = await sandbox.execute(tc['name'], tc['arguments'])
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
-                        await self._inject_tool_result(messages, conv_id, tc, result)
+                        tool_results.append(result)
+
+                    # F13: 批量注入消息历史（合并为一条 assistant 消息 + N 条 tool 结果，符合 OpenAI 格式）
+                    await self._inject_tool_results_batch(
+                        messages, conv_id, collected_tool_calls, tool_results
+                    )
                 else:
                     # 无工具调用，退出循环
                     break
@@ -206,51 +240,89 @@ class AgentService:
                 'timestamp': _now_ts(),
                 'model': self._model_id,
             })
-
+        except Exception as e:
+            # F08: 捕获未处理异常，保证 SSE 流始终以 done 事件结束，前端 isStreaming 可正常重置
+            logger.exception('unhandled error in agent process_message')
+            yield self._text_event(f'[系统] 智能体运行异常: {str(e)}')
+            yield self._done_event(f'agent-error-{_now_ts()}', f'(error: {str(e)})')
         finally:
             pass  # 统一由路由层的 finally await agent.close() 处理
 
     # ── 工具结果注入与持久化 ─────────────────────────────────
 
-    async def _inject_tool_result(self, messages: list, conv_id: str,
-                                   tc: dict, result: dict) -> None:
-        """将 assistant tool_calls 与 tool 结果消息注入历史并持久化"""
-        assistant_msg = {
-            'role': 'assistant',
-            'content': None,
-            'tool_calls': [{
+    async def _inject_tool_results_batch(
+        self, messages: list, conv_id: str,
+        collected_tool_calls: list, tool_results: list
+    ) -> None:
+        """F13: 将一轮中的所有工具调用合并为一条标准 assistant 消息 + N 条 tool 结果
+
+        符合 OpenAI 消息格式：一条含 tool_calls 的 assistant 消息，后跟每条 tool 结果。
+        修复原 _inject_tool_result 为每个工具调用单独生成 assistant 消息的非标准结构。
+        """
+        if not collected_tool_calls:
+            return
+
+        # 合并为一条 assistant 消息
+        tool_calls_block = []
+        for tc in collected_tool_calls:
+            tool_calls_block.append({
                 'id': tc['requestId'],
                 'type': 'function',
                 'function': {
                     'name': tc['name'],
                     'arguments': json.dumps(tc['arguments'], ensure_ascii=False),
                 }
-            }]
-        }
-        tool_msg = {
-            'role': 'tool',
-            'tool_call_id': tc['requestId'],
-            'name': tc['name'],
-            'content': json.dumps(result, ensure_ascii=False),
+            })
+
+        assistant_msg = {
+            'role': 'assistant',
+            'content': None,
+            'tool_calls': tool_calls_block,
         }
         messages.append(assistant_msg)
-        messages.append(tool_msg)
         await self._append_message(conv_id, assistant_msg)
-        await self._append_message(conv_id, tool_msg)
+
+        # 依次追加 tool 结果
+        for tc, result in zip(collected_tool_calls, tool_results):
+            tool_msg = {
+                'role': 'tool',
+                'tool_call_id': tc['requestId'],
+                'name': tc['name'],
+                'content': json.dumps(result, ensure_ascii=False),
+            }
+            messages.append(tool_msg)
+            await self._append_message(conv_id, tool_msg)
 
     # ── 用户确认 ──────────────────────────────────────────────
 
     def submit_confirmation(self, request_id: str, approved: bool) -> bool:
-        """由路由层调用，提交用户对指定 tool requestId 的确认结果"""
-        event = self._confirmation_events.get(request_id)
-        if not event:
+        """F12: 由路由层调用，提交用户对指定 tool requestId 的确认结果
+
+        只有真正待确认（在 _pending_confirmation_ids 中）或正在等待 event 的 request_id 才接受，
+        避免缓存过期 id 或处理伪造/重复确认。
+        """
+        if (request_id not in self._pending_confirmation_ids
+                and request_id not in self._confirmation_events):
             return False
+
+        self._pending_confirmation_ids.discard(request_id)
         self._confirmation_results[request_id] = approved
-        event.set()
+
+        event = self._confirmation_events.get(request_id)
+        if event:
+            event.set()
         return True
 
     async def _wait_for_confirmation(self, request_id: str) -> bool:
-        """阻塞等待用户确认，超时或停止时返回 False"""
+        """F12: 阻塞等待用户确认，超时或停止时返回 False
+
+        处理用户批准早于 event 创建的竞态：先检查预缓存结果。
+        """
+        # 先检查是否有预缓存的确认结果（用户点击比 event 创建更快）
+        if request_id in self._confirmation_results:
+            self._pending_confirmation_ids.discard(request_id)
+            return self._confirmation_results.pop(request_id)
+
         event = asyncio.Event()
         self._confirmation_events[request_id] = event
         try:
@@ -270,6 +342,7 @@ class AgentService:
                 return self._confirmation_results.get(request_id, False)
             return False
         finally:
+            self._pending_confirmation_ids.discard(request_id)
             self._confirmation_events.pop(request_id, None)
             self._confirmation_results.pop(request_id, None)
 
@@ -475,7 +548,11 @@ class AgentService:
             pass
 
         if not paths:
-            paths.append(os.getcwd())
+            # F19: 无项目时回退到用户主目录 ~/.ZaoWu 安全沙箱，而非 os.getcwd()（服务器启动目录，
+            # 可能暴露 providers.json API Key 与全部源码）。目录不存在时自动创建。
+            home_zaowu = os.path.join(os.path.expanduser('~'), '.ZaoWu')
+            os.makedirs(home_zaowu, exist_ok=True)
+            paths.append(home_zaowu)
         return paths
 
     def _get_project_structure(self) -> str:

@@ -182,7 +182,8 @@ def test_agent_loop_detection_triggers_and_persists(agent_env):
         if payload.get('type') == 'delta' and payload.get('id') == 'system':
             contents.append(payload.get('delta', ''))
 
-    assert any('检测到重复调用' in c for c in contents)
+    # F05: 消息文本改为"检测到连续重复调用"（含"连续"二字）
+    assert any('连续重复调用' in c for c in contents)
 
     done = json.loads(events[-1][6:])
     assert done['type'] == 'done'

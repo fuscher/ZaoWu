@@ -12,26 +12,49 @@ import pytest
 pytestmark = pytest.mark.anyio
 
 
-class _FakeResponse:
-    """模拟 requests 流式响应：Content-Type 中无 charset。"""
+class _FakeHttpxStreamResponse:
+    """模拟 httpx 流式响应：Content-Type 中无 charset（F14 迁移后使用）。"""
 
-    status_code = 200
-    headers = {'Content-Type': 'text/event-stream'}
-    encoding = None
-
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, status_code: int = 200):
         self._body = body
+        self.status_code = status_code
+        self.encoding = None  # generate() 会强制设为 'utf-8'
 
-    def iter_lines(self, decode_unicode=False, chunk_size=1):
+    async def aread(self) -> bytes:
+        return self._body
+
+    async def aiter_lines(self):
         for line in self._body.split(b'\n'):
-            if decode_unicode:
-                yield line.decode(self.encoding or 'utf-8')
-            else:
-                yield line
+            yield line.decode(self.encoding or 'utf-8')
 
-    @property
-    def text(self):
-        return self._body.decode('utf-8')
+
+class _FakeHttpxStreamCM:
+    """client.stream(...) 返回的异步上下文管理器。"""
+
+    def __init__(self, response: _FakeHttpxStreamResponse):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _FakeHttpxClient:
+    """模拟 httpx.AsyncClient（F14 迁移后替代 requests.post mock）。"""
+
+    def __init__(self, response: _FakeHttpxStreamResponse, **kwargs):
+        self._response = response
+
+    def stream(self, method: str, url: str, **kwargs):
+        return _FakeHttpxStreamCM(self._response)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
 
 
 def _make_sse(content: str) -> bytes:
@@ -90,8 +113,8 @@ async def test_send_message_sse_decodes_chinese_utf8(chat_env, monkeypatch):
         _make_sse('文'),
         b'data: [DONE]',
     ])
-    fake_resp = _FakeResponse(body)
-    monkeypatch.setattr(chat.requests, 'post', lambda *args, **kwargs: fake_resp)
+    fake_resp = _FakeHttpxStreamResponse(body)
+    monkeypatch.setattr(chat.httpx, 'AsyncClient', lambda **kwargs: _FakeHttpxClient(fake_resp, **kwargs))
 
     async with app.test_client() as client:
         resp = await client.post('/api/chat/conversations/conv-1/messages', json={'content': 'hi'})

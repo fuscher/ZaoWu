@@ -419,6 +419,8 @@
     "agentThinking": "智能体正在思考...",
     "skill": "选择技能",
     "noSkill": "无技能",
+    "autoApproveWrites": "自动批准写入",
+    "autoApproveWritesDesc": "写入文件无需确认（执行命令仍需手动确认）",
     "agentExecuting": "执行工具...",
     "requiresApproval": "需确认",
     "parameters": "参数",

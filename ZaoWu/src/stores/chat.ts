@@ -39,9 +39,11 @@ export const useChatStore = defineStore('chat', () => {
       }
     },
   })
-  const currentToolCalls = ref<Map<string, ToolCall>>(new Map())
-  const currentToolResults = ref<Map<string, ToolResult>>(new Map())
-  const pendingConfirmations = ref<Map<string, ToolCall>>(new Map())
+  // F02: 工具调用状态按 messageId 两级索引 — Key: messageId → Map<requestId, ToolCall | ToolResult>
+  // 修复历史气泡显示当前工具结果的问题：每条 assistant 消息只持有自己那轮的工具调用。
+  const toolCallsByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
+  const toolResultsByMessage = ref<Map<string, Map<string, ToolResult>>>(new Map())
+  const pendingByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
 
   // ── Skill state ─────────────────────────────────────────
   const availableSkills = ref<Skill[]>([])
@@ -58,6 +60,24 @@ export const useChatStore = defineStore('chat', () => {
         await ai.updateConversation(conv.id, { agentConfig: nextConfig })
       } catch {
         conv.agentConfig = { ...conv.agentConfig, selectedSkill: undefined }
+      }
+    },
+  })
+
+  // F04: 自动批准写入文件 — 仅影响 write_file，run_command 仍需手动确认。
+  // 与 agentMode/selectedSkill 一样绑定到当前对话的 agentConfig，切换时自动持久化。
+  const autoApproveWrites = computed<boolean>({
+    get: () => currentConversation.value?.agentConfig?.autoApproveWrites ?? false,
+    set: async (value) => {
+      const conv = currentConversation.value
+      if (!conv) return
+      const nextConfig = { ...(conv.agentConfig || {}), autoApproveWrites: value }
+      conv.agentConfig = nextConfig
+      try {
+        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      } catch {
+        // 失败时回退本地状态
+        conv.agentConfig = { ...conv.agentConfig, autoApproveWrites: !value }
       }
     },
   })
@@ -200,6 +220,9 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       isLoading.value = false
     }
+    // F02: 切换对话时清空工具调用 Map，避免长期会话内存无限增长。
+    // message.id 不携带 convId 前缀，故直接 clear() 全部 Map（当前工具卡片只渲染当前对话消息，清空无影响）。
+    clearToolMaps()
   }
 
   async function renameConversation(id: string, title: string) {
@@ -307,6 +330,23 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // F02: 按 messageId 读取工具调用状态的 accessor，供 MessageBubble 使用。
+  function toolCallsFor(messageId: string): Map<string, ToolCall> {
+    return toolCallsByMessage.value.get(messageId) || new Map()
+  }
+  function toolResultsFor(messageId: string): Map<string, ToolResult> {
+    return toolResultsByMessage.value.get(messageId) || new Map()
+  }
+  function pendingFor(messageId: string): Map<string, ToolCall> {
+    return pendingByMessage.value.get(messageId) || new Map()
+  }
+  // F02: 清空全部工具调用 Map（切换对话 / 停止生成时调用）。
+  function clearToolMaps() {
+    toolCallsByMessage.value.clear()
+    toolResultsByMessage.value.clear()
+    pendingByMessage.value.clear()
+  }
+
   function stopStreaming() {
     if (abortController) {
       abortController.abort()
@@ -319,7 +359,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     isStreaming.value = false
     streamingMessageId.value = null
-    pendingConfirmations.value.clear()
+    clearToolMaps()
   }
 
   // ── Agent message sending (Stage 8) ──────────────────────
@@ -345,9 +385,6 @@ export const useChatStore = defineStore('chat', () => {
 
     isStreaming.value = true
     error.value = ''
-    currentToolCalls.value.clear()
-    currentToolResults.value.clear()
-    pendingConfirmations.value.clear()
 
     const assistantMessage: Message = {
       id: `stream-${Date.now()}`,
@@ -359,6 +396,13 @@ export const useChatStore = defineStore('chat', () => {
     conv.messages.push(assistantMessage)
     streamingMessageId.value = assistantMessage.id
 
+    // F02: 为当前 assistant 消息创建独立的工具调用存储槽（按 messageId 索引），
+    // 不再清空全局 Map，避免新消息清空历史气泡的工具卡片。
+    const mid = assistantMessage.id
+    toolCallsByMessage.value.set(mid, new Map())
+    toolResultsByMessage.value.set(mid, new Map())
+    pendingByMessage.value.set(mid, new Map())
+
     abortController = await ai.sendAgentMessageStream(
       conv.id,
       content,
@@ -367,18 +411,30 @@ export const useChatStore = defineStore('chat', () => {
           assistantMessage.content += delta
         },
         onToolCallStart(_messageId: string, toolCall: ToolCall) {
-          currentToolCalls.value.set(toolCall.requestId, toolCall)
+          toolCallsByMessage.value.get(mid)?.set(toolCall.requestId, toolCall)
         },
         onRequiresConfirmation(_messageId: string, toolCall: ToolCall) {
-          pendingConfirmations.value.set(toolCall.requestId, toolCall)
+          pendingByMessage.value.get(mid)?.set(toolCall.requestId, toolCall)
         },
         onToolCallEnd(_messageId: string, result: ToolResult) {
-          currentToolResults.value.set(result.requestId, result)
-          pendingConfirmations.value.delete(result.requestId)
+          toolResultsByMessage.value.get(mid)?.set(result.requestId, result)
+          pendingByMessage.value.get(mid)?.delete(result.requestId)
         },
         onDone(messageId: string, fullContent: string) {
           assistantMessage.content = fullContent
           assistantMessage.id = messageId
+          // F02: 将工具调用数据关联到最终的持久化 messageId（流式临时 id 与持久化 id 不同）
+          if (messageId !== mid) {
+            const calls = toolCallsByMessage.value.get(mid)
+            const results = toolResultsByMessage.value.get(mid)
+            const pending = pendingByMessage.value.get(mid)
+            if (calls) toolCallsByMessage.value.set(messageId, calls)
+            if (results) toolResultsByMessage.value.set(messageId, results)
+            if (pending) pendingByMessage.value.set(messageId, pending)
+            toolCallsByMessage.value.delete(mid)
+            toolResultsByMessage.value.delete(mid)
+            pendingByMessage.value.delete(mid)
+          }
           isStreaming.value = false
           streamingMessageId.value = null
         },
@@ -428,9 +484,14 @@ export const useChatStore = defineStore('chat', () => {
     init,
     // Agent mode
     agentMode,
-    currentToolCalls,
-    currentToolResults,
-    pendingConfirmations,
+    autoApproveWrites,
+    toolCallsByMessage,
+    toolResultsByMessage,
+    pendingByMessage,
+    toolCallsFor,
+    toolResultsFor,
+    pendingFor,
+    clearToolMaps,
     sendAgentMessage,
     confirmTool,
     // Skills

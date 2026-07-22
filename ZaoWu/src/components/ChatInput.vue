@@ -98,6 +98,17 @@ function handleKeydown(e: KeyboardEvent) {
             {{ skill.name }}
           </option>
         </select>
+
+        <!-- F04: 自动批准写入文件开关 — 仅 write_file 受影响，run_command 仍需确认 -->
+        <label
+          v-if="chatStore.agentMode"
+          class="auto-approve-toggle"
+          :title="t('agent.autoApproveWritesDesc')"
+        >
+          <input type="checkbox" v-model="chatStore.autoApproveWrites" />
+          <span class="toggle-track"><span class="toggle-thumb" /></span>
+          <span class="toggle-label">{{ t('agent.autoApproveWrites') }}</span>
+        </label>
       </div>
       <span class="hint">
         {{
@@ -279,5 +290,68 @@ textarea::placeholder {
 .skill-select:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* F04: 自动批准写入开关 — 与项目统一 toggle-slider 风格保持一致 */
+.auto-approve-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.auto-approve-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  transition: background var(--transition), border-color var(--transition);
+  flex-shrink: 0;
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: transform var(--transition), background var(--transition);
+}
+
+.auto-approve-toggle input:checked + .toggle-track {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.auto-approve-toggle input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(12px);
+  background: var(--accent);
+}
+
+.toggle-label {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  transition: color var(--transition);
+}
+
+.auto-approve-toggle:hover .toggle-label {
+  color: var(--text-secondary);
+}
+
+.auto-approve-toggle input:checked ~ .toggle-label {
+  color: var(--accent);
 }
 </style>

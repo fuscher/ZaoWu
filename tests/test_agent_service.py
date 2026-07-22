@@ -5,6 +5,7 @@
 """
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -257,6 +258,213 @@ def test_resolve_skill_config_merges_default_and_user_config(agent_service):
     config = service._resolve_skill_config(conv)
     assert config['max_files'] == 10
     assert config['strict'] is False
+
+
+# ── Stage 9: F05 连续死循环检测 ───────────────────────────────
+
+
+def _make_tool_call(name, args, request_id=None):
+    """构造工具调用字典。"""
+    return {
+        'requestId': request_id or f'call_{name}_{args}',
+        'name': name,
+        'arguments': args,
+    }
+
+
+def test_f05_within_iteration_aaa_triggers(agent_service, monkeypatch):
+    """F05: 单轮内 3 个相同工具调用（A-A-A）应触发循环检测。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    file_path = '/tmp/test.txt'
+    tc = _make_tool_call('read_file', {'path': file_path}, 'call_a')
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 单轮返回 3 个完全相同的工具调用
+        for i in range(3):
+            yield {'type': 'tool_call_part', 'tool_call': {**tc, 'requestId': f'call_a_{i}'}}
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id,
+            'providerId': 'test-provider',
+            'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 5},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    # Mock sandbox to avoid real file execution
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-f05a', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    contents = [
+        json.loads(ev[6:])['delta']
+        for ev in events
+        if json.loads(ev[6:]).get('type') == 'delta'
+        and json.loads(ev[6:]).get('id') == 'system'
+    ]
+    assert any('连续重复调用' in c for c in contents), 'A-A-A should trigger loop detection'
+
+
+def test_f05_alternating_ababa_no_false_positive(agent_service, monkeypatch):
+    """F05: 交替调用 A-B-A-B-A 不应被误判为死循环。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 交替返回 read_file 和 search_code（不同工具/参数 = 不同 key）
+        for i, name in enumerate(['read_file', 'search_code', 'read_file', 'search_code', 'read_file']):
+            yield {
+                'type': 'tool_call_part',
+                'tool_call': _make_tool_call(name, {'query': str(i)}, f'call_{i}'),
+            }
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'test-provider', 'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 5}, 'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-f05b', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    system_deltas = [
+        json.loads(ev[6:])['delta']
+        for ev in events
+        if json.loads(ev[6:]).get('type') == 'delta'
+        and json.loads(ev[6:]).get('id') == 'system'
+    ]
+    assert not any('连续重复调用' in c for c in system_deltas), 'A-B-A-B-A should NOT trigger loop detection'
+
+
+# ── Stage 9: F12 确认竞态与过期 ID ────────────────────────────
+
+
+def test_f12_submit_confirmation_before_wait(agent_service):
+    """F12: 用户在 _wait_for_confirmation 创建 event 之前就提交确认（竞态），结果应被正确消费。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    request_id = 'call_race_1'
+
+    # 先注册 pending id 并提交确认（此时 event 尚未创建）
+    service._pending_confirmation_ids.add(request_id)
+    ok = service.submit_confirmation(request_id, True)
+    assert ok is True
+    # 结果应被预缓存
+    assert service._confirmation_results[request_id] is True
+
+    # 随后 _wait_for_confirmation 应直接消费预缓存结果，不阻塞
+    async def run():
+        return await service._wait_for_confirmation(request_id)
+
+    result = loop.run_until_complete(run())
+    assert result is True
+    # pending id 应被清理
+    assert request_id not in service._pending_confirmation_ids
+
+
+def test_f12_submit_confirmation_stale_id_returns_false(agent_service):
+    """F12/F17: 对不在 _pending_confirmation_ids 也不在 _confirmation_events 的 request_id 提交确认，应返回 False。"""
+    service = agent_service
+    # 不注册任何 pending id
+    ok = service.submit_confirmation('totally_unknown', True)
+    assert ok is False
+
+
+def test_f12_submit_confirmation_double_submit(agent_service):
+    """F12: 同一 request_id 重复提交第二次应返回 False（已解决）。"""
+    service = agent_service
+    request_id = 'call_double'
+    service._pending_confirmation_ids.add(request_id)
+
+    first = service.submit_confirmation(request_id, True)
+    assert first is True
+    assert request_id not in service._pending_confirmation_ids  # 第一次后应移除
+
+    second = service.submit_confirmation(request_id, False)
+    assert second is False  # 第二次提交应被拒绝
+
+
+# ── Stage 9: F19 安全沙箱回退 ────────────────────────────────
+
+
+def test_f19_fallback_to_home_zaowu(monkeypatch):
+    """F19: 无项目时 _get_project_paths 应回退到 ~/.ZaoWu 安全沙箱。"""
+    # Mock read_projects 返回空列表
+    from routes import explorer
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [])
+
+    paths = AgentService._get_project_paths(limit_path=None)
+    assert len(paths) == 1
+    expected = os.path.join(os.path.expanduser('~'), '.ZaoWu')
+    assert os.path.realpath(expected) == paths[0] or paths[0].endswith('.ZaoWu')
+
+
+def test_f19_limit_path_takes_priority(tmp_path):
+    """F19: 指定 limit_path 时应优先返回该路径，不走回退。"""
+    project = tmp_path / 'myproject'
+    project.mkdir()
+
+    paths = AgentService._get_project_paths(limit_path=str(project))
+    assert len(paths) == 1
+    assert os.path.realpath(str(project)) == paths[0]
 
 
 def test_resolve_skill_config_returns_empty_without_selected_skill(agent_service):

@@ -2,12 +2,15 @@ import os
 import json
 import uuid
 import asyncio
+import logging
 import threading
 import requests
+import httpx
 from datetime import datetime, timezone
 from quart import Blueprint, request, jsonify, Response
 from zaowu_paths import get_project_root
 
+_log = logging.getLogger('zaowu.routes.chat')
 chat_bp = Blueprint('chat', __name__)
 
 BASE_DIR = get_project_root()
@@ -262,6 +265,9 @@ async def send_message(conv_id):
     body = await request.get_json(silent=True)
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400
+    # F15: 校验空内容，与 /agent-messages 行为一致
+    if not body['content'] or not body['content'].strip():
+        return jsonify({'ok': False, 'error': 'content is empty'}), 400
 
     store = _get_store()
     conv = await store.get(conv_id)
@@ -295,7 +301,7 @@ async def send_message(conv_id):
     stop_event = threading.Event()
     _stop_events[assistant_msg_id] = stop_event
 
-    def generate():
+    async def generate():
         full_content = ''
 
         def _sse(payload):
@@ -306,7 +312,6 @@ async def send_message(conv_id):
                 error_text = '未配置 LLM 提供商，请先在设置中添加 Provider。'
                 yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
-                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
                 return
 
             api_base = provider.get('apiBase', '').rstrip('/')
@@ -317,7 +322,6 @@ async def send_message(conv_id):
                 error_text = 'Provider API 配置不完整，请检查 apiBase 和 apiKey。'
                 yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
-                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
                 return
 
             messages = []
@@ -325,7 +329,14 @@ async def send_message(conv_id):
             if system_prompt:
                 messages.append({'role': 'system', 'content': system_prompt})
             for msg in conv.get('messages', []):
-                messages.append({'role': msg['role'], 'content': msg['content']})
+                role = msg.get('role')
+                # F01: 跳过 tool 结果消息 — 普通聊天不需要，OpenAI 会因缺少配套 tools 定义而报 400
+                if role == 'tool':
+                    continue
+                # F01: 跳过含 tool_calls 的 assistant 消息（content 通常为 None，只有工具调用）
+                if role == 'assistant' and msg.get('tool_calls'):
+                    continue
+                messages.append({'role': role, 'content': msg.get('content')})
 
             temperature = body.get('temperature', config.get('temperature', 0.7))
             max_tokens = body.get('maxTokens', config.get('maxTokens', 4096))
@@ -345,91 +356,76 @@ async def send_message(conv_id):
                 'Content-Type': 'application/json',
             }
 
-            resp = requests.post(
-                f'{api_base}/chat/completions',
-                json=payload,
-                headers=headers,
-                stream=True,
-                timeout=120,
-            )
-            # 强制使用 UTF-8 解码上游 SSE，避免部分 Provider 未声明 charset 时
-            # requests 默认按 ISO-8859-1 解码导致中文乱码。
-            resp.encoding = 'utf-8'
+            # F14: 迁移到 httpx.AsyncClient 异步流式调用（与 Agent 模式保持一致），
+            # 消除 async 路由内同步 requests.post 阻塞事件循环的问题。
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+                async with client.stream(
+                    'POST',
+                    f'{api_base}/chat/completions',
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    # 强制使用 UTF-8 解码上游 SSE，避免部分 Provider 未声明 charset 时
+                    # 默认按 ISO-8859-1 解码导致中文乱码。
+                    resp.encoding = 'utf-8'
 
-            if resp.status_code != 200:
-                error_text = f'API 请求失败 (HTTP {resp.status_code}): {resp.text[:200]}'
-                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
-                full_content = error_text
-                yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
-                return
+                    if resp.status_code != 200:
+                        error_body = await resp.aread()
+                        error_text = f'API 请求失败 (HTTP {resp.status_code}): {error_body.decode(errors="replace")[:200]}'
+                        yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
+                        full_content = error_text
+                        return
 
-            for line in resp.iter_lines(decode_unicode=True):
-                if stop_event.is_set():
-                    break
-                if not line:
-                    continue
-                if line.startswith('data: '):
-                    payload_str = line[6:]
-                    if payload_str.strip() == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(payload_str)
-                        delta = chunk.get('choices', [{}])[0].get('delta', {})
-                        content = delta.get('content', '')
-                        if content:
-                            full_content += content
-                            yield _sse({"id": assistant_msg_id, "delta": content, "done": False})
-                    except json.JSONDecodeError:
-                        continue
+                    async for line in resp.aiter_lines():
+                        if stop_event.is_set():
+                            break
+                        if not line:
+                            continue
+                        if line.startswith('data: '):
+                            payload_str = line[6:]
+                            if payload_str.strip() == '[DONE]':
+                                break
+                            try:
+                                chunk = json.loads(payload_str)
+                                delta = chunk.get('choices', [{}])[0].get('delta', {})
+                                content = delta.get('content', '')
+                                if content:
+                                    full_content += content
+                                    yield _sse({"id": assistant_msg_id, "delta": content, "done": False})
+                            except json.JSONDecodeError:
+                                continue
 
-            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
-
-        except requests.exceptions.Timeout:
+        except httpx.TimeoutException:
             error_text = '请求超时，请检查网络连接或 API 地址。'
             yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
-        except requests.exceptions.ConnectionError:
+        except httpx.ConnectError:
             error_text = '无法连接到 API 服务器，请检查 apiBase 配置。'
             yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
         except Exception as e:
             error_text = f'发生未知错误: {str(e)}'
             yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
             full_content = error_text
-            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
         finally:
             _stop_events.pop(assistant_msg_id, None)
-            _save_assistant_message(conv_id, assistant_msg_id, full_content)
-
-    def _save_assistant_message(cid, msg_id, content):
-        """保存助手消息。在同步生成器线程中运行，自适应桥接 async store。
-
-        优先使用 run_coroutine_threadsafe 在主循环上调度（Hypercorn 场景）；
-        如果没有运行中的事件循环则回退到 asyncio.run()（独立线程场景）。
-        """
-        import logging as _logging
-        _log = _logging.getLogger('zaowu.routes.chat')
-        try:
-            import asyncio as _asyncio
-            coro = _get_store().append_message(cid, {
-                'id': msg_id,
-                'role': 'assistant',
-                'content': content,
-                'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
-                'model': conv.get('modelId', ''),
-                'updatedAt': datetime.now(timezone.utc).isoformat(),
-            })
+            # F14: generate() 改为 async def 后可直接 await store，不再需要
+            # _save_assistant_message 同步桥接辅助函数。
+            # F10: 持久化失败警告必须在 done 事件前发送，故 done:True 集中在 finally 末尾，
+            # 确保任何持久化警告（若有）都先于 done 事件抵达前端。
             try:
-                loop = _asyncio.get_running_loop()
-            except RuntimeError:
-                _asyncio.run(coro)
-            else:
-                future = _asyncio.run_coroutine_threadsafe(coro, loop)
-                future.result(timeout=10)
-        except Exception:
-            _log.exception('failed to persist assistant message for conversation %s', cid)
+                await _get_store().append_message(conv_id, {
+                    'id': assistant_msg_id,
+                    'role': 'assistant',
+                    'content': full_content,
+                    'timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'model': conv.get('modelId', ''),
+                    'updatedAt': datetime.now(timezone.utc).isoformat(),
+                })
+            except Exception:
+                _log.exception('failed to persist assistant message for conversation %s', conv_id)
+                yield _sse({"id": assistant_msg_id, "delta": "\n\n⚠️ 消息持久化失败，刷新后可能丢失此回复", "done": False})
+            yield _sse({"id": assistant_msg_id, "delta": "", "done": True, "content": full_content})
 
     return Response(
         generate(),
@@ -581,11 +577,19 @@ async def send_agent_message(conv_id):
     body = await request.get_json(silent=True)
     if not body or 'content' not in body:
         return jsonify({'ok': False, 'error': 'missing content'}), 400
+    # F15: 校验空内容，避免空消息触发 Agent 循环
+    if not body['content'] or not body['content'].strip():
+        return jsonify({'ok': False, 'error': 'content is empty'}), 400
 
     store = _get_store()
     conv = await store.get(conv_id)
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
+
+    # F07: 校验 agent mode 是否启用；未启用则拒绝，避免普通对话误用 Agent 端点
+    agent_config = conv.get('agentConfig') or {}
+    if not agent_config.get('enabled', False):
+        return jsonify({'ok': False, 'error': 'agent mode not enabled for this conversation'}), 400
 
     providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers', [])
     provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
@@ -622,6 +626,16 @@ async def send_agent_message(conv_id):
         iter(provider.get('models') or [{}]), {}
     ).get('id', '')
 
+    # F03/F16: 并发检查 + 原子注册。检查与注册之间不得插入 await，避免并发空窗。
+    # 所有提前返回路径（provider not found、enabled 校验失败等）均在此注册之前，
+    # 因此不会出现 agent_stop_events / active_agents 残留泄漏。
+    if conv_id in active_agents:
+        return jsonify({
+            'ok': False,
+            'error': 'agent is already running for this conversation',
+            'code': 'AGENT_BUSY',
+        }), 409
+
     agent_stop_events[conv_id] = asyncio.Event()
     agent = AgentService(registry, display_path, model_id=model_id,
                          stop_event=agent_stop_events[conv_id],
@@ -654,7 +668,7 @@ def _resolve_project_for_conversation(conv: dict) -> str:
     优先级：
     1. conv.agentConfig.projectPath（对话级显式绑定）
     2. 第一个注册项目（回退）
-    3. 当前工作目录（最终回退）
+    3. 用户主目录 ~/.ZaoWu 安全沙箱（F19 最终回退，避免暴露服务器源码目录）
     """
     agent_config = conv.get('agentConfig') or {}
     project_path = agent_config.get('projectPath', '')
@@ -669,7 +683,10 @@ def _resolve_project_for_conversation(conv: dict) -> str:
     except Exception:
         pass
 
-    return os.getcwd()
+    # F19: 无项目时回退到 ~/.ZaoWu 安全沙箱，而非 os.getcwd()（服务器启动目录）
+    home_zaowu = os.path.join(os.path.expanduser('~'), '.ZaoWu')
+    os.makedirs(home_zaowu, exist_ok=True)
+    return home_zaowu
 
 
 @chat_bp.route('/agent-stop', methods=['POST'])
@@ -678,11 +695,20 @@ async def agent_stop():
     body = await request.get_json(silent=True)
     if not body or 'convId' not in body:
         return jsonify({'ok': False, 'error': 'missing convId'}), 400
+
+    # F11: 设置停止事件，立即中断 Agent 循环与确认等待
     stop_event = agent_stop_events.get(body['convId'])
     if stop_event:
         stop_event.set()
-        return jsonify({'ok': True})
-    return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
+
+    # F11: 同时拒绝所有待确认操作，立即释放确认等待（防御 stop_event 传播失败的场景）。
+    # 遍历 _pending_confirmation_ids（F12 权威待确认集合），覆盖 event 尚未创建的竞态。
+    agent = active_agents.get(body['convId'])
+    if agent:
+        for request_id in list(agent._pending_confirmation_ids):
+            agent.submit_confirmation(request_id, False)
+
+    return jsonify({'ok': True})
 
 
 @chat_bp.route('/conversations/<conv_id>/confirm-tool', methods=['POST'])
@@ -702,4 +728,10 @@ async def confirm_tool(conv_id):
         return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
 
     ok = agent.submit_confirmation(request_id, approved)
-    return jsonify({'ok': ok})
+    if not ok:
+        # F17: request_id 既不在待确认集合中，也没有正在等待的 event（已过期/重复/伪造）
+        return jsonify({
+            'ok': False,
+            'error': 'confirmation event not found or already resolved',
+        }), 410  # Gone
+    return jsonify({'ok': True})
