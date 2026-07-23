@@ -164,6 +164,8 @@
     "background": "背景",
     "effect": "特效",
     "language": "语言",
+    "startupView": "首加载模块",
+    "startupViewDesc": "启动后默认进入的模块",
     "appearance": "外观",
     "aiModels": "AI 模型",
     "community": "社区协作",

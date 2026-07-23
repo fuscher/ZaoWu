@@ -164,6 +164,8 @@
     "background": "Background",
     "effect": "Effect",
     "language": "Language",
+    "startupView": "Startup View",
+    "startupViewDesc": "Default module after launch",
     "appearance": "Appearance",
     "aiModels": "AI Models",
     "community": "Community",

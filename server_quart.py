@@ -48,6 +48,7 @@ DEFAULTS = {
     'persist': False,
     'language': 'zh-CN',
     'theme': 'dark',
+    'startupView': 'chat',
     'searchMaxFileSizeKB': 1024,
     'searchResultLimit': 500,
     'communityMaxUsers': 5,

@@ -10,7 +10,7 @@ import { saveProviders } from '@/services/ai'
 import { useI18n } from '@/i18n'
 import NumberInput from './NumberInput.vue'
 import ErrorToast from './ErrorToast.vue'
-import type { Theme, LLMProvider } from '@/types'
+import type { Theme, LLMProvider, ViewType } from '@/types'
 
 const props = defineProps<{ theme: Theme; highlightSection?: string | null }>()
 const emit = defineEmits<{ toggleTheme: []; highlight: [section: string | null] }>()
@@ -258,6 +258,28 @@ onMounted(() => {
             >
               <option value="zh-CN">中文</option>
               <option value="en">English</option>
+            </select>
+          </div>
+
+          <div class="setting-divider" />
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.startupView') }}</span>
+              <span class="setting-desc">{{ t('settings.startupViewDesc') }}</span>
+            </div>
+            <select
+              class="setting-select"
+              :value="settingsStore.background.startupView"
+              @change="settingsStore.updateBg({ startupView: ($event.target as HTMLSelectElement).value as ViewType })"
+            >
+              <option value="chat">{{ t('activityBar.chat') }}</option>
+              <option value="files">{{ t('activityBar.files') }}</option>
+              <option value="search">{{ t('activityBar.search') }}</option>
+              <option value="git">{{ t('activityBar.git') }}</option>
+              <option value="plugins">{{ t('activityBar.plugins') }}</option>
+              <option value="community">{{ t('activityBar.community') }}</option>
+              <option value="settings">{{ t('activityBar.settings') }}</option>
             </select>
           </div>
         </div>

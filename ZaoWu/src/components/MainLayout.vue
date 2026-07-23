@@ -13,13 +13,19 @@ import PluginManagementDetail from './PluginManagementDetail.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useCommunityStore } from '@/stores/community'
+import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from '@/i18n'
 import { pluginEventBus } from '@/plugin-system/events'
 
 defineProps<{ theme: Theme }>()
 const emit = defineEmits<{ toggleTheme: [] }>()
 
-const activeView = ref<ViewType>('chat')
+const VALID_VIEWS: ViewType[] = ['chat', 'files', 'search', 'git', 'plugins', 'community', 'settings']
+const settingsStore = useSettingsStore()
+const initialView: ViewType = VALID_VIEWS.includes(settingsStore.background.startupView as ViewType)
+  ? settingsStore.background.startupView
+  : 'chat'
+const activeView = ref<ViewType>(initialView)
 const sideCollapsed = ref(false)
 const highlightSection = ref<string | null>(null)
 const selectedPluginName = ref<string | null>(null)

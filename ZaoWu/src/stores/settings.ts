@@ -14,6 +14,7 @@ export const useSettingsStore = defineStore('settings', () => {
     persist: false,
     language: detectLanguage(),
     theme: 'dark',
+    startupView: 'chat',
     searchMaxFileSizeKB: 1024,
     searchResultLimit: 500,
     communityMaxUsers: 5,

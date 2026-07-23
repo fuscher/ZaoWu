@@ -161,6 +161,7 @@ export interface BackgroundSettings {
   persist: boolean
   language: string
   theme: string
+  startupView: ViewType
   searchMaxFileSizeKB: number
   searchResultLimit: number
   communityMaxUsers: number
