@@ -36,6 +36,7 @@ node_modules/
 # IDE
 .vscode/*
 !.vscode/extensions.json
+.trae/
 .idea/
 *.suo
 *.ntvs*

@@ -16,7 +16,7 @@ from .permission_service import (
     VALID_ROLES,
     PermissionServiceError,
 )
-from zaowu_paths import get_project_root
+from zaowu_paths import get_project_root, get_server_port
 
 
 class RoomServiceError(Exception):
@@ -250,7 +250,7 @@ def _new_room(
         max_users = _default_max_users()
     max_users = min(max(1, max_users), ABSOLUTE_MAX_USERS)
     if not host_address:
-        host_address = f'{_get_local_ip()}:5000'
+        host_address = f'{_get_local_ip()}:{get_server_port()}'
     now = _now_ms()
     return {
         'id': str(uuid.uuid4()),

@@ -23,6 +23,19 @@ const showInspect = ref(false)
 const runError = ref<string | null>(null)
 const workflowsList = ref<WorkflowSummary[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
+const canvasRef = ref<InstanceType<typeof WorkflowCanvas> | null>(null)
+
+function handleCopy() {
+  canvasRef.value?.copySelectedItems()
+}
+
+function handlePaste() {
+  canvasRef.value?.pasteItems()
+}
+
+function handleDeleteSelected() {
+  canvasRef.value?.deleteSelectedItems()
+}
 
 const workflowName = computed(() => workflowStore.workflow?.name ?? t('workflow.untitled'))
 const isRunning = computed(() => engine.isRunning.value)
@@ -219,6 +232,8 @@ onMounted(() => {
       :name="workflowName"
       :is-running="isRunning"
       :workflows="workflowsList"
+      :can-undo="workflowStore.canUndo"
+      :can-redo="workflowStore.canRedo"
       @create-blank="handleCreateBlank"
       @save="handleSave"
       @save-as="handleSaveAs"
@@ -230,6 +245,11 @@ onMounted(() => {
       @stop="handleStop"
       @export-workflow="handleExport"
       @import-workflow="triggerImport"
+      @copy="handleCopy"
+      @paste="handlePaste"
+      @delete-selected="handleDeleteSelected"
+      @undo="workflowStore.undo()"
+      @redo="workflowStore.redo()"
     />
     <input
       ref="fileInput"
@@ -240,7 +260,7 @@ onMounted(() => {
     />
     <div v-if="runError" class="error-banner">{{ runError }}</div>
     <div class="workflow-body">
-      <WorkflowCanvas class="workflow-canvas-area" />
+      <WorkflowCanvas ref="canvasRef" class="workflow-canvas-area" />
       <PropertyPanel class="workflow-property" />
     </div>
     <InspectPanel v-if="showInspect" class="workflow-inspect" />

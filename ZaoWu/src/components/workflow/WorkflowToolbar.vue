@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { Play, Square, Save, Download, Upload, Plus, Activity, FolderOpen, Trash2, Copy } from '@lucide/vue'
+import { Play, Square, Save, Download, Upload, Plus, Activity, FolderOpen, Trash2, Copy, ClipboardPaste, Scissors, Undo2, Redo2 } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 
 export interface WorkflowSummary {
@@ -15,6 +15,8 @@ const props = defineProps<{
   name: string
   isRunning: boolean
   workflows?: WorkflowSummary[]
+  canUndo?: boolean
+  canRedo?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -29,6 +31,11 @@ const emit = defineEmits<{
   load: [id: string]
   delete: [id: string]
   rename: [name: string]
+  copy: []
+  paste: []
+  deleteSelected: []
+  undo: []
+  redo: []
 }>()
 
 const { t } = useI18n()
@@ -151,6 +158,46 @@ function handleLoad(id: string) {
           </div>
         </div>
       </div>
+
+      <div class="toolbar-divider" />
+
+      <button class="tool-btn" :title="t('workflow.copy') + ' (Ctrl+C)'" @click="emit('copy')">
+        <Copy :size="14" />
+        <span>{{ t('workflow.copy') }}</span>
+      </button>
+      <button class="tool-btn" :title="t('workflow.paste') + ' (Ctrl+V)'" @click="emit('paste')">
+        <ClipboardPaste :size="14" />
+        <span>{{ t('workflow.paste') }}</span>
+      </button>
+      <button
+        class="tool-btn"
+        :title="t('workflow.deleteSelected') + ' (Delete)'"
+        @click="emit('deleteSelected')"
+      >
+        <Scissors :size="14" />
+        <span>{{ t('workflow.deleteSelected') }}</span>
+      </button>
+
+      <div class="toolbar-divider" />
+
+      <button
+        class="tool-btn"
+        :title="t('workflow.undo') + ' (Ctrl+Z)'"
+        :disabled="!props.canUndo"
+        @click="emit('undo')"
+      >
+        <Undo2 :size="14" />
+        <span>{{ t('workflow.undo') }}</span>
+      </button>
+      <button
+        class="tool-btn"
+        :title="t('workflow.redo') + ' (Ctrl+Shift+Z)'"
+        :disabled="!props.canRedo"
+        @click="emit('redo')"
+      >
+        <Redo2 :size="14" />
+        <span>{{ t('workflow.redo') }}</span>
+      </button>
     </div>
 
     <div class="toolbar-right">
@@ -322,6 +369,13 @@ function handleLoad(id: string) {
 .toolbar-left {
   min-width: 0;
   flex-shrink: 1;
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .workflow-name-wrapper {
@@ -611,12 +665,6 @@ function handleLoad(id: string) {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
-}
-
-.tool-btn.danger {
-  background: #ef4444;
-  color: #fff;
-  border-color: #ef4444;
 }
 
 @media (max-width: 1100px) {

@@ -2,6 +2,9 @@ import { ref, computed, onUnmounted } from 'vue'
 import * as Y from 'yjs'
 import { WebsocketProvider } from 'y-websocket'
 import { Awareness } from 'y-protocols/awareness'
+import { useEditorStore } from '@/stores/editor'
+import { useProjectsStore } from '@/stores/projects'
+import { useCommunityStore } from '@/stores/community'
 import type {
   CollaborationUser,
   CollaborationCursor,
@@ -320,11 +323,9 @@ export function useCollaboration(options: UseCollaborationOptions) {
         })
 
         // Apply to editor: reload, close, or update path
-        import('@/stores/editor').then(({ useEditorStore }) => {
-          const editorStore = useEditorStore()
-          const currentPath = editorStore.openFilePath
-          if (!currentPath) return
-
+        const editorStore = useEditorStore()
+        const currentPath = editorStore.openFilePath
+        if (currentPath) {
           const normCurrent = currentPath.replace(/\\/g, '/')
 
           if (operation === 'rename' && payload.oldPath && payload.newPath) {
@@ -347,7 +348,7 @@ export function useCollaboration(options: UseCollaborationOptions) {
               }
             }
           }
-        })
+        }
 
         // Notify FileTree to refresh via window event
         window.dispatchEvent(new CustomEvent('collab-file-diff', {
@@ -358,23 +359,19 @@ export function useCollaboration(options: UseCollaborationOptions) {
       case 'room_info': {
         const payload = message.payload as { projectPath?: string; projectName?: string }
         if (payload.projectPath) {
-          import('@/stores/projects').then(({ useProjectsStore }) => {
-            const projectsStore = useProjectsStore()
-            projectsStore.injectVirtualProject(
-              options.roomId,
-              payload.projectPath!,
-              payload.projectName || 'Collab Project',
-            )
-          })
+          const projectsStore = useProjectsStore()
+          projectsStore.injectVirtualProject(
+            options.roomId,
+            payload.projectPath!,
+            payload.projectName || 'Collab Project',
+          )
         }
         break
       }
       case 'room_closed': {
         // The host closed the room; disconnect and reset the local session.
-        import('@/stores/community').then(({ useCommunityStore }) => {
-          const communityStore = useCommunityStore()
-          communityStore.resetSession()
-        })
+        const communityStore = useCommunityStore()
+        communityStore.resetSession()
         disconnect()
         break
       }
@@ -452,10 +449,8 @@ export function useCollaboration(options: UseCollaborationOptions) {
   }
 
   function disconnect() {
-    import('@/stores/projects').then(({ useProjectsStore }) => {
-      const projectsStore = useProjectsStore()
-      projectsStore.removeVirtualProject(options.roomId)
-    })
+    const projectsStore = useProjectsStore()
+    projectsStore.removeVirtualProject(options.roomId)
     provider.disconnect()
     doc.destroy()
   }

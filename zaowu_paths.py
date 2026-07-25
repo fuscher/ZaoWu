@@ -79,3 +79,22 @@ def get_plugins_dir() -> str:
 def get_agent_modules_dir() -> str:
     """Return the directory that contains agent module packages."""
     return os.path.join(get_resource_root(), 'agent_modules')
+
+
+def get_server_port() -> int:
+    """Return the TCP port the ZaoWu server binds to.
+
+    Overridable via the ``ZAOWU_PORT`` environment variable.  This lets the
+    default 5000 be avoided when another process transiently holds it (the
+    Bilibili desktop client is known to grab 5000 as an ephemeral source
+    port, which makes ``bind 0.0.0.0:5000`` fail with WinError 10013).
+
+    Every component that advertises the server address — the collaboration
+    room host and the websocket URL builders — must read this so peers
+    always connect to the port the server is actually listening on.
+    """
+    raw = os.environ.get('ZAOWU_PORT', '5000')
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 5000

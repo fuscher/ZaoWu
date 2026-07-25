@@ -23,6 +23,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import parse_qs
+from zaowu_paths import get_server_port
 
 from pycrdt.websocket import ASGIServer, WebsocketServer, YRoom
 
@@ -488,7 +489,7 @@ def build_ws_url(room_host_address: str, token: str | None = None) -> str:
         parsed = urlparse(host)
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
-        host = f'{host}:5000'
+        host = f'{host}:{get_server_port()}'
     url = f'ws://{host}/api/v1/community/ws/{{room_id}}'
     if token:
         url = f'{url}?token={token}'
@@ -521,7 +522,7 @@ def build_ws_url_for_room(room_id: str, host_address: str, token: str | None = N
         parsed = urlparse(host)
         host = parsed.netloc or parsed.hostname or host
     if ':' not in host:
-        host = f'{host}:5000'
+        host = f'{host}:{get_server_port()}'
     url = f'ws://{host}/api/v1/community/ws/{room_id}'
     if token:
         url = f'{url}?token={token}'

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
 from routes.workflow import workflow_bp
-from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir
+from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir, get_server_port
 
 app = Quart(__name__)
 
@@ -641,12 +641,13 @@ def _start_asyncio(port: int) -> None:
     loop.run_until_complete(_run_hypercorn(port))
 
 
-async def _run_hypercorn(port: int = 5000) -> None:
+async def _run_hypercorn(port: int | None = None) -> None:
     from hypercorn.config import Config
     from hypercorn.asyncio import serve
 
     config = Config()
-    config.bind = [f'0.0.0.0:{port}']
+    bind_port = port if port is not None else get_server_port()
+    config.bind = [f'0.0.0.0:{bind_port}']
     config.include_server_header = False
     await serve(app, config, shutdown_trigger=_never_shutdown)  # type: ignore[arg-type]
 
@@ -657,7 +658,7 @@ async def _never_shutdown() -> None:
     await asyncio.Event().wait()
 
 
-def run_server(port: int = 5000) -> None:
+def run_server(port: int | None = None) -> None:
     """Start the Quart + pycrdt-websocket server (blocking).
 
     Compatible with the existing main.py interface: the function name

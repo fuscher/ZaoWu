@@ -6,6 +6,7 @@ import urllib.request
 import threading
 import webview
 from server_quart import run_server
+from zaowu_paths import get_server_port
 
 # ── Suppress pycrdt cross-thread Subscription drop noise ────────────────
 # pycrdt's Rust-backed Subscription finalizer posts a RuntimeError through
@@ -23,7 +24,7 @@ def _quiet_pycrdt_subscription(args):
 
 sys.unraisablehook = _quiet_pycrdt_subscription
 
-PORT = 5000
+PORT = get_server_port()
 W_WIDTH = 1000
 W_HEIGHT = 680
 _SERVER_URL = f'http://127.0.0.1:{PORT}'
@@ -61,9 +62,9 @@ _SPLASH_HTML = '''<!DOCTYPE html>
 </style>
 </head>
 <body>
-  <div class="logo">⚡</div>
+  <div class="logo">error</div>
   <div class="spinner"></div>
-  <div class="msg">正在启动服务…</div>
+  <div class="msg">正在尝试重启服务…</div>
 </body>
 </html>'''
 
