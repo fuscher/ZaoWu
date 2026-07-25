@@ -10,6 +10,7 @@ import ipaddress
 from urllib.parse import urlparse
 from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
+from routes.workflow import workflow_bp
 from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir
 
 app = Quart(__name__)
@@ -41,6 +42,7 @@ app.register_blueprint(terminal_bp, url_prefix='/api/terminal')
 app.register_blueprint(community_bp, url_prefix='/api/community')
 app.register_blueprint(plugin_bp, url_prefix='/api/plugins')
 app.register_blueprint(agent_skills_bp, url_prefix='/api/agent/skills')
+app.register_blueprint(workflow_bp, url_prefix='/api/workflows')
 
 DEFAULTS = {
     'enabled': True,

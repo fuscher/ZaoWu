@@ -362,6 +362,7 @@ def search_web(query: str, max_results: int = 5, timeout: float = _DEFAULT_TIMEO
 
     engine_order = _get_engine_order()
     last_error = None
+    last_success_empty: Dict[str, Any] | None = None
 
     for engine_name in engine_order:
         engine_fn = _ENGINE_REGISTRY.get(engine_name)
@@ -383,6 +384,7 @@ def search_web(query: str, max_results: int = 5, timeout: float = _DEFAULT_TIMEO
                     'engine %s returned empty results for query: %s (attempt %d)',
                     engine_name, query[:50], attempt + 1,
                 )
+                last_success_empty = result
                 last_error = f'{engine_name}: no results found'
                 break  # 跳到下一个引擎
 
@@ -395,6 +397,13 @@ def search_web(query: str, max_results: int = 5, timeout: float = _DEFAULT_TIMEO
 
         # 当前引擎所有尝试均失败 → 降级到下一个引擎
         logger.info('falling back from %s to next engine', engine_name)
+
+    # 所有引擎尝试完毕：若至少有一个引擎成功但无结果，返回成功（空结果）
+    if last_success_empty is not None:
+        return {
+            **last_success_empty,
+            'error': None,
+        }
 
     # 所有引擎都失败
     return {

@@ -1,27 +1,28 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
 import { useI18n } from '@/i18n'
 import BackgroundManager from './BackgroundManager.vue'
 
 const { t } = useI18n()
-const emit = defineEmits<{ done: [] }>()
-const visible = ref(true)
 
-onMounted(() => {
-  setTimeout(() => {
-    visible.value = false
-    setTimeout(() => emit('done'), 400)
-  }, 3000)
-})
+defineProps<{
+  progress?: string
+}>()
+
+const emit = defineEmits<{ done: [] }>()
+
+function afterLeave() {
+  emit('done')
+}
 </script>
 
 <template>
-  <Transition name="fade">
-    <div v-if="visible" class="loading-screen">
+  <Transition name="fade" @after-leave="afterLeave">
+    <div class="loading-screen">
       <BackgroundManager />
       <div class="content">
         <h1 class="title">{{ t('loading.title') }}</h1>
         <p class="subtitle">{{ t('loading.subtitle') }}</p>
+        <p v-if="progress" class="progress">{{ progress }}</p>
         <div class="spinner">
           <div class="ring"></div>
         </div>
@@ -66,9 +67,16 @@ onMounted(() => {
 .subtitle {
   font-size: 13px;
   color: var(--text-secondary);
-  margin: 0 0 32px;
+  margin: 0;
   letter-spacing: 2px;
   text-transform: uppercase;
+}
+
+.progress {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin: 8px 0 32px;
+  min-height: 18px;
 }
 
 .spinner {

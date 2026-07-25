@@ -18,6 +18,7 @@ from services.tool_registry import ToolRegistry
 from services.tool_executor import ToolExecutor
 from services.skill_registry import SkillDefinition
 from agent_modules.agent_core.sandbox import SkillSandbox
+from agent_modules.agent_core.llm_stream import llm_stream
 from zaowu_paths import get_project_root
 
 logger = logging.getLogger('agent_modules.agent_core.agent_service')
@@ -600,111 +601,27 @@ class AgentService:
         top_p: float = 1.0,
         stop_event=None,
     ) -> AsyncGenerator[dict, None]:
-        """流式调用 LLM，yield 解析后的事件字典"""
-        api_base = provider.get('apiBase', '').rstrip('/')
-        api_key = provider.get('apiKey', '')
-        model_id = self._model_id or ''
-
-        payload = {
-            'model': model_id,
-            'messages': messages,
-            'temperature': temperature,
-            'max_tokens': max_tokens,
-            'top_p': top_p,
-            'stream': True,
-        }
-        if tools:
-            payload['tools'] = tools
-            payload['tool_choice'] = 'auto'
-
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json',
-        }
-
-        accumulated_tool_calls: Dict[int, Dict[str, Any]] = {}
-
+        """流式调用 LLM，委托共享 llm_stream；异常转 delta 以保持 Agent 行为。"""
         try:
-            async with self.http_client.stream(
-                'POST',
-                f'{api_base}/chat/completions',
-                json=payload,
-                headers=headers,
-            ) as response:
-                # 明确指定 UTF-8，防止上游未声明 charset 时产生中文乱码。
-                response.encoding = 'utf-8'
-
-                if response.status_code != 200:
-                    body = await response.aread()
-                    yield {
-                        'type': 'delta',
-                        'delta': f'API 请求失败 (HTTP {response.status_code}): {body.decode()[:200]}',
-                    }
-                    return
-
-                async for line in response.aiter_lines():
-                    # 检查停止事件
-                    if stop_event and stop_event.is_set():
-                        break
-
-                    if not line.startswith('data: '):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        choice = chunk.get('choices', [{}])[0]
-                        delta = choice.get('delta', {})
-
-                        # 文本增量
-                        if 'content' in delta and delta['content']:
-                            yield {'type': 'delta', 'delta': delta['content']}
-
-                        # 工具调用增量（累加）
-                        if 'tool_calls' in delta:
-                            for tc in delta['tool_calls']:
-                                idx = tc.get('index', 0)
-                                if idx not in accumulated_tool_calls:
-                                    accumulated_tool_calls[idx] = {
-                                        'id': tc.get('id', '') or f'tool_{idx}',
-                                        'type': 'function',
-                                        'function': {'name': '', 'arguments': ''},
-                                    }
-                                acc = accumulated_tool_calls[idx]
-                                if 'id' in tc and tc['id']:
-                                    acc['id'] = tc['id']
-                                func = tc.get('function', {})
-                                if 'name' in func:
-                                    acc['function']['name'] += func['name']
-                                if 'arguments' in func:
-                                    acc['function']['arguments'] += func['arguments']
-
-                    except json.JSONDecodeError:
-                        continue
-
-            # 流结束，产出完整的工具调用
-            if accumulated_tool_calls:
-                for tc in sorted(accumulated_tool_calls.values(), key=lambda x: x.get('id', '')):
-                    func = tc['function']
-                    try:
-                        parsed_args = json.loads(func['arguments']) if func['arguments'] else {}
-                    except json.JSONDecodeError:
-                        parsed_args = {}
-
-                    yield {
-                        'type': 'tool_call_part',
-                        'tool_call': {
-                            'requestId': tc['id'],
-                            'name': func['name'],
-                            'arguments': parsed_args,
-                        }
-                    }
-
+            async for event in llm_stream(
+                provider=provider,
+                model_id=self._model_id or '',
+                messages=messages,
+                tools=tools or None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                tool_choice='auto' if tools else None,
+                stop_event=stop_event,
+                http_client=self.http_client,
+            ):
+                yield event
         except httpx.TimeoutException:
             yield {'type': 'delta', 'delta': '\n\n[请求超时]'}
         except httpx.ConnectError:
             yield {'type': 'delta', 'delta': '\n\n[无法连接到 API 服务器]'}
+        except RuntimeError as e:
+            yield {'type': 'delta', 'delta': f'\n\n[{e}]'}
 
     @staticmethod
     def _merge_tool_call(existing: list, new: dict) -> list:

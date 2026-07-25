@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import {
   MessageSquare, FolderTree, Search, GitBranch, Puzzle, Users, Settings,
-  Sun, Moon, Zap, Smile, Bell, Star, Heart, AlertCircle,
+  Sun, Moon, Zap, Smile, Bell, Star, Heart, AlertCircle, Workflow,
   type LucideIcon,
 } from '@lucide/vue'
 import { useI18n } from '@/i18n'
@@ -17,6 +17,7 @@ const pluginsStore = usePluginsStore()
 
 const items: { id: ViewType; icon: string }[] = [
   { id: 'chat', icon: 'MessageSquare' },
+  { id: 'workflow', icon: 'Workflow' },
   { id: 'files', icon: 'FolderTree' },
   { id: 'search', icon: 'Search' },
   { id: 'git', icon: 'GitBranch' },
@@ -38,7 +39,7 @@ interface ActivityBarItem {
 // 图标名 → lucide 组件映射表（预导入常用图标，插件声明未知图标时降级为 Puzzle）
 const lucideIconMap: Record<string, LucideIcon> = {
   MessageSquare, FolderTree, Search, GitBranch, Puzzle, Users, Settings,
-  Zap, Smile, Bell, Star, Heart, AlertCircle,
+  Zap, Smile, Bell, Star, Heart, AlertCircle, Workflow,
 }
 
 // 固定内置项 + 插件注册的动态项

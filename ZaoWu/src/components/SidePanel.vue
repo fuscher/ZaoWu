@@ -10,6 +10,7 @@ import SearchPanel from './SearchPanel.vue'
 import ConversationList from './ConversationList.vue'
 import RoomPanel from './RoomPanel.vue'
 import GitCommitGraph from './GitCommitGraph.vue'
+import NodePalette from './workflow/NodePalette.vue'
 import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
 import GitBranchDialog from './GitBranchDialog.vue'
 import GitMissingDialog from './GitMissingDialog.vue'
@@ -179,6 +180,7 @@ watch(
         <template v-else-if="view === 'plugins'">{{ t('sidebar.plugins') }}</template>
         <template v-else-if="view === 'community'">{{ t('sidebar.community') }}</template>
         <template v-else-if="view === 'settings'">{{ t('sidebar.settings') }}</template>
+        <template v-else-if="view === 'workflow'">{{ t('sidebar.workflow') }}</template>
       </span>
       <button class="collapse-btn" @click="emit('toggle')">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -353,6 +355,12 @@ watch(
       </template>
       <template v-else-if="view === 'community'">
         <RoomPanel />
+      </template>
+      <template v-else-if="view === 'workflow'">
+        <div class="workflow-drag-hint">
+          <span>{{ t('workflow.dragHint') }}</span>
+        </div>
+        <NodePalette class="side-node-palette" />
       </template>
       <template v-else-if="view === 'settings'">
         <div class="list-item" @click="handleBannerClick('appearance')">
@@ -713,5 +721,31 @@ watch(
   margin-top: 8px;
   border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
+}
+
+.workflow-drag-hint {
+  padding: 10px 12px;
+  margin: 4px 4px 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-glass);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.side-node-palette {
+  padding: 4px;
+  background: transparent;
+}
+
+.side-node-palette :deep(.node-palette) {
+  background: transparent;
+  padding: 0;
+}
+
+.side-node-palette :deep(.palette-item) {
+  margin-bottom: 6px;
 }
 </style>

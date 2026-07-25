@@ -81,6 +81,7 @@ chat_presets.json
 conversations.json
 providers.json
 settings.json
+workflows.json
 
 # Test cache
 tests/__pycache__/

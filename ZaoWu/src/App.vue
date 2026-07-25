@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, watchEffect } from 'vue'
+import { ref, watchEffect, onMounted } from 'vue'
 import { useTheme } from '@/composables/useTheme'
 import { useI18n } from '@/i18n'
 import LoadingScreen from '@/components/LoadingScreen.vue'
 import MainLayout from '@/components/MainLayout.vue'
+import { fetchProviders } from '@/services/ai'
+import { listWorkflows } from '@/services/workflow'
 
 const { theme, toggleTheme } = useTheme()
 const { t } = useI18n()
 const loading = ref(true)
+const progress = ref('')
 
 watchEffect(() => {
   document.title = t('loading.title')
@@ -16,10 +19,37 @@ watchEffect(() => {
 function onLoadingDone() {
   loading.value = false
 }
+
+onMounted(async () => {
+  const startTime = performance.now()
+  const MIN_DURATION_MS = 3000
+
+  progress.value = t('loading.preparing')
+
+  const initTasks = [
+    fetchProviders().catch(() => []),
+    listWorkflows().catch(() => []),
+  ]
+
+  try {
+    progress.value = t('loading.loadingProviders')
+    await Promise.all(initTasks)
+    progress.value = t('loading.ready')
+  } catch {
+    progress.value = t('loading.ready')
+  }
+
+  const elapsed = performance.now() - startTime
+  const remaining = Math.max(0, MIN_DURATION_MS - elapsed)
+
+  setTimeout(() => {
+    loading.value = false
+  }, remaining)
+})
 </script>
 
 <template>
-  <LoadingScreen v-if="loading" @done="onLoadingDone" />
+  <LoadingScreen v-if="loading" :progress="progress" @done="onLoadingDone" />
   <MainLayout v-else :theme="theme" @toggle-theme="toggleTheme" />
 </template>
 

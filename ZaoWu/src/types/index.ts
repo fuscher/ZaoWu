@@ -1,6 +1,6 @@
 export type Theme = 'dark' | 'light'
 
-export type ViewType = 'chat' | 'files' | 'search' | 'git' | 'plugins' | 'community' | 'settings'
+export type ViewType = 'chat' | 'files' | 'search' | 'git' | 'plugins' | 'community' | 'settings' | 'workflow'
 
 // ── Community / Collaboration types ─────────────────────────────
 

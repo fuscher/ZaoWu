@@ -6,7 +6,7 @@ import { PluginHost } from '@/plugin-system'
 
 const { t } = useI18n()
 const pluginsStore = usePluginsStore()
-const model = 'ZaoWu v0.1.0-xiaoshu'
+const model = 'ZaoWu v0.2.0-dashu'
 
 type ServerStatus = 'checking' | 'ready' | 'offline'
 

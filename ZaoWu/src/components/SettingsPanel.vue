@@ -274,6 +274,7 @@ onMounted(() => {
               @change="settingsStore.updateBg({ startupView: ($event.target as HTMLSelectElement).value as ViewType })"
             >
               <option value="chat">{{ t('activityBar.chat') }}</option>
+              <option value="workflow">{{ t('activityBar.workflow') }}</option>
               <option value="files">{{ t('activityBar.files') }}</option>
               <option value="search">{{ t('activityBar.search') }}</option>
               <option value="git">{{ t('activityBar.git') }}</option>

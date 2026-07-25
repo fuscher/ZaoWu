@@ -10,6 +10,7 @@ import SettingsPanel from './SettingsPanel.vue'
 import GitPanel from './GitPanel.vue'
 import CommunityPanel from './CommunityPanel.vue'
 import PluginManagementDetail from './PluginManagementDetail.vue'
+import WorkflowPanel from './workflow/WorkflowPanel.vue'
 import StatusBar from './StatusBar.vue'
 import { useEditorStore } from '@/stores/editor'
 import { useCommunityStore } from '@/stores/community'
@@ -20,7 +21,7 @@ import { pluginEventBus } from '@/plugin-system/events'
 defineProps<{ theme: Theme }>()
 const emit = defineEmits<{ toggleTheme: [] }>()
 
-const VALID_VIEWS: ViewType[] = ['chat', 'files', 'search', 'git', 'plugins', 'community', 'settings']
+const VALID_VIEWS: ViewType[] = ['chat', 'files', 'search', 'git', 'plugins', 'community', 'settings', 'workflow']
 const settingsStore = useSettingsStore()
 const initialView: ViewType = VALID_VIEWS.includes(settingsStore.background.startupView as ViewType)
   ? settingsStore.background.startupView
@@ -97,6 +98,9 @@ onMounted(() => {
       </div>
       <div v-else-if="activeView === 'plugins'" class="content-area">
         <PluginManagementDetail :plugin-name="selectedPluginName" />
+      </div>
+      <div v-else-if="activeView === 'workflow'" class="content-area">
+        <WorkflowPanel :theme="theme" />
       </div>
     </div>
     <StatusBar />
