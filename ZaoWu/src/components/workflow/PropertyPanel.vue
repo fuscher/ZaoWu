@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
+import { Trash2 } from '@lucide/vue'
 import type { Component } from 'vue'
 
 const { t } = useI18n()
@@ -23,12 +24,35 @@ const configComponent = computed(() => {
   if (!selectedNode.value) return null
   return componentMap[selectedNode.value.type] ?? null
 })
+
+function deleteNode() {
+  if (!selectedNode.value) return
+  const nodeId = selectedNode.value.id
+  const newNodes = workflowStore.nodes.filter((n) => n.id !== nodeId)
+  const newEdges = workflowStore.edges.filter(
+    (e) => e.source !== nodeId && e.target !== nodeId,
+  )
+  workflowStore.setNodes(newNodes)
+  workflowStore.setEdges(newEdges)
+  workflowStore.selectNode(null)
+}
 </script>
 
 <template>
   <aside v-if="selectedNode" class="property-panel">
-    <h3 class="property-title">{{ selectedNode.label }}</h3>
-    <p class="property-type">{{ t(`workflow.nodes.${selectedNode.type}`) }}</p>
+    <div class="property-header">
+      <div>
+        <h3 class="property-title">{{ selectedNode.label }}</h3>
+        <p class="property-type">{{ t(`workflow.nodes.${selectedNode.type}`) }}</p>
+      </div>
+      <button
+        class="delete-node-btn"
+        :title="t('workflow.deleteNode')"
+        @click="deleteNode"
+      >
+        <Trash2 :size="14" />
+      </button>
+    </div>
     <Suspense>
       <component
         :is="configComponent"
@@ -62,6 +86,14 @@ const configComponent = computed(() => {
   font-size: 13px;
 }
 
+.property-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
 .property-title {
   margin: 0 0 4px;
   font-size: 14px;
@@ -69,10 +101,30 @@ const configComponent = computed(() => {
 }
 
 .property-type {
-  margin: 0 0 14px;
+  margin: 0;
   font-size: 12px;
   color: var(--text-tertiary);
   text-transform: capitalize;
+}
+
+.delete-node-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.delete-node-btn:hover {
+  background: var(--bg-hover);
 }
 
 .property-loading {

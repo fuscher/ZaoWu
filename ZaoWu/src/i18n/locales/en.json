@@ -458,6 +458,7 @@
     "noExportableWorkflows": "No workflow available to export. Please save first.",
     "deleteTitle": "Select Workflow to Delete",
     "noDeletableWorkflows": "No workflow available to delete.",
+    "deleteNode": "Delete Node",
     "rename": "Rename Workflow",
     "noWorkflows": "No saved workflows",
     "copySuffix": "copy",

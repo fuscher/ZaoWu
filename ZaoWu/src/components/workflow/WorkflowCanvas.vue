@@ -2,7 +2,7 @@
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import type { Connection, NodeDragEvent } from '@vue-flow/core'
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import '@vue-flow/core/dist/style.css'
 import StartNode from './nodes/StartNode.vue'
 import LLMNode from './nodes/LLMNode.vue'
@@ -158,6 +158,39 @@ function onNodeDragStop(event: NodeDragEvent) {
   })
   workflowStore.setNodes(updated)
 }
+
+function deleteSelectedNode() {
+  const nodeId = workflowStore.selectedNodeId
+  if (!nodeId) return
+  const newNodes = workflowStore.nodes.filter((n) => n.id !== nodeId)
+  const newEdges = workflowStore.edges.filter(
+    (e) => e.source !== nodeId && e.target !== nodeId,
+  )
+  workflowStore.setNodes(newNodes)
+  workflowStore.setEdges(newEdges)
+  workflowStore.selectNode(null)
+}
+
+function onKeyDown(event: KeyboardEvent) {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return
+  const target = event.target as HTMLElement
+  if (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.isContentEditable
+  ) {
+    return
+  }
+  deleteSelectedNode()
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onKeyDown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onKeyDown)
+})
 </script>
 
 <template>

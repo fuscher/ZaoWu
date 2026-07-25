@@ -458,6 +458,7 @@
     "noExportableWorkflows": "没有可导出的工作流，请先保存",
     "deleteTitle": "选择要删除的工作流",
     "noDeletableWorkflows": "没有可删除的工作流",
+    "deleteNode": "删除节点",
     "rename": "重命名工作流",
     "noWorkflows": "暂无已保存工作流",
     "copySuffix": "副本",

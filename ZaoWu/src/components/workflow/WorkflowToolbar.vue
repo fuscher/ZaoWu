@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import { Play, Square, Save, Download, Upload, Plus, Activity, FolderOpen, Trash2 } from '@lucide/vue'
+import { Play, Square, Save, Download, Upload, Plus, Activity, FolderOpen, Trash2, Copy } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 
 export interface WorkflowSummary {
@@ -125,7 +125,7 @@ function handleLoad(id: string) {
         <span>{{ t('workflow.new') }}</span>
       </button>
       <button
-        class="tool-btn danger"
+        class="tool-btn"
         :title="t('workflow.delete')"
         :disabled="!props.workflows?.length && !props.id"
         @click="openDeleteDialog"
@@ -153,10 +153,10 @@ function handleLoad(id: string) {
       </div>
     </div>
 
-    <div class="toolbar-center">
+    <div class="toolbar-right">
       <button
         v-if="!props.isRunning"
-        class="tool-btn primary"
+        class="tool-btn"
         :title="t('workflow.run')"
         @click="emit('run')"
       >
@@ -165,7 +165,7 @@ function handleLoad(id: string) {
       </button>
       <button
         v-else
-        class="tool-btn danger"
+        class="tool-btn"
         :title="t('workflow.stop')"
         @click="emit('stop')"
       >
@@ -179,12 +179,10 @@ function handleLoad(id: string) {
       </button>
 
       <button class="tool-btn" :title="t('workflow.saveAs')" @click="emit('saveAs')">
-        <Download :size="14" />
+        <Copy :size="14" />
         <span>{{ t('workflow.saveAs') }}</span>
       </button>
-    </div>
 
-    <div class="toolbar-right">
       <button class="tool-btn" :title="t('workflow.import')" @click="emit('importWorkflow')">
         <Download :size="14" />
         <span>{{ t('workflow.import') }}</span>
@@ -291,7 +289,7 @@ function handleLoad(id: string) {
           {{ t('common.cancel') }}
         </button>
         <button
-          class="tool-btn danger"
+          class="tool-btn"
           :disabled="!selectedDeleteId"
           @click="confirmDelete"
         >
