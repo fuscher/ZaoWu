@@ -247,6 +247,7 @@ declare global {
         move: (x: number, y: number) => void
         shutdown: () => void
         select_folder: () => Promise<string | null>
+        save_file_dialog: (defaultFilename: string) => Promise<string | null>
       }
     }
     __SETTINGS__?: Record<string, unknown>

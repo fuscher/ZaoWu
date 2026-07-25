@@ -10,9 +10,16 @@ from workflow_engine.schema import (
 )
 from workflow_engine.sse_helpers import _now_ms
 
-_workflow_lock = asyncio.Lock()
+_workflow_lock: asyncio.Lock | None = None
 BASE_DIR = get_project_root()
 WORKFLOWS_FILE = os.path.join(BASE_DIR, 'workflows.json')
+
+
+def _get_workflow_lock() -> asyncio.Lock:
+    global _workflow_lock
+    if _workflow_lock is None:
+        _workflow_lock = asyncio.Lock()
+    return _workflow_lock
 
 
 def _read_workflows_unlocked() -> dict:
@@ -129,14 +136,14 @@ def _definition_to_dict(definition: WorkflowDefinition) -> dict:
 
 
 async def load(workflow_id: str) -> WorkflowDefinition | None:
-    async with _workflow_lock:
+    async with _get_workflow_lock():
         data = await asyncio.to_thread(_read_workflows_unlocked)
     item = next((w for w in data['workflows'] if w['id'] == workflow_id), None)
     return _dict_to_definition(item) if item else None
 
 
 async def save(definition: WorkflowDefinition) -> WorkflowDefinition:
-    async with _workflow_lock:
+    async with _get_workflow_lock():
         data = await asyncio.to_thread(_read_workflows_unlocked)
         existing = next((w for w in data['workflows'] if w['id'] == definition.id), None)
         definition.version = (existing.get('version', 0) + 1) if existing else 1
@@ -151,7 +158,7 @@ async def save(definition: WorkflowDefinition) -> WorkflowDefinition:
 
 
 async def list_all() -> list[dict]:
-    async with _workflow_lock:
+    async with _get_workflow_lock():
         data = await asyncio.to_thread(_read_workflows_unlocked)
     return [
         {
@@ -165,7 +172,7 @@ async def list_all() -> list[dict]:
 
 
 async def delete(workflow_id: str) -> bool:
-    async with _workflow_lock:
+    async with _get_workflow_lock():
         data = await asyncio.to_thread(_read_workflows_unlocked)
         before = len(data['workflows'])
         data['workflows'] = [w for w in data['workflows'] if w['id'] != workflow_id]
@@ -177,3 +184,17 @@ async def delete(workflow_id: str) -> bool:
 
 async def list_runs(workflow_id: str) -> list[dict]:
     return []
+
+
+async def export_to_file(workflow_id: str, file_path: str) -> None:
+    definition = await load(workflow_id)
+    if not definition:
+        raise ValueError('workflow not found')
+    data = _definition_to_dict(definition)
+    async with _get_workflow_lock():
+        await asyncio.to_thread(_write_json_file, file_path, data)
+
+
+def _write_json_file(file_path: str, data: dict) -> None:
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)

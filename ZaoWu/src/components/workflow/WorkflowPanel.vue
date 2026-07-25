@@ -8,7 +8,8 @@ import WorkflowToolbar from './WorkflowToolbar.vue'
 import PropertyPanel from './PropertyPanel.vue'
 import InspectPanel from './InspectPanel.vue'
 import type { WorkflowDefinition } from '@/types/workflow'
-import { fetchWorkflow, createWorkflow, updateWorkflow } from '@/services/workflow'
+import { fetchWorkflow, createWorkflow, updateWorkflow, deleteWorkflow, listWorkflows, exportWorkflowToFile } from '@/services/workflow'
+import type { WorkflowSummary } from './WorkflowToolbar.vue'
 
 const props = defineProps<{
   theme: 'dark' | 'light'
@@ -20,9 +21,19 @@ const engine = useWorkflowEngine()
 
 const showInspect = ref(false)
 const runError = ref<string | null>(null)
+const workflowsList = ref<WorkflowSummary[]>([])
+const fileInput = ref<HTMLInputElement | null>(null)
 
 const workflowName = computed(() => workflowStore.workflow?.name ?? t('workflow.untitled'))
 const isRunning = computed(() => engine.isRunning.value)
+
+async function refreshWorkflowList() {
+  try {
+    workflowsList.value = await listWorkflows()
+  } catch (e) {
+    workflowsList.value = []
+  }
+}
 
 function handleCreateBlank() {
   const now = Date.now()
@@ -45,13 +56,41 @@ async function handleSave() {
   if (!def) return
   try {
     runError.value = null
-    if (def.version <= 1 && def.nodes.length === 0) {
-      const saved = await createWorkflow(def)
-      workflowStore.setWorkflow(saved)
-    } else {
-      const saved = await updateWorkflow(def.id, def)
-      workflowStore.setWorkflow(saved)
+    let saved: WorkflowDefinition
+    try {
+      saved = await updateWorkflow(def.id, def)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      if (message.toLowerCase().includes('not found') || message.includes('不存在')) {
+        saved = await createWorkflow(def)
+      } else {
+        throw e
+      }
     }
+    workflowStore.setWorkflow(saved)
+    await refreshWorkflowList()
+  } catch (e) {
+    runError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function handleSaveAs() {
+  const def = workflowStore.workflow
+  if (!def) return
+  try {
+    runError.value = null
+    const now = Date.now()
+    const copy: WorkflowDefinition = {
+      ...def,
+      id: `wf-${now}`,
+      name: `${def.name || t('workflow.untitled')} (${t('workflow.copySuffix')})`,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }
+    const saved = await createWorkflow(copy)
+    workflowStore.setWorkflow(saved)
+    await refreshWorkflowList()
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
   }
@@ -80,23 +119,124 @@ async function handleStop() {
   await engine.stop()
 }
 
+async function handleRename(name: string) {
+  const def = workflowStore.workflow
+  if (!def) return
+  def.name = name
+  workflowStore.setWorkflow({ ...def })
+  await handleSave()
+}
+
+async function handleDelete(id: string) {
+  try {
+    runError.value = null
+    await deleteWorkflow(id)
+    await refreshWorkflowList()
+    if (workflowStore.workflow?.id === id) {
+      handleCreateBlank()
+    }
+  } catch (e) {
+    runError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function handleExport(id: string) {
+  try {
+    runError.value = null
+    let def = workflowStore.workflow
+    if (!def || def.id !== id) {
+      def = await fetchWorkflow(id)
+    }
+    const defaultName = `${def.name || t('workflow.untitled')}.zaowu-workflow.json`
+
+    if (window.pywebview?.api?.save_file_dialog) {
+      const filePath = await window.pywebview.api.save_file_dialog(defaultName)
+      if (!filePath) return
+      await exportWorkflowToFile(id, filePath)
+      return
+    }
+
+    const blob = new Blob([JSON.stringify(def, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = defaultName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    runError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+async function handleImport(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+  try {
+    runError.value = null
+    const text = await file.text()
+    const imported = JSON.parse(text) as Partial<WorkflowDefinition>
+    if (!Array.isArray(imported.nodes) || !imported.id || !imported.name) {
+      throw new Error(t('workflow.importInvalid'))
+    }
+    const now = Date.now()
+    const def: WorkflowDefinition = {
+      ...imported,
+      id: `wf-${now}`,
+      name: `${imported.name || t('workflow.untitled')} (${t('workflow.importSuffix')})`,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    } as WorkflowDefinition
+    const saved = await createWorkflow(def)
+    workflowStore.setWorkflow(saved)
+    await refreshWorkflowList()
+  } catch (e) {
+    runError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
 onMounted(() => {
   if (!workflowStore.workflow) {
     handleCreateBlank()
   }
+  refreshWorkflowList()
 })
 </script>
 
 <template>
   <div class="workflow-panel" :class="`theme-${props.theme}`">
     <WorkflowToolbar
+      :id="workflowStore.workflow?.id"
       :name="workflowName"
       :is-running="isRunning"
+      :workflows="workflowsList"
       @create-blank="handleCreateBlank"
       @save="handleSave"
+      @save-as="handleSaveAs"
+      @load="handleLoad"
+      @delete="handleDelete"
+      @rename="handleRename"
       @toggle-inspect="showInspect = !showInspect"
       @run="handleRun"
       @stop="handleStop"
+      @export-workflow="handleExport"
+      @import-workflow="triggerImport"
+    />
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".json,.zaowu-workflow.json"
+      class="hidden-file-input"
+      @change="handleImport"
     />
     <div v-if="runError" class="error-banner">{{ runError }}</div>
     <div class="workflow-body">
@@ -146,5 +286,13 @@ onMounted(() => {
   color: #ef4444;
   font-size: 12px;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.hidden-file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 </style>

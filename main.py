@@ -142,6 +142,21 @@ class Api:
             return result[0]
         return None
 
+    def save_file_dialog(self, default_filename: str = ''):
+        result = webview.windows[0].create_file_dialog(
+            webview.FileDialog.SAVE,
+            directory='',
+            save_filename=default_filename,
+            allow_multiple=False,
+        )
+        if not result:
+            return None
+        if isinstance(result, str):
+            return result
+        if isinstance(result, (list, tuple)) and len(result) > 0:
+            return result[0]
+        return None
+
 
 def _on_loaded(window):
     """Called after each page finishes loading. Injects error detection."""

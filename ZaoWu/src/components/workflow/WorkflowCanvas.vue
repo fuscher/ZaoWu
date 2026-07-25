@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { VueFlow, useVueFlow, Position } from '@vue-flow/core'
+import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import type { Connection, NodeDragEvent } from '@vue-flow/core'
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import '@vue-flow/core/dist/style.css'
 import StartNode from './nodes/StartNode.vue'
 import LLMNode from './nodes/LLMNode.vue'
@@ -35,7 +35,7 @@ const edgeTypes = {
 }
 
 const workflowStore = useWorkflowStore()
-const { nodes, edges, onConnect, addNodes, addEdges, onNodeClick, onPaneClick, screenToFlowCoordinate } = useVueFlow()
+const { onConnect, onNodeClick, onPaneClick, screenToFlowCoordinate } = useVueFlow()
 
 const vueFlowNodes = computed(() =>
   workflowStore.nodes.map((n) => ({
@@ -60,33 +60,17 @@ const vueFlowEdges = computed(() =>
   }))
 )
 
-watch(vueFlowNodes, (val) => {
-  nodes.value = val as any
-}, { immediate: true })
-
-watch(vueFlowEdges, (val) => {
-  edges.value = val as any
-}, { immediate: true })
-
 onConnect((connection) => {
   if (!validateConnection(connection)) return
-  const edge = {
-    ...connection,
-    id: `edge-${Date.now()}`,
-    type: 'smoothstep',
-    edgeType: inferEdgeKind(connection),
-    animated: false,
-  }
-  addEdges([edge])
-
+  const edgeType = inferEdgeKind(connection)
   const newEdge: WorkflowEdge = {
-    id: edge.id,
+    id: `edge-${Date.now()}`,
     source: connection.source as string,
     sourcePort: connection.sourceHandle || 'default',
     target: connection.target as string,
     targetPort: connection.targetHandle || 'default',
     type: 'smoothstep',
-    edgeType: edge.edgeType as EdgeType,
+    edgeType,
   }
   workflowStore.setEdges([...workflowStore.edges, newEdge])
 })
@@ -116,7 +100,7 @@ function validateConnection(connection: Connection): boolean {
 
   const sourceHandle = connection.sourceHandle || 'default'
   if (sourceHandle === 'break' || sourceHandle === 'continue') {
-    const sourceNode = nodes.value.find((n) => n.id === connection.source)
+    const sourceNode = vueFlowNodes.value.find((n) => n.id === connection.source)
     if (sourceNode && sourceNode.type !== 'loop') return false
   }
 
@@ -125,7 +109,7 @@ function validateConnection(connection: Connection): boolean {
 
 function wouldFormCycle(source: string, target: string): boolean {
   const adjacency = new Map<string, string[]>()
-  for (const e of edges.value) {
+  for (const e of vueFlowEdges.value) {
     if (!adjacency.has(e.source)) adjacency.set(e.source, [])
     adjacency.get(e.source)!.push(e.target)
   }
@@ -148,6 +132,7 @@ function onDragOver(event: DragEvent) {
 }
 
 function onDrop(event: DragEvent) {
+  event.preventDefault()
   const raw = event.dataTransfer?.getData('application/json')
   if (!raw) return
   const payload = JSON.parse(raw) as { type: NodeType; defaultData: Record<string, unknown> }
@@ -156,13 +141,6 @@ function onDrop(event: DragEvent) {
     y: event.clientY,
   })
   const id = `node-${Date.now()}`
-  addNodes([{
-    id,
-    type: payload.type,
-    position,
-    data: payload.defaultData,
-  }] as any)
-
   const newNode: WorkflowNode = {
     id,
     type: payload.type,
@@ -173,23 +151,20 @@ function onDrop(event: DragEvent) {
   workflowStore.setNodes([...workflowStore.nodes, newNode])
 }
 
-function onNodeDragStop(_event: NodeDragEvent) {
+function onNodeDragStop(event: NodeDragEvent) {
   const updated = workflowStore.nodes.map((n) => {
-    const vfNode = nodes.value.find((vn) => vn.id === n.id)
-    if (!vfNode) return n
-    return { ...n, position: vfNode.position }
+    if (n.id !== event.node.id) return n
+    return { ...n, position: event.node.position }
   })
   workflowStore.setNodes(updated)
 }
-
-defineExpose({ nodes, edges })
 </script>
 
 <template>
-  <div class="workflow-canvas" @dragover="onDragOver" @drop="onDrop">
+  <div class="workflow-canvas">
     <VueFlow
-      :nodes="nodes"
-      :edges="edges"
+      :nodes="vueFlowNodes"
+      :edges="vueFlowEdges"
       :node-types="nodeTypes"
       :edge-types="edgeTypes"
       :default-viewport="{ x: 0, y: 0, zoom: 1 }"
@@ -199,6 +174,8 @@ defineExpose({ nodes, edges })
       :snap-grid="[20, 20]"
       fit-view-on-init
       @node-drag-stop="onNodeDragStop"
+      @dragover="onDragOver"
+      @drop="onDrop"
     >
       <Background variant="lines" :gap="20" :line-width="1" color="var(--border-glass)" />
     </VueFlow>

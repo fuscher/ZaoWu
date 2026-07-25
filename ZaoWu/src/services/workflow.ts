@@ -43,6 +43,13 @@ export async function deleteWorkflow(id: string): Promise<void> {
   await request(`${BASE}/${id}`, { method: 'DELETE' })
 }
 
+export async function exportWorkflowToFile(id: string, filePath: string): Promise<void> {
+  await request(`${BASE}/${id}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ filePath }),
+  })
+}
+
 export interface WorkflowEvent {
   type: string
   workflowId: string

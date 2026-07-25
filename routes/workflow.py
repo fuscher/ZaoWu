@@ -147,6 +147,21 @@ async def list_runs(workflow_id):
     return jsonify({'ok': True, 'runs': runs})
 
 
+@workflow_bp.route('/<workflow_id>/export', methods=['POST'])
+async def export_workflow(workflow_id):
+    body = await request.get_json(silent=True) or {}
+    file_path = body.get('filePath')
+    if not file_path:
+        return jsonify({'ok': False, 'error': 'filePath 必填'}), 400
+    try:
+        await workflow_service.export_to_file(workflow_id, file_path)
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': True})
+
+
 async def _wait_confirmation(workflow_id: str, run_id: str, node_id: str, tool_call: dict) -> bool:
     request_id = tool_call['requestId']
     key = _confirm_key(workflow_id, run_id)
