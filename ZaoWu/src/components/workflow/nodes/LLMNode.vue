@@ -20,7 +20,7 @@ const tokens = computed(() => runtime.value?.tokens)
     :tokens="tokens"
     :label="label"
     icon-name="Bot"
-    :inputs="['default', 'context']"
-    :outputs="['default', 'tokens']"
+    :inputs="['default']"
+    :outputs="['default']"
   />
 </template>

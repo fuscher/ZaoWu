@@ -700,4 +700,40 @@ defineExpose({
   stroke-width: 2.5;
   filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.9));
 }
+
+/* ── Handle 扩大触摸区域 ── */
+:deep(.vue-flow__handle) {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--bg-secondary);
+  background: var(--border-glass);
+  border-radius: 50%;
+  transition: all 0.15s ease;
+  cursor: crosshair;
+  z-index: 5;
+}
+
+:deep(.vue-flow__handle[type="source"]) {
+  right: -7px;
+}
+
+:deep(.vue-flow__handle[type="target"]) {
+  left: -7px;
+}
+
+:deep(.vue-flow__handle:hover) {
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.45);
+}
+
+:deep(.vue-flow__handle[type="source"]:hover) {
+  right: -10px;
+}
+
+:deep(.vue-flow__handle[type="target"]:hover) {
+  left: -10px;
+}
 </style>
