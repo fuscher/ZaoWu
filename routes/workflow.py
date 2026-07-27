@@ -5,6 +5,7 @@ import asyncio
 import json
 from services import workflow_service
 from services.workflow_service import _dict_to_definition, _definition_to_dict
+from services.tool_registry import ToolRegistry
 from workflow_engine.executor import WorkflowExecutor, execute_workflow
 from workflow_engine.sse_helpers import _generate_run_id
 
@@ -208,3 +209,19 @@ async def confirm_tool(workflow_id):
         run_conf[request_id].set()
 
     return jsonify({'ok': True})
+
+
+@workflow_bp.route('/tools', methods=['GET'])
+async def list_tools():
+    """返回 ToolRegistry 中全部工具定义（含 JSON Schema 参数），供前端动态表单使用。"""
+    registry = ToolRegistry.get_instance()
+    tools = []
+    for t in registry.list_tools().values():
+        tools.append({
+            'name': t.name,
+            'description': t.description,
+            'parameters': t.parameters,
+            'requiresApproval': t.requires_approval,
+            'tags': t.tags,
+        })
+    return jsonify({'ok': True, 'tools': tools})

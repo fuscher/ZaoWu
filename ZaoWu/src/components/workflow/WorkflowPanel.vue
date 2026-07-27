@@ -25,20 +25,10 @@ const workflowsList = ref<WorkflowSummary[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const canvasRef = ref<InstanceType<typeof WorkflowCanvas> | null>(null)
 
-function handleCopy() {
-  canvasRef.value?.copySelectedItems()
-}
-
-function handlePaste() {
-  canvasRef.value?.pasteItems()
-}
-
-function handleDeleteSelected() {
-  canvasRef.value?.deleteSelectedItems()
-}
-
 const workflowName = computed(() => workflowStore.workflow?.name ?? t('workflow.untitled'))
 const isRunning = computed(() => engine.isRunning.value)
+const canUndo = computed(() => workflowStore.canUndo)
+const canRedo = computed(() => workflowStore.canRedo)
 
 async function refreshWorkflowList() {
   try {
@@ -81,6 +71,7 @@ async function handleSave() {
       }
     }
     workflowStore.setWorkflow(saved)
+    workflowStore.markClean()
     await refreshWorkflowList()
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
@@ -103,6 +94,7 @@ async function handleSaveAs() {
     }
     const saved = await createWorkflow(copy)
     workflowStore.setWorkflow(saved)
+    workflowStore.markClean()
     await refreshWorkflowList()
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
@@ -123,6 +115,11 @@ async function handleRun() {
   const def = workflowStore.workflow
   if (!def) return
   runError.value = null
+  await handleSave()
+  if (runError.value) {
+    // 保存失败时中止运行，避免用旧持久化版本执行新画布内容
+    return
+  }
   const startNode = def.nodes.find((n) => n.type === 'start')
   const initialInput = String(startNode?.config.defaultValue ?? '')
   await engine.start(def.id, initialInput)
@@ -223,6 +220,26 @@ onMounted(() => {
   }
   refreshWorkflowList()
 })
+
+function handleDeleteSelected() {
+  canvasRef.value?.deleteSelectedItems()
+}
+
+function handleCopy() {
+  canvasRef.value?.copySelectedItems()
+}
+
+function handlePaste() {
+  canvasRef.value?.pasteItems()
+}
+
+function handleUndo() {
+  workflowStore.undo()
+}
+
+function handleRedo() {
+  workflowStore.redo()
+}
 </script>
 
 <template>
@@ -231,9 +248,10 @@ onMounted(() => {
       :id="workflowStore.workflow?.id"
       :name="workflowName"
       :is-running="isRunning"
+      :is-dirty="workflowStore.isDirty"
       :workflows="workflowsList"
-      :can-undo="workflowStore.canUndo"
-      :can-redo="workflowStore.canRedo"
+      :can-undo="canUndo"
+      :can-redo="canRedo"
       @create-blank="handleCreateBlank"
       @save="handleSave"
       @save-as="handleSaveAs"
@@ -245,11 +263,11 @@ onMounted(() => {
       @stop="handleStop"
       @export-workflow="handleExport"
       @import-workflow="triggerImport"
+      @delete-selected="handleDeleteSelected"
       @copy="handleCopy"
       @paste="handlePaste"
-      @delete-selected="handleDeleteSelected"
-      @undo="workflowStore.undo()"
-      @redo="workflowStore.redo()"
+      @undo="handleUndo"
+      @redo="handleRedo"
     />
     <input
       ref="fileInput"

@@ -3,6 +3,7 @@ import { Handle, Position } from '@vue-flow/core'
 import { Bot, GitBranch, Hammer, Play, Square, Workflow, type LucideIcon } from '@lucide/vue'
 import { computed } from 'vue'
 import type { NodeStatus } from '@/types/workflow'
+import { useI18n } from '@/i18n'
 
 const workflowIconMap: Record<string, LucideIcon> = {
   Bot,
@@ -23,7 +24,15 @@ const props = defineProps<{
   outputs?: string[]
 }>()
 
+const { t } = useI18n()
+
 const iconComponent = computed(() => workflowIconMap[props.iconName])
+
+function portTitle(portId: string, dir: 'input' | 'output'): string {
+  const dirLabel = t(`workflow.ports.${dir}`)
+  const name = t(`workflow.ports.${portId}`)
+  return `${name}（${dirLabel}）`
+}
 </script>
 
 <template>
@@ -48,6 +57,7 @@ const iconComponent = computed(() => workflowIconMap[props.iconName])
         type="target"
         :position="Position.Left"
         :id="input"
+        :title="portTitle(input, 'input')"
         :style="{ top: `${((idx + 1) / (props.inputs.length + 1)) * 100}%` }"
       />
     </template>
@@ -58,6 +68,7 @@ const iconComponent = computed(() => workflowIconMap[props.iconName])
         type="source"
         :position="Position.Right"
         :id="output"
+        :title="portTitle(output, 'output')"
         :style="{ top: `${((idx + 1) / (props.outputs.length + 1)) * 100}%` }"
       />
     </template>

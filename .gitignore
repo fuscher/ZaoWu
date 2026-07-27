@@ -27,6 +27,7 @@ instance/
 *.log
 log.json
 logs/
+workflow_logs/
 
 # Vue (covered in ZaoWu/.gitignore too)
 node_modules/

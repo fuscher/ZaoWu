@@ -1,41 +1,45 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineAsyncComponent, ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
-import { Trash2 } from '@lucide/vue'
+import { apiPath } from '@/utils/api'
 import type { Component } from 'vue'
+import type { ToolDef } from '@/types/workflow'
 
 const { t } = useI18n()
 const workflowStore = useWorkflowStore()
 const { selectedNode } = storeToRefs(workflowStore)
 
-const componentMap: Record<string, () => Promise<{ default: Component }>> = {
-  start: () => import('./configs/StartConfig.vue'),
-  llm: () => import('./configs/LLMConfig.vue'),
-  condition: () => import('./configs/ConditionConfig.vue'),
-  tool: () => import('./configs/ToolConfig.vue'),
-  router: () => import('./configs/RouterConfig.vue'),
-  loop: () => import('./configs/LoopConfig.vue'),
-  end: () => import('./configs/EndConfig.vue'),
+const toolsList = ref<ToolDef[]>([])
+
+async function loadTools() {
+  try {
+    const res = await fetch(apiPath('/workflows/tools'))
+    const data = await res.json()
+    if (data.ok && Array.isArray(data.tools)) {
+      toolsList.value = data.tools
+    }
+  } catch {
+    // 后端未实现 /api/workflows/tools 端点时静默回退
+  }
+}
+
+onMounted(() => { loadTools() })
+
+const componentMap: Record<string, Component> = {
+  start: defineAsyncComponent(() => import('./configs/StartConfig.vue')),
+  llm: defineAsyncComponent(() => import('./configs/LLMConfig.vue')),
+  condition: defineAsyncComponent(() => import('./configs/ConditionConfig.vue')),
+  tool: defineAsyncComponent(() => import('./configs/ToolConfig.vue')),
+  loop: defineAsyncComponent(() => import('./configs/LoopConfig.vue')),
+  end: defineAsyncComponent(() => import('./configs/EndConfig.vue')),
 }
 
 const configComponent = computed(() => {
   if (!selectedNode.value) return null
   return componentMap[selectedNode.value.type] ?? null
 })
-
-function deleteNode() {
-  if (!selectedNode.value) return
-  const nodeId = selectedNode.value.id
-  const newNodes = workflowStore.nodes.filter((n) => n.id !== nodeId)
-  const newEdges = workflowStore.edges.filter(
-    (e) => e.source !== nodeId && e.target !== nodeId,
-  )
-  workflowStore.setNodes(newNodes)
-  workflowStore.setEdges(newEdges)
-  workflowStore.selectNode(null)
-}
 </script>
 
 <template>
@@ -45,19 +49,13 @@ function deleteNode() {
         <h3 class="property-title">{{ selectedNode.label }}</h3>
         <p class="property-type">{{ t(`workflow.nodes.${selectedNode.type}`) }}</p>
       </div>
-      <button
-        class="delete-node-btn"
-        :title="t('workflow.deleteNode')"
-        @click="deleteNode"
-      >
-        <Trash2 :size="14" />
-      </button>
     </div>
     <Suspense>
       <component
         :is="configComponent"
         v-if="configComponent"
         :node="selectedNode"
+        :tools="toolsList"
       />
       <template #fallback>
         <div class="property-loading">{{ t('workflow.loadingConfig') }}</div>
@@ -87,10 +85,6 @@ function deleteNode() {
 }
 
 .property-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
   margin-bottom: 14px;
 }
 
@@ -105,26 +99,6 @@ function deleteNode() {
   font-size: 12px;
   color: var(--text-tertiary);
   text-transform: capitalize;
-}
-
-.delete-node-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: background 0.15s;
-  flex-shrink: 0;
-}
-
-.delete-node-btn:hover {
-  background: var(--bg-hover);
 }
 
 .property-loading {

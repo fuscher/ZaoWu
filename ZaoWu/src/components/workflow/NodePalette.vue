@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Play, Bot, GitBranch, Hammer, RotateCcw, Workflow, Square, type LucideIcon } from '@lucide/vue'
+import { Play, Bot, GitBranch, Hammer, RotateCcw, Square, type LucideIcon } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import type { NodeType } from '@/types/workflow'
 
@@ -66,18 +66,8 @@ const items: PaletteItem[] = [
     defaultData: {
       label: t('workflow.nodes.loop'),
       config: {
-        loopConfig: { mode: 'for', maxIterations: 10, circuitBreakerAction: 'break', bodyNodeIds: [], bodyEdges: [] },
+        loopConfig: { mode: 'canvas', maxIterations: 10, bodyNodeIds: [], bodyEdges: [] },
       },
-    },
-  },
-  {
-    type: 'router',
-    label: t('workflow.nodes.router'),
-    icon: Workflow,
-    description: t('workflow.nodes.routerDesc'),
-    defaultData: {
-      label: t('workflow.nodes.router'),
-      config: { routerMode: 'regex', routeCategories: [] },
     },
   },
   {
@@ -85,7 +75,7 @@ const items: PaletteItem[] = [
     label: t('workflow.nodes.end'),
     icon: Square,
     description: t('workflow.nodes.endDesc'),
-    defaultData: { label: t('workflow.nodes.end'), config: { outputFormat: 'text' } },
+    defaultData: { label: t('workflow.nodes.end'), config: { endMode: 'log', logFormat: 'txt', logDir: './workflow_logs' } },
   },
 ]
 

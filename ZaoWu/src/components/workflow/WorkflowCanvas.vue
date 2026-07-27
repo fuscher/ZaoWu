@@ -17,10 +17,8 @@ import ConditionNode from './nodes/ConditionNode.vue'
 import ToolNode from './nodes/ToolNode.vue'
 import EndNode from './nodes/EndNode.vue'
 import LoopNode from './nodes/LoopNode.vue'
-import RouterNode from './nodes/RouterNode.vue'
 import DataFlowEdge from './edges/DataFlowEdge.vue'
 import ConditionEdge from './edges/ConditionEdge.vue'
-import BreakContinueEdge from './edges/BreakContinueEdge.vue'
 import type { NodeType, EdgeType, WorkflowNode, WorkflowEdge } from '@/types/workflow'
 import { useWorkflowStore } from '@/stores/workflow'
 
@@ -31,14 +29,11 @@ const nodeTypes = {
   tool: ToolNode,
   end: EndNode,
   loop: LoopNode,
-  router: RouterNode,
 }
 
 const edgeTypes = {
   data: DataFlowEdge,
   condition: ConditionEdge,
-  break: BreakContinueEdge,
-  continue: BreakContinueEdge,
 }
 
 const workflowStore = useWorkflowStore()
@@ -155,7 +150,10 @@ function syncStoreNodePosition(id: string, position: { x: number; y: number }) {
   const def = workflowStore.workflow
   if (!def) return
   const node = def.nodes.find((n) => n.id === id)
-  if (node) node.position = { x: position.x, y: position.y }
+  if (node) {
+    node.position = { x: position.x, y: position.y }
+    workflowStore.markDirty()
+  }
 }
 
 function syncStoreRemoveNode(id: string) {
@@ -341,7 +339,8 @@ function onCanvasClickCapture(event: MouseEvent) {
 function inferEdgeKind(connection: Connection): EdgeType {
   const sourcePort = connection.sourceHandle || 'default'
   const targetPort = connection.targetHandle || 'default'
-  if (sourcePort === 'break' || sourcePort === 'continue') return sourcePort
+  // 新 Loop 不再有 break/continue 端口 — out_body / out_end 均为 data 类型
+  // 保留 true/false 条件判断
   if (
     sourcePort === 'true' ||
     sourcePort === 'false' ||
@@ -359,10 +358,9 @@ function validateConnection(connection: Connection): boolean {
   if (wouldFormCycle(connection.source, connection.target)) return false
 
   const sourceHandle = connection.sourceHandle || 'default'
-  if (sourceHandle === 'break' || sourceHandle === 'continue') {
-    const sourceNode = nodes.value.find((n) => n.id === connection.source)
-    if (sourceNode && sourceNode.type !== 'loop') return false
-  }
+  // 新 Loop 不再有 break/continue 端口，不再做 break/continue 边验证
+  // out_body 端口不允许连线（纯 SSE 观察端口）
+  if (sourceHandle === 'out_body') return false
 
   return true
 }

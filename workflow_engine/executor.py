@@ -153,94 +153,147 @@ async def execute_workflow(
     active_edges: set[str] = {e.id for e in definition.edges}
     body_node_ids: set[str] = executor._collect_body_node_ids()
 
+    # 顺序执行状态：跟踪 Start 节点的 orderedTargets 进度
+    completed_node_ids: set[str] = set()
+    ordered_targets_list: list[str] | None = None
+    ordered_idx: int = 0
+    start_node_id: str | None = None
+
+    cursor = 0  # topology 遍历指针
+
+    MAX_PASSES = max(len(topology) * 2, 100)
+
     try:
-        for node_id in topology:
-            if timeout_ms and _now_ms() - start_ms > timeout_ms:
-                yield _sse_wf_errored(
-                    ctx.workflow_id, ctx.run_id, f'工作流执行超时（{ctx.execution_config.timeout_seconds}s）')
-                return
+        for _pass in range(MAX_PASSES):
             if stop_event.is_set():
                 yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, '用户已停止')
                 return
 
-            node_def = executor._get_node(node_id)
+            made_progress = False
 
-            if node_id in body_node_ids:
-                continue
+            while cursor < len(topology):
+                node_id = topology[cursor]
+                cursor += 1
 
-            if node_def.type != NodeType.START:
-                active_incoming = [
-                    e for e in definition.edges
-                    if e.target == node_id and e.id in active_edges
-                ]
-                if not active_incoming:
+                if node_id in completed_node_ids:
+                    continue
+                if timeout_ms and _now_ms() - start_ms > timeout_ms:
+                    yield _sse_wf_errored(
+                        ctx.workflow_id, ctx.run_id, f'工作流执行超时（{ctx.execution_config.timeout_seconds}s）')
+                    return
+                if stop_event.is_set():
+                    yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, '用户已停止')
+                    return
+
+                node_def = executor._get_node(node_id)
+
+                if node_id in body_node_ids:
                     continue
 
-            handler_cls = node_handlers.get(node_def.type.value)
-            if not handler_cls:
-                continue
+                if node_def.type != NodeType.START:
+                    active_incoming = [
+                        e for e in definition.edges
+                        if e.target == node_id and e.id in active_edges
+                    ]
+                    if not active_incoming:
+                        continue
 
-            handler = handler_cls(node_def)
-            ctx_node = NodeContext(node_id)
-            ctx.node_contexts[node_id] = ctx_node
-            ctx_node.inputs = await _resolve_inputs(node_def, definition.edges, ctx, active_edges)
+                handler_cls = node_handlers.get(node_def.type.value)
+                if not handler_cls:
+                    continue
 
-            retry_config = node_def.retry_config
-            max_retries = (retry_config.get('maxRetries') or 0) if retry_config else 0
-            retry_delay = (retry_config.get('retryDelay') or 1000) if retry_config else 1000
-            backoff = (retry_config.get('backoffMultiplier') or 1.0) if retry_config else 1.0
-            on_exhausted = (retry_config.get('onRetryExhausted') or 'error') if retry_config else 'error'
-            fallback_model = retry_config.get('fallbackModel') if retry_config else None
+                handler = handler_cls(node_def)
+                ctx_node = NodeContext(node_id)
+                ctx.node_contexts[node_id] = ctx_node
+                ctx_node.inputs = await _resolve_inputs(node_def, definition.edges, ctx, active_edges)
 
-            node_done = False
-            for attempt in range(max_retries + 1):
-                try:
-                    async for event in handler.execute(ctx, ctx_node, confirm_callback, stop_event):
-                        if stop_event.is_set():
-                            yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, '用户已停止')
-                            return
-                        if (register_pending_callback
-                                and isinstance(event, dict)
-                                and event.get('type') == 'node_requires_confirmation'):
-                            register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
-                        yield event
+                retry_config = node_def.retry_config
+                max_retries = (retry_config.get('maxRetries') or 0) if retry_config else 0
+                retry_delay = (retry_config.get('retryDelay') or 1000) if retry_config else 1000
+                backoff = (retry_config.get('backoffMultiplier') or 1.0) if retry_config else 1.0
+                on_exhausted = (retry_config.get('onRetryExhausted') or 'error') if retry_config else 'error'
+                fallback_model = retry_config.get('fallbackModel') if retry_config else None
 
-                    total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
-                    _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
-                    node_done = True
-                    break
-                except Exception as e:
-                    if attempt < max_retries:
-                        yield _sse_node_errored(ctx, ctx_node, str(e), attempt + 1)
-                        await asyncio.sleep((retry_delay / 1000) * (backoff ** attempt))
-                    else:
-                        yield _sse_node_errored(ctx, ctx_node, str(e), -1)
-                        if on_exhausted == 'fallback' and fallback_model:
-                            cfg = copy.deepcopy(handler.node_def.config)
-                            handler.node_def.config = cfg
-                            if not cfg.get('slots'):
-                                cfg['slots'] = {}
-                            cfg['slots']['model'] = fallback_model
-                            try:
-                                async for event in handler.execute(ctx, ctx_node, confirm_callback, stop_event):
-                                    if (register_pending_callback
-                                            and isinstance(event, dict)
-                                            and event.get('type') == 'node_requires_confirmation'):
-                                        register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
-                                    yield event
-                                total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
-                                _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
-                                node_done = True
-                                break
-                            except Exception as fe:
-                                yield _sse_wf_errored(
-                                    ctx.workflow_id, ctx.run_id, f'节点 {node_id} fallback 执行失败: {fe}')
+                node_done = False
+                for attempt in range(max_retries + 1):
+                    try:
+                        async for event in handler.execute(ctx, ctx_node, confirm_callback, stop_event):
+                            if stop_event.is_set():
+                                yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, '用户已停止')
                                 return
-                        yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, f'节点 {node_id} 执行失败: {e}')
-                        return
+                            if (register_pending_callback
+                                    and isinstance(event, dict)
+                                    and event.get('type') == 'node_requires_confirmation'):
+                                register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
+                            yield event
 
-            if not node_done:
-                return
+                        total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
+                        _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
+                        completed_node_ids.add(node_id)
+                        made_progress = True
+                        node_done = True
+
+                        # 捕获 Start 节点的 ordered 信息
+                        if node_def.type == NodeType.START:
+                            ordered = ctx_node.outputs.get('__ordered__')
+                            if ordered and len(ordered) > 1:
+                                ordered_targets_list = list(ordered)
+                                ordered_idx = 0
+                                start_node_id = node_id
+
+                        break
+                    except Exception as e:
+                        if attempt < max_retries:
+                            yield _sse_node_errored(ctx, ctx_node, str(e), attempt + 1)
+                            await asyncio.sleep((retry_delay / 1000) * (backoff ** attempt))
+                        else:
+                            yield _sse_node_errored(ctx, ctx_node, str(e), -1)
+                            if on_exhausted == 'fallback' and fallback_model:
+                                cfg = copy.deepcopy(handler.node_def.config)
+                                handler.node_def.config = cfg
+                                if not cfg.get('slots'):
+                                    cfg['slots'] = {}
+                                cfg['slots']['model'] = fallback_model
+                                try:
+                                    async for event in handler.execute(ctx, ctx_node, confirm_callback, stop_event):
+                                        if (register_pending_callback
+                                                and isinstance(event, dict)
+                                                and event.get('type') == 'node_requires_confirmation'):
+                                            register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
+                                        yield event
+                                    total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
+                                    _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
+                                    completed_node_ids.add(node_id)
+                                    made_progress = True
+                                    node_done = True
+                                    break
+                                except Exception as fe:
+                                    yield _sse_wf_errored(
+                                        ctx.workflow_id, ctx.run_id, f'节点 {node_id} fallback 执行失败: {fe}')
+                                    return
+                            yield _sse_wf_errored(ctx.workflow_id, ctx.run_id, f'节点 {node_id} 执行失败: {e}')
+                            return
+
+                if not node_done:
+                    return
+
+            # 本轮 topology 遍历结束 —— 检查是否有待激活的 ordered 分支
+            if not made_progress:
+                if (ordered_targets_list and start_node_id
+                        and ordered_idx < len(ordered_targets_list) - 1):
+                    ordered_idx += 1
+                    next_target = ordered_targets_list[ordered_idx]
+                    for e in definition.edges:
+                        if e.source == start_node_id and e.target == next_target:
+                            active_edges.add(e.id)
+                            made_progress = True
+                    if made_progress:
+                        cursor = 0  # 重新遍历 topology
+                        continue
+                break  # 真正结束
+
+            # 本轮有进展 → 重置指针继续（topology 中可能有新节点因 active_edges 变化而变为可执行）
+            cursor = 0
 
         yield _sse_wf_completed(ctx, total_tokens)
     except Exception as e:
@@ -256,6 +309,18 @@ def _activate_downstream_edges(node_def, ctx_node, definition, active_edges):
     elif node_def.type == NodeType.LOOP:
         control = ctx_node.outputs.get('control', 'output')
         keep = {'output', control}
+        # 新 Loop 的 out_end 端口始终保留
+        if 'out_end' in (ctx_node.outputs or {}):
+            keep.add('out_end')
         for e in definition.edges:
             if e.source == node_def.id and e.source_port not in keep:
                 active_edges.discard(e.id)
+    elif node_def.type == NodeType.START:
+        # Start 顺序执行模式：执行后按 orderedTargets 顺序，
+        # 先只激活第一个出边，其余边暂时丢弃，由主循环逐条激活
+        ordered = ctx_node.outputs.get('__ordered__')
+        if ordered and len(ordered) > 1:
+            first_target = ordered[0]
+            for e in definition.edges:
+                if e.source == node_def.id and e.target != first_target:
+                    active_edges.discard(e.id)

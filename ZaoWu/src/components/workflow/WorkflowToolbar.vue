@@ -14,6 +14,7 @@ const props = defineProps<{
   id?: string
   name: string
   isRunning: boolean
+  isDirty: boolean
   workflows?: WorkflowSummary[]
   canUndo?: boolean
   canRedo?: boolean
@@ -126,6 +127,7 @@ function handleLoad(id: string) {
     <div class="toolbar-left">
       <div class="workflow-name-wrapper">
         <span class="workflow-name" @click="startRename">{{ props.name }}</span>
+        <span v-if="props.isDirty" class="dirty-dot" title="未保存的修改" />
       </div>
       <button class="tool-btn" :title="t('workflow.new')" @click="emit('createBlank')">
         <Plus :size="14" />
@@ -379,9 +381,21 @@ function handleLoad(id: string) {
 }
 
 .workflow-name-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   max-width: 200px;
   overflow: hidden;
+}
+
+.dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
 }
 
 .workflow-name {

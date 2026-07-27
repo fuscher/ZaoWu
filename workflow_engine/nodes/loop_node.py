@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import asyncio
+import json
 from workflow_engine.nodes.base import BaseNode
-from workflow_engine.context import NodeContext
-from workflow_engine.nodes.condition_node import safe_eval
-from workflow_engine.sse_helpers import _sse_node_started, _sse_node_ended
+from workflow_engine.nodes.subgraph_executor import SubgraphExecutor
+from workflow_engine.sse_helpers import _sse_node_started, _sse_node_progress, _sse_node_ended
 
 
 class LoopNode(BaseNode):
@@ -12,87 +11,54 @@ class LoopNode(BaseNode):
 
     async def execute(self, ctx, ctx_node, confirm_callback, stop_event):
         yield _sse_node_started(ctx, ctx_node)
+
         cfg = self.config.get('loopConfig') or {}
-        mode = cfg.get('mode', 'for')
-        body_node_ids = cfg.get('bodyNodeIds', [])
-        body_edges = cfg.get('bodyEdges', [])
         max_iter = cfg.get('maxIterations', 10)
         if ctx.execution_config.max_iterations:
             max_iter = min(max_iter, ctx.execution_config.max_iterations)
 
-        results: list = []
-        control = 'output'
+        body_node_ids = cfg.get('bodyNodeIds', [])
+        body_edges = cfg.get('bodyEdges', [])
 
-        if mode == 'for':
-            iterable = ctx.resolve_value(cfg.get('iterateOver', '{{input}}'), ctx_node.inputs)
-            if not isinstance(iterable, list):
-                iterable = [iterable] if iterable else []
-            for i, item in enumerate(iterable):
-                if stop_event and stop_event.is_set():
-                    control = 'break'
+        # 从 definition 中查找 body 节点对象
+        body_nodes = []
+        if ctx.definition:
+            all_nodes = ctx.definition.nodes if ctx.definition else []
+            body_nodes = [n for n in all_nodes if n.id in body_node_ids]
+
+        subgraph = SubgraphExecutor(body_nodes, body_edges, ctx)
+        current_input = ctx_node.inputs.get('default')
+
+        for iteration in range(max_iter):
+            if stop_event and stop_event.is_set():
+                break
+
+            # out_body SSE 事件：广播当前轮输入（纯观察，无下游边）
+            yield _sse_node_progress(
+                ctx, ctx_node,
+                json.dumps({'iteration': iteration, 'input': current_input}, ensure_ascii=False),
+            )
+
+            feedback, control = await subgraph.run(
+                current_input,
+                iteration,
+                confirm_callback,
+                stop_event,
+            )
+
+            if control == 'break':
+                break
+            elif control == 'continue':
+                if iteration + 1 >= max_iter:
                     break
-                if i >= max_iter:
-                    control = 'break' if cfg.get('circuitBreakerAction') == 'break' else 'output'
-                    break
-                iter_out = await self._run_body_once(ctx, body_node_ids, body_edges,
-                                                     {'item': item, 'index': i},
-                                                     confirm_callback, stop_event)
-                if iter_out.get('__control__') == 'break':
-                    control = 'break'
-                    break
-                results.append(iter_out.get('default'))
-        else:
-            count = 0
-            while count < max_iter:
-                if stop_event and stop_event.is_set():
-                    control = 'break'
-                    break
-                iter_out = await self._run_body_once(ctx, body_node_ids, body_edges,
-                                                     {'index': count},
-                                                     confirm_callback, stop_event)
-                results.append(iter_out.get('default'))
-                count += 1
-                cond_expr = cfg.get('condition', 'False')
-                try:
-                    keep = safe_eval(cond_expr, {'input': iter_out.get('default'),
-                                                 'count': count})
-                except Exception:
-                    keep = False
-                if not keep:
-                    break
-            else:
-                control = 'break' if cfg.get('circuitBreakerAction') == 'break' else 'output'
+                continue
+
+            current_input = feedback.get('default') if feedback else None
+            if current_input is None:
+                break
 
         ctx_node.outputs = {
-            'default': results,
-            'control': control,
+            'default': current_input if current_input is not None else '',
+            'control': 'out_end',
         }
         yield _sse_node_ended(ctx, ctx_node)
-
-    async def _run_body_once(self, ctx, body_node_ids, body_edges, loop_vars,
-                             confirm_callback, stop_event):
-        from workflow_engine.node_registry import NodeRegistry
-        for nid in body_node_ids:
-            if stop_event and stop_event.is_set():
-                return {'default': None, '__control__': 'break'}
-            node_def = self._find_node(ctx, nid)
-            handler_cls = NodeRegistry.get_handlers().get(node_def.type.value)
-            if not handler_cls:
-                continue
-            handler = handler_cls(node_def)
-            sub_ctx = NodeContext(nid)
-            ctx.node_contexts[nid] = sub_ctx
-            if loop_vars:
-                sub_ctx.inputs = {'default': loop_vars.get('item', ''), **loop_vars}
-            async for event in handler.execute(ctx, sub_ctx, confirm_callback, stop_event):
-                pass
-        if not body_node_ids:
-            return {'default': None}
-        last_ctx = ctx.node_contexts.get(body_node_ids[-1])
-        return last_ctx.outputs if last_ctx else {'default': None}
-
-    def _find_node(self, ctx, node_id):
-        for n in (ctx.definition.nodes if ctx.definition else []):
-            if n.id == node_id:
-                return n
-        raise KeyError(f'循环体节点 {node_id} 不存在')

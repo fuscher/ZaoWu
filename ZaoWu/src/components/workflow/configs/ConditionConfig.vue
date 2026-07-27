@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
-import type { WorkflowNode, ConditionConfig as ConditionConfigType, ConditionRule } from '@/types/workflow'
+import type { WorkflowNode, ConditionConfig as ConditionConfigType, ConditionRule, ModelSlot } from '@/types/workflow'
 
 const props = defineProps<{
   node: WorkflowNode
@@ -23,11 +23,16 @@ const cfg = computed<ConditionConfigType>({
 
 const modeOptions = [
   { value: 'simple', label: t('workflow.config.simpleMode') },
-  { value: 'code', label: t('workflow.config.codeMode') },
+  { value: 'expression', label: t('workflow.config.expressionMode') },
+  { value: 'prompt', label: t('workflow.config.promptMode') },
 ]
 
 function update(patch: Partial<ConditionConfigType>) {
   cfg.value = { ...cfg.value, ...patch }
+}
+
+function updateModel(patch: Partial<ModelSlot>) {
+  update({ modelConfig: { ...(cfg.value.modelConfig ?? { providerId: '', modelId: '' }), ...patch } })
 }
 
 function addRule() {
@@ -55,7 +60,8 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
       <option v-for="opt in modeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
     </select>
 
-    <template v-if="cfg.mode === 'code'">
+    <!-- expression 表达式模式 -->
+    <template v-if="cfg.mode === 'expression'">
       <label class="field-label">{{ t('workflow.config.expression') }}</label>
       <textarea
         :value="cfg.expression ?? 'True'"
@@ -66,6 +72,53 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
       <p class="hint">{{ t('workflow.config.expressionHint') }}</p>
     </template>
 
+    <!-- prompt 提示词模式 -->
+    <template v-else-if="cfg.mode === 'prompt'">
+      <h4 class="section-title">{{ t('workflow.config.model') }}</h4>
+      <label class="field-label">{{ t('workflow.config.providerId') }}</label>
+      <input
+        :value="cfg.modelConfig?.providerId ?? ''"
+        class="field-input"
+        type="text"
+        @input="updateModel({ providerId: ($event.target as HTMLInputElement).value })"
+      />
+      <label class="field-label">{{ t('workflow.config.modelId') }}</label>
+      <input
+        :value="cfg.modelConfig?.modelId ?? ''"
+        class="field-input"
+        type="text"
+        @input="updateModel({ modelId: ($event.target as HTMLInputElement).value })"
+      />
+      <label class="field-label">{{ t('workflow.config.temperature') }}</label>
+      <input
+        :value="cfg.modelConfig?.temperature ?? 0.7"
+        class="field-input"
+        type="number"
+        step="0.1"
+        min="0"
+        max="2"
+        @input="updateModel({ temperature: Number(($event.target as HTMLInputElement).value) })"
+      />
+      <label class="field-label">{{ t('workflow.config.maxTokens') }}</label>
+      <input
+        :value="cfg.modelConfig?.maxTokens ?? 512"
+        class="field-input"
+        type="number"
+        @input="updateModel({ maxTokens: Number(($event.target as HTMLInputElement).value) })"
+      />
+
+      <h4 class="section-title">{{ t('workflow.config.judgePrompt') }}</h4>
+      <textarea
+        :value="cfg.judgePrompt ?? ''"
+        class="field-input"
+        rows="5"
+        :placeholder="t('workflow.config.judgePromptHint')"
+        @input="update({ judgePrompt: ($event.target as HTMLTextAreaElement).value })"
+      />
+      <p class="hint">{{ t('workflow.config.judgePromptHint') }}</p>
+    </template>
+
+    <!-- simple 简单规则模式 -->
     <template v-else>
       <div class="rules-header">
         <label class="field-label">{{ t('workflow.config.rules') }}</label>
@@ -102,6 +155,12 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
       <option value="true">true</option>
       <option value="false">false</option>
     </select>
+
+    <label class="field-label">{{ t('workflow.config.fallbackBranch') }}</label>
+    <select :value="cfg.fallbackBranch ?? 'false'" class="field-input" @change="update({ fallbackBranch: ($event.target as HTMLSelectElement).value })">
+      <option value="true">true</option>
+      <option value="false">false</option>
+    </select>
   </div>
 </template>
 
@@ -110,6 +169,13 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.section-title {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .field-label {

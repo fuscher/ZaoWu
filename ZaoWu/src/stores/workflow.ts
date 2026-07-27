@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, type Ref } from 'vue'
 import { defineStore } from 'pinia'
 import type {
   WorkflowDefinition,
@@ -21,15 +21,57 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const selectedNodeIds = ref<string[]>([])
   const nodeRuntime = ref<Record<string, NodeRuntimeInfo>>({})
   const activeRunId = ref<string | null>(null)
+  const isDirty = ref(false)
+  let lastSavedSnapshot = ''
 
-  // ── 撤销 / 重做历史（快照式）──
-  const HISTORY_LIMIT = 50
-  const history = ref<{ nodes: WorkflowNode[]; edges: WorkflowEdge[] }[]>([])
-  const historyIndex = ref(-1)
-  // 仅在撤销/重做时自增，画布监听它来重新载入；提交快照不 bump，避免每次变更都重载画布
+  // ── 撤销 / 重做 ──
   const historyVersion = ref(0)
+  const historyStack: Ref<string[]> = ref([])
+  const historyIndex = ref(-1)
+
+  function commitHistory() {
+    if (!workflow.value) return
+    // 丢弃当前位置之后的历史（新操作覆盖未来分支）
+    historyStack.value = historyStack.value.slice(0, historyIndex.value + 1)
+    historyStack.value.push(JSON.stringify({
+      nodes: workflow.value.nodes,
+      edges: workflow.value.edges,
+      name: workflow.value.name,
+    }))
+    historyIndex.value = historyStack.value.length - 1
+    // 保留最近 50 条，裁剪旧记录
+    if (historyStack.value.length > 50) {
+      historyStack.value = historyStack.value.slice(historyStack.value.length - 50)
+      historyIndex.value = historyStack.value.length - 1
+    }
+  }
+
+  function undo() {
+    if (historyIndex.value <= 0 || !workflow.value) return
+    historyIndex.value--
+    _applyHistorySnapshot()
+    historyVersion.value++
+  }
+
+  function redo() {
+    if (historyIndex.value >= historyStack.value.length - 1 || !workflow.value) return
+    historyIndex.value++
+    _applyHistorySnapshot()
+    historyVersion.value++
+  }
+
+  function _applyHistorySnapshot() {
+    if (!workflow.value) return
+    const snapshot = JSON.parse(historyStack.value[historyIndex.value]!)
+    workflow.value.nodes = snapshot.nodes
+    workflow.value.edges = snapshot.edges
+    workflow.value.name = snapshot.name
+    checkDirty()
+    selectNodes(null)
+  }
+
   const canUndo = computed(() => historyIndex.value > 0)
-  const canRedo = computed(() => historyIndex.value < history.value.length - 1)
+  const canRedo = computed(() => historyIndex.value < historyStack.value.length - 1)
 
   const nodes = computed(() => workflow.value?.nodes ?? [])
   const edges = computed(() => workflow.value?.edges ?? [])
@@ -61,7 +103,15 @@ export const useWorkflowStore = defineStore('workflow', () => {
     nodeRuntime.value = {}
     activeRunId.value = null
     selectedNodeIds.value = []
-    resetHistory()
+    isDirty.value = false
+    lastSavedSnapshot = JSON.stringify({
+      nodes: def.nodes,
+      edges: def.edges,
+      name: def.name,
+    })
+    historyStack.value = [lastSavedSnapshot]
+    historyIndex.value = 0
+    historyVersion.value = 0
   }
 
   function updateNodeConfig(nodeId: string, config: Record<string, unknown>) {
@@ -69,18 +119,21 @@ export const useWorkflowStore = defineStore('workflow', () => {
     const node = workflow.value.nodes.find((n) => n.id === nodeId)
     if (node) {
       node.config = { ...node.config, ...config }
+      isDirty.value = true
     }
   }
 
   function setNodes(newNodes: WorkflowNode[]) {
     if (workflow.value) {
       workflow.value.nodes = newNodes
+      isDirty.value = true
     }
   }
 
   function setEdges(newEdges: WorkflowEdge[]) {
     if (workflow.value) {
       workflow.value.edges = newEdges
+      isDirty.value = true
     }
   }
 
@@ -100,48 +153,32 @@ export const useWorkflowStore = defineStore('workflow', () => {
     activeRunId.value = runId
   }
 
-  // ── 历史快照 ──
-  function snapshot(): { nodes: WorkflowNode[]; edges: WorkflowEdge[] } {
-    return {
-      nodes: JSON.parse(JSON.stringify(workflow.value?.nodes ?? [])) as WorkflowNode[],
-      edges: JSON.parse(JSON.stringify(workflow.value?.edges ?? [])) as WorkflowEdge[],
+  function markDirty() {
+    isDirty.value = true
+  }
+
+  function markClean() {
+    isDirty.value = false
+    if (workflow.value) {
+      lastSavedSnapshot = JSON.stringify({
+        nodes: workflow.value.nodes,
+        edges: workflow.value.edges,
+        name: workflow.value.name,
+      })
     }
   }
 
-  function restoreHistory(snap: { nodes: WorkflowNode[]; edges: WorkflowEdge[] }) {
-    if (!workflow.value) return
-    workflow.value.nodes = JSON.parse(JSON.stringify(snap.nodes))
-    workflow.value.edges = JSON.parse(JSON.stringify(snap.edges))
-    selectedNodeIds.value = []
-    historyVersion.value++
-  }
-
-  // 在一次有意义的变更“结算”后调用，记录新快照（截断 redo 分支）
-  function commitHistory() {
-    if (!workflow.value) return
-    history.value = history.value.slice(0, historyIndex.value + 1)
-    history.value.push(snapshot())
-    if (history.value.length > HISTORY_LIMIT) history.value.shift()
-    historyIndex.value = history.value.length - 1
-  }
-
-  function resetHistory() {
-    history.value = workflow.value ? [snapshot()] : []
-    historyIndex.value = history.value.length - 1
-  }
-
-  function undo() {
-    if (historyIndex.value <= 0) return
-    historyIndex.value--
-    const snap = history.value[historyIndex.value]
-    if (snap) restoreHistory(snap)
-  }
-
-  function redo() {
-    if (historyIndex.value >= history.value.length - 1) return
-    historyIndex.value++
-    const snap = history.value[historyIndex.value]
-    if (snap) restoreHistory(snap)
+  function checkDirty() {
+    if (!workflow.value) {
+      isDirty.value = false
+      return
+    }
+    const current = JSON.stringify({
+      nodes: workflow.value.nodes,
+      edges: workflow.value.edges,
+      name: workflow.value.name,
+    })
+    isDirty.value = current !== lastSavedSnapshot
   }
 
   return {
@@ -153,13 +190,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectedNode,
     nodeRuntime,
     activeRunId,
-    historyVersion,
-    canUndo,
-    canRedo,
-    undo,
-    redo,
-    commitHistory,
-    resetHistory,
     selectNodes,
     selectNode,
     setWorkflow,
@@ -170,5 +200,16 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setNodeRuntime,
     resetRuntime,
     setActiveRunId,
+    markDirty,
+    markClean,
+    checkDirty,
+    isDirty,
+    // 撤销 / 重做
+    historyVersion,
+    commitHistory,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
   }
 })

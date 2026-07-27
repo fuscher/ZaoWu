@@ -10,7 +10,6 @@ class NodeType(str, Enum):
     LLM = "llm"
     CONDITION = "condition"
     TOOL = "tool"
-    ROUTER = "router"
     LOOP = "loop"
     END = "end"
 
@@ -18,8 +17,6 @@ class NodeType(str, Enum):
 class EdgeType(str, Enum):
     DATA = "data"
     CONDITION = "condition"
-    BREAK = "break"
-    CONTINUE = "continue"
 
 
 @dataclass

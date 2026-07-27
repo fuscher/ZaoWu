@@ -12,11 +12,10 @@ export type NodeType =
   | 'llm'
   | 'condition'
   | 'tool'
-  | 'router'
   | 'loop'
   | 'end'
 
-export type EdgeType = 'data' | 'condition' | 'break' | 'continue'
+export type EdgeType = 'data' | 'condition'
 
 export type NodeStatus = 'idle' | 'running' | 'done' | 'error'
 
@@ -61,7 +60,7 @@ export interface WorkflowEdge {
   type: string
   // 业务语义类型
   edgeType: EdgeType
-  condition?: ConditionDef
+  condition?: Record<string, unknown>
   dataContract?: DataContract
   label?: string
 }
@@ -78,11 +77,20 @@ export interface NodeConfig {
   loopConfig?: LoopConfig
   toolName?: string
   toolArgs?: Record<string, string>
-  routerMode?: 'semantic' | 'regex' | 'code'
-  routeCategories?: RouteCategory[]
+  /** @deprecated 使用 endMode + logFormat 替代 */
   outputFormat?: 'text' | 'json' | 'markdown'
+  endMode?: 'none' | 'log'
+  logFormat?: 'json' | 'markdown' | 'txt'
+  logDir?: string
+  logName?: string
   // Start 节点默认值（UI 配置使用）
   defaultValue?: string
+  // LLM 工具调用循环
+  maxToolIterations?: number
+  toolLoopThreshold?: number
+  // Start 节点执行模式
+  executionMode?: 'parallel' | 'ordered'
+  orderedTargets?: string[]
 }
 
 export interface ModelSlot {
@@ -122,6 +130,25 @@ export interface SkillSlot {
 export interface MCPSlot {
   serverName: string
   toolFilter?: string[]
+}
+
+/** 工具完整定义（由 /api/workflows/tools 返回），包含用于渲染动态表单的 JSON Schema 参数 */
+export interface ToolDef {
+  name: string
+  description: string
+  parameters: {
+    type: 'object'
+    properties: Record<string, {
+      type: string
+      description?: string
+      items?: { type: string }
+      enum?: string[]
+      default?: unknown
+    }>
+    required?: string[]
+  }
+  requiresApproval: boolean
+  tags: string[]
 }
 
 export interface WorkflowExecutionConfig {
@@ -165,25 +192,15 @@ export interface ConditionRule {
 }
 
 export interface ConditionConfig {
-  mode: 'code' | 'simple' | 'llm'
+  mode: 'expression' | 'simple' | 'prompt'
   expression?: string
   rules?: ConditionRule[]
   defaultBranch?: string
   fallbackBranch?: string
+  /** @deprecated 旧 llm 模式迁移为 prompt 后使用 judgePrompt */
   naturalLanguage?: string
-}
-
-export interface RouteCategory {
-  id: string
-  name: string
-  condition: ConditionDef
-}
-
-export interface ConditionDef {
-  mode: 'code' | 'llm_semantic'
-  expression?: string
-  naturalLanguage?: string
-  embeddingThreshold?: number
+  judgePrompt?: string
+  modelConfig?: ModelSlot
 }
 
 export interface DataContract {
@@ -193,12 +210,8 @@ export interface DataContract {
 }
 
 export interface LoopConfig {
-  mode: 'for' | 'while'
-  iterateOver?: string
-  condition?: string
+  mode: 'canvas'
   maxIterations: number
-  semanticSimilarityThreshold?: number
-  circuitBreakerAction: 'break' | 'error'
   bodyNodeIds: string[]
   bodyEdges: WorkflowEdge[]
 }
