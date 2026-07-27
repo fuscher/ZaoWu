@@ -56,7 +56,7 @@ class LLMNode(BaseNode):
                 messages=messages,
                 tools=tools,
                 temperature=model_config.get('temperature') or 0.7,
-                max_tokens=model_config.get('maxTokens') or 4096,
+                max_tokens=self._clamp_max_tokens(model_config, model_id, provider),
                 tool_choice=tool_choice,
                 stop_event=stop_event,
             ):
@@ -173,6 +173,16 @@ class LLMNode(BaseNode):
             return next((p for p in data.get('providers', []) if p['id'] == provider_id), {})
         except Exception:
             return {}
+
+    @staticmethod
+    def _clamp_max_tokens(model_config: dict, model_id: str, provider: dict) -> int:
+        """后端兜底：基于模型 contextLength 限制 max_tokens，防止超出上下文窗口。"""
+        max_tokens = model_config.get('maxTokens') or 4096
+        model_meta = next((m for m in provider.get('models', []) if m.get('id') == model_id), {})
+        ctx_len = model_meta.get('contextLength')
+        if ctx_len:
+            max_tokens = min(max_tokens, ctx_len // 2)
+        return max_tokens
 
     def _build_system_prompt(self, slots: dict) -> str:
         prompt_config = slots.get('prompt') or {}

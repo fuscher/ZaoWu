@@ -550,7 +550,14 @@
       "moveUp": "上移",
       "moveDown": "下移",
       "removeFromOrder": "移出顺序",
-      "addToOrder": "加入顺序"
+      "addToOrder": "加入顺序",
+      "noProvidersHint": "请先在设置中配置模型供应商",
+      "selectProvider": "选择供应商",
+      "selectModel": "选择模型",
+      "noModels": "此供应商下无可用模型",
+      "maxTokensAuto": "自动",
+      "maxTokensAutoHint": "根据模型上下文长度自动计算为 {suggested}",
+      "resetAuto": "重置为自动"
     },
     "inspectTitle": "运行时检视",
     "inspectNode": "节点",

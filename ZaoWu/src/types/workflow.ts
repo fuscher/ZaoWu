@@ -97,6 +97,7 @@ export interface ModelSlot {
   providerId: string
   modelId: string
   temperature?: number
+  /** 最大输出 token 数。undefined 表示自动推算（基于模型 contextLength 的 1/2）。 */
   maxTokens?: number
   inheritFrom?: 'component' | 'global'
 }

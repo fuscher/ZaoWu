@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
 import type { WorkflowNode, ConditionConfig as ConditionConfigType, ConditionRule, ModelSlot } from '@/types/workflow'
+import ModelSelector from './ModelSelector.vue'
 
 const props = defineProps<{
   node: WorkflowNode
@@ -31,9 +32,10 @@ function update(patch: Partial<ConditionConfigType>) {
   cfg.value = { ...cfg.value, ...patch }
 }
 
-function updateModel(patch: Partial<ModelSlot>) {
-  update({ modelConfig: { ...(cfg.value.modelConfig ?? { providerId: '', modelId: '' }), ...patch } })
-}
+const judgeModel = computed<ModelSlot>({
+  get: () => cfg.value.modelConfig ?? { providerId: '', modelId: '' },
+  set: (v) => update({ modelConfig: v }),
+})
 
 function addRule() {
   const rules = [...(cfg.value.rules ?? []), { operator: 'eq', value: '', branch: 'true' } as ConditionRule]
@@ -75,37 +77,7 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
     <!-- prompt 提示词模式 -->
     <template v-else-if="cfg.mode === 'prompt'">
       <h4 class="section-title">{{ t('workflow.config.model') }}</h4>
-      <label class="field-label">{{ t('workflow.config.providerId') }}</label>
-      <input
-        :value="cfg.modelConfig?.providerId ?? ''"
-        class="field-input"
-        type="text"
-        @input="updateModel({ providerId: ($event.target as HTMLInputElement).value })"
-      />
-      <label class="field-label">{{ t('workflow.config.modelId') }}</label>
-      <input
-        :value="cfg.modelConfig?.modelId ?? ''"
-        class="field-input"
-        type="text"
-        @input="updateModel({ modelId: ($event.target as HTMLInputElement).value })"
-      />
-      <label class="field-label">{{ t('workflow.config.temperature') }}</label>
-      <input
-        :value="cfg.modelConfig?.temperature ?? 0.7"
-        class="field-input"
-        type="number"
-        step="0.1"
-        min="0"
-        max="2"
-        @input="updateModel({ temperature: Number(($event.target as HTMLInputElement).value) })"
-      />
-      <label class="field-label">{{ t('workflow.config.maxTokens') }}</label>
-      <input
-        :value="cfg.modelConfig?.maxTokens ?? 512"
-        class="field-input"
-        type="number"
-        @input="updateModel({ maxTokens: Number(($event.target as HTMLInputElement).value) })"
-      />
+      <ModelSelector v-model="judgeModel" :show-max-tokens="false" />
 
       <h4 class="section-title">{{ t('workflow.config.judgePrompt') }}</h4>
       <textarea

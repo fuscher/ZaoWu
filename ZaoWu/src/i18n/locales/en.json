@@ -548,7 +548,14 @@
       "moveUp": "Move Up",
       "moveDown": "Move Down",
       "removeFromOrder": "Remove from Order",
-      "addToOrder": "Add to Order"
+      "addToOrder": "Add to Order",
+      "noProvidersHint": "Please configure a model provider in Settings first.",
+      "selectProvider": "Select provider",
+      "selectModel": "Select model",
+      "noModels": "No models in this provider",
+      "maxTokensAuto": "Auto",
+      "maxTokensAutoHint": "Auto-calculated to {suggested} based on model context length.",
+      "resetAuto": "Reset to auto"
     },
     "inspectTitle": "Runtime Inspector",
     "inspectNode": "Node",
