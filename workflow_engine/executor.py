@@ -16,6 +16,7 @@ from workflow_engine.node_registry import NodeRegistry
 from workflow_engine.sse_helpers import (
     _generate_run_id, _now_ms,
     _sse_wf_started, _sse_wf_errored, _sse_node_errored, _sse_wf_completed,
+    _sse_edge_crossed,
 )
 
 
@@ -229,6 +230,10 @@ async def execute_workflow(
 
                         total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
                         _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
+                        # 对每条仍活跃的出边发 edge_crossed，驱动前端边流动动画
+                        for e in definition.edges:
+                            if e.source == node_id and e.id in active_edges:
+                                yield _sse_edge_crossed(ctx, e.source, e.target)
                         completed_node_ids.add(node_id)
                         made_progress = True
                         node_done = True
@@ -249,11 +254,12 @@ async def execute_workflow(
                         else:
                             yield _sse_node_errored(ctx, ctx_node, str(e), -1)
                             if on_exhausted == 'fallback' and fallback_model:
-                                cfg = copy.deepcopy(handler.node_def.config)
-                                handler.node_def.config = cfg
+                                # 仅替换 handler 实例的 config 副本，避免污染内存中的 WorkflowDefinition
+                                cfg = copy.deepcopy(handler.config)
                                 if not cfg.get('slots'):
                                     cfg['slots'] = {}
                                 cfg['slots']['model'] = fallback_model
+                                handler.config = cfg
                                 try:
                                     async for event in handler.execute(ctx, ctx_node, confirm_callback, stop_event):
                                         if (register_pending_callback
@@ -263,6 +269,9 @@ async def execute_workflow(
                                         yield event
                                     total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
                                     _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
+                                    for e in definition.edges:
+                                        if e.source == node_id and e.id in active_edges:
+                                            yield _sse_edge_crossed(ctx, e.source, e.target)
                                     completed_node_ids.add(node_id)
                                     made_progress = True
                                     node_done = True
@@ -307,11 +316,10 @@ def _activate_downstream_edges(node_def, ctx_node, definition, active_edges):
             if e.source == node_def.id and e.source_port != selected:
                 active_edges.discard(e.id)
     elif node_def.type == NodeType.LOOP:
+        # LoopNode 输出 {'default': ..., 'control': 'out_end'}，
+        # control 的值即应保留的出口端口（新版本为 'out_end'）
         control = ctx_node.outputs.get('control', 'output')
         keep = {'output', control}
-        # 新 Loop 的 out_end 端口始终保留
-        if 'out_end' in (ctx_node.outputs or {}):
-            keep.add('out_end')
         for e in definition.edges:
             if e.source == node_def.id and e.source_port not in keep:
                 active_edges.discard(e.id)

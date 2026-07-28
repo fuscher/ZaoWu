@@ -13,6 +13,9 @@ from workflow_engine.schema import (
     WorkflowDefinition, WorkflowNode, WorkflowEdge, NodeType, EdgeType,
 )
 from workflow_engine.executor import execute_workflow
+from workflow_engine.node_registry import NodeRegistry
+from workflow_engine.nodes.base import BaseNode
+from workflow_engine.nodes.tool_node import ToolNode
 
 
 def _make_def(nodes, edges, name='Test'):
@@ -162,26 +165,52 @@ async def test_multi_tool_execution():
 
 
 async def test_loop_control_break_signal():
-    """Loop 体内节点输出 __control__: 'break' 应提前终止循环。"""
-    nodes = [
-        WorkflowNode(id='start', type=NodeType.START, position={'x': 0, 'y': 0}, label='Start'),
-        WorkflowNode(id='loop', type=NodeType.LOOP, position={'x': 0, 'y': 0}, label='Loop',
-                     config={'loopConfig': {
-                         'mode': 'canvas',
-                         'maxIterations': 100,
-                         'bodyNodeIds': ['body_tool'],
-                         'bodyEdges': [],
-                     }}),
-        WorkflowNode(id='body_tool', type=NodeType.TOOL, position={'x': 0, 'y': 0}, label='BodyTool',
-                     config={'toolName': 'list_files', 'toolArgs': {'path': '.'}}),
-        WorkflowNode(id='end', type=NodeType.END, position={'x': 0, 'y': 0}, label='End'),
-    ]
-    edges = [
-        WorkflowEdge(id='e1', source='start', source_port='default', target='loop', target_port='in'),
-        WorkflowEdge(id='e2', source='loop', source_port='out_end', target='end', target_port='default'),
-    ]
-    definition = _make_def(nodes, edges)
-    events = await _collect(definition, 'go')
-    assert events[-1]['type'] == 'wf_completed'
-    # 循环体内 list_files 被执行，End 被激活
-    assert any(e['type'] == 'node_ended' and e['nodeId'] == 'end' for e in events)
+    """Loop 体内节点输出 __control__: 'break' 应提前终止循环。
+
+    用 stub 节点替换 TOOL handler，使其首轮即输出 {'__control__': 'break'}，
+    验证循环不会跑满 maxIterations=100，而是只执行 1 轮。
+    """
+    class _BreakStubNode(BaseNode):
+        node_type = 'tool'
+
+        async def execute(self, ctx, ctx_node, confirm_callback, stop_event):
+            # 首轮即发出 break 控制信号
+            ctx_node.outputs = {'default': 'done', '__control__': 'break'}
+            yield {'type': 'node_started', 'workflowId': ctx.workflow_id,
+                   'runId': ctx.run_id, 'nodeId': ctx_node.node_id}
+
+    original = NodeRegistry.get_handlers().get('tool')
+    NodeRegistry.register('tool', _BreakStubNode)
+    try:
+        nodes = [
+            WorkflowNode(id='start', type=NodeType.START, position={'x': 0, 'y': 0}, label='Start'),
+            WorkflowNode(id='loop', type=NodeType.LOOP, position={'x': 0, 'y': 0}, label='Loop',
+                         config={'loopConfig': {
+                             'mode': 'canvas',
+                             'maxIterations': 100,
+                             'bodyNodeIds': ['body_tool'],
+                             'bodyEdges': [],
+                         }}),
+            WorkflowNode(id='body_tool', type=NodeType.TOOL, position={'x': 0, 'y': 0}, label='BodyTool',
+                         config={'toolName': 'list_files', 'toolArgs': {'path': '.'}}),
+            WorkflowNode(id='end', type=NodeType.END, position={'x': 0, 'y': 0}, label='End'),
+        ]
+        edges = [
+            WorkflowEdge(id='e1', source='start', source_port='default', target='loop', target_port='in'),
+            WorkflowEdge(id='e2', source='loop', source_port='out_end', target='end', target_port='default'),
+        ]
+        definition = _make_def(nodes, edges)
+        events = await _collect(definition, 'go')
+
+        assert events[-1]['type'] == 'wf_completed'
+        # break 生效：Loop 节点每轮会 yield 一个 node_progress（delta 含 iteration），
+        # break 后立即退出，故只应有 1 个 progress 事件（iteration=0），而非 100 个
+        loop_progress = [e for e in events
+                         if e.get('type') == 'node_progress' and e.get('nodeId') == 'loop']
+        assert len(loop_progress) == 1, (
+            f'break 信号未生效，循环执行了 {len(loop_progress)} 轮（预期 1 轮）'
+        )
+        # End 节点被激活
+        assert any(e['type'] == 'node_ended' and e['nodeId'] == 'end' for e in events)
+    finally:
+        NodeRegistry.register('tool', original or ToolNode)

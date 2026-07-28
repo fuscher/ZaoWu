@@ -129,10 +129,15 @@ async def _resolve_inputs(
             continue
         source_output = source_ctx.outputs.get(edge.source_port, source_ctx.outputs.get('default'))
 
+        # 若该边命中 input_mapping，仅追加到映射指定的 targetKey，
+        # 不再重复追加到默认端口，避免数据泄漏到 default
+        matched = False
         for mapping in node_def.input_mapping or []:
             if mapping.get('sourceNodeId') == edge.source and mapping.get('sourcePort') == edge.source_port:
                 _append(mapping.get('targetKey') or 'default', source_output)
+                matched = True
 
-        _append(edge.target_port or 'default', source_output)
+        if not matched:
+            _append(edge.target_port or 'default', source_output)
 
     return inputs

@@ -2,6 +2,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
+import { apiPath } from '@/utils/api'
 import type { WorkflowNode, ModelSlot, PromptSlot, SkillSlot } from '@/types/workflow'
 import ModelSelector from './ModelSelector.vue'
 
@@ -48,7 +49,7 @@ const availableSkills = ref<SkillInfo[]>([])
 
 async function loadSkills() {
   try {
-    const res = await fetch('/api/agent/skills')
+    const res = await fetch(apiPath('/agent/skills'))
     const data = await res.json()
     if (data.ok && Array.isArray(data.skills)) {
       availableSkills.value = data.skills.map((s: any) => ({

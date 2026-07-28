@@ -17,7 +17,7 @@ export type NodeType =
 
 export type EdgeType = 'data' | 'condition'
 
-export type NodeStatus = 'idle' | 'running' | 'done' | 'error'
+export type NodeStatus = 'idle' | 'running' | 'paused' | 'done' | 'error'
 
 export interface Position {
   x: number
@@ -158,6 +158,7 @@ export interface WorkflowExecutionConfig {
   timeoutSeconds?: number
 }
 
+/** @planned 工作流变量，未来用于跨节点共享状态，当前未实现 */
 export interface WorkflowVariable {
   name: string
   value: unknown
@@ -170,6 +171,7 @@ export interface InputMapping {
   targetKey: string
 }
 
+/** @planned 节点输出暴露配置，未来用于声明节点产出的对外字段，当前未实现 */
 export interface OutputExpose {
   key: string
   alias?: string
@@ -204,6 +206,7 @@ export interface ConditionConfig {
   modelConfig?: ModelSlot
 }
 
+/** @planned 边数据契约，未来用于端口类型校验，当前未实现 */
 export interface DataContract {
   inputSchema: Record<string, string>
   outputSchema: Record<string, string>
@@ -223,15 +226,4 @@ export interface RetryConfig {
   backoffMultiplier?: number
   fallbackModel?: ModelSlot
   onRetryExhausted: 'skip' | 'error' | 'fallback'
-}
-
-export interface NodeRunContext {
-  nodeId: string
-  inputs: Record<string, unknown>
-  outputs?: Record<string, unknown>
-  tokensIn?: number
-  tokensOut?: number
-  elapsedMs?: number
-  error?: string
-  retryCount: number
 }

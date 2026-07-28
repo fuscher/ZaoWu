@@ -47,6 +47,7 @@ const {
   getSelectedNodes,
   getSelectedEdges,
   fitView,
+  findEdge,
 } = useVueFlow()
 
 // ── 受控模式：v-model:nodes / v-model:edges 让 Vue Flow 自动双向同步 ──
@@ -72,11 +73,12 @@ function toVueFlowEdge(e: WorkflowEdge): GraphEdge {
     target: e.target,
     sourceHandle: e.sourcePort,
     targetHandle: e.targetPort,
-    type: e.type,
-    // 自定义边组件读取的语义字段
-    edgeType: e.edgeType,
+    // Vue Flow 按 type 查找 edgeTypes，需用语义类型（data/condition）
+    // 才能命中自定义边组件；视觉路径由组件内部 getSmoothStepPath 生成
+    type: e.edgeType,
     animated: e.edgeType !== 'data',
     label: e.label,
+    data: { active: false },
   } as unknown as GraphEdge
 }
 
@@ -119,6 +121,20 @@ watch(
 watch(
   () => workflowStore.historyVersion,
   () => loadFromStore(false),
+)
+
+// 边运行时状态：edge_crossed 事件驱动 DataFlowEdge 脉冲动画
+watch(
+  () => workflowStore.edgeRuntime,
+  (rt) => {
+    for (const [edgeId, active] of Object.entries(rt)) {
+      const edge = findEdge(edgeId)
+      if (edge) {
+        edge.data = { ...(edge.data || {}), active }
+      }
+    }
+  },
+  { deep: true },
 )
 
 // ── 节点 / 边的变更回写 ──

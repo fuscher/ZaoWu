@@ -7,6 +7,7 @@ import WorkflowCanvas from './WorkflowCanvas.vue'
 import WorkflowToolbar from './WorkflowToolbar.vue'
 import PropertyPanel from './PropertyPanel.vue'
 import InspectPanel from './InspectPanel.vue'
+import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import type { WorkflowDefinition } from '@/types/workflow'
 import { fetchWorkflow, createWorkflow, updateWorkflow, deleteWorkflow, listWorkflows, exportWorkflowToFile } from '@/services/workflow'
 import type { WorkflowSummary } from './WorkflowToolbar.vue'
@@ -29,6 +30,26 @@ const workflowName = computed(() => workflowStore.workflow?.name ?? t('workflow.
 const isRunning = computed(() => engine.isRunning.value)
 const canUndo = computed(() => workflowStore.canUndo)
 const canRedo = computed(() => workflowStore.canRedo)
+
+const pendingConfirmation = computed(() => {
+  const entries = Object.entries(engine.pendingConfirmations.value)
+  return entries.length > 0 ? entries[0] : null
+})
+const confirmationRequestId = computed(() => pendingConfirmation.value?.[0] ?? null)
+const confirmationInfo = computed(() => pendingConfirmation.value?.[1] ?? null)
+const confirmationVisible = computed(() => confirmationRequestId.value !== null)
+const confirmationMessage = computed(() => {
+  const info = confirmationInfo.value
+  if (!info) return ''
+  const argsText = info.toolCall.arguments
+    ? JSON.stringify(info.toolCall.arguments, null, 2)
+    : '{}'
+  return t('workflow.confirmToolMessage', {
+    nodeId: info.nodeId,
+    tool: String(info.toolCall.name ?? ''),
+    args: argsText,
+  })
+})
 
 async function refreshWorkflowList() {
   try {
@@ -127,6 +148,12 @@ async function handleRun() {
 
 async function handleStop() {
   await engine.stop()
+}
+
+async function handleConfirmTool(approved: boolean) {
+  const requestId = confirmationRequestId.value
+  if (!requestId) return
+  await engine.submitConfirmation(requestId, approved)
 }
 
 async function handleRename(name: string) {
@@ -282,6 +309,13 @@ function handleRedo() {
       <PropertyPanel class="workflow-property" />
     </div>
     <InspectPanel v-if="showInspect" class="workflow-inspect" />
+    <ConfirmDialog
+      :visible="confirmationVisible"
+      :title="t('workflow.confirmToolTitle')"
+      :message="confirmationMessage"
+      @confirm="handleConfirmTool(true)"
+      @cancel="handleConfirmTool(false)"
+    />
   </div>
 </template>
 

@@ -62,6 +62,8 @@ const { t } = useI18n()
   color: var(--text-secondary);
   margin-bottom: 24px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .dialog-actions {

@@ -156,3 +156,19 @@ export async function confirmTool(
     body: JSON.stringify({ runId, requestId, approved }),
   })
 }
+
+export interface RunRecord {
+  runId: string
+  workflowId: string
+  status: 'running' | 'completed' | 'errored' | 'stopped'
+  startTime: number
+  endTime: number | null
+  totalTokens: number
+  error: string | null
+  initialInput: string
+}
+
+export async function listRuns(workflowId: string): Promise<RunRecord[]> {
+  const data = await request<{ runs: RunRecord[] }>(`${BASE}/${workflowId}/runs`)
+  return data.runs
+}

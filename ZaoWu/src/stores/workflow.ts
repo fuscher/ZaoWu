@@ -20,6 +20,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const workflow = ref<WorkflowDefinition | null>(null)
   const selectedNodeIds = ref<string[]>([])
   const nodeRuntime = ref<Record<string, NodeRuntimeInfo>>({})
+  const edgeRuntime = ref<Record<string, boolean>>({})
   const activeRunId = ref<string | null>(null)
   const isDirty = ref(false)
   let lastSavedSnapshot = ''
@@ -145,8 +146,13 @@ export const useWorkflowStore = defineStore('workflow', () => {
     nodeRuntime.value[nodeId] = { ...(nodeRuntime.value[nodeId] ?? { status: 'idle' }), ...info }
   }
 
+  function setEdgeActive(edgeId: string, active: boolean) {
+    edgeRuntime.value[edgeId] = active
+  }
+
   function resetRuntime() {
     nodeRuntime.value = {}
+    edgeRuntime.value = {}
   }
 
   function setActiveRunId(runId: string | null) {
@@ -189,6 +195,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectedNodeId,
     selectedNode,
     nodeRuntime,
+    edgeRuntime,
     activeRunId,
     selectNodes,
     selectNode,
@@ -198,6 +205,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
     setEdges,
     setNodeStatus,
     setNodeRuntime,
+    setEdgeActive,
     resetRuntime,
     setActiveRunId,
     markDirty,

@@ -11,8 +11,10 @@ from workflow_engine.schema import (
 from workflow_engine.sse_helpers import _now_ms
 
 _workflow_lock: asyncio.Lock | None = None
+_runs_lock: asyncio.Lock | None = None
 BASE_DIR = get_project_root()
 WORKFLOWS_FILE = os.path.join(BASE_DIR, 'workflows.json')
+WORKFLOW_RUNS_FILE = os.path.join(BASE_DIR, 'workflow_runs.json')
 
 
 def _get_workflow_lock() -> asyncio.Lock:
@@ -20,6 +22,13 @@ def _get_workflow_lock() -> asyncio.Lock:
     if _workflow_lock is None:
         _workflow_lock = asyncio.Lock()
     return _workflow_lock
+
+
+def _get_runs_lock() -> asyncio.Lock:
+    global _runs_lock
+    if _runs_lock is None:
+        _runs_lock = asyncio.Lock()
+    return _runs_lock
 
 
 def _read_workflows_unlocked() -> dict:
@@ -41,7 +50,8 @@ def _migrate_definition(raw: dict) -> dict:
     raw = dict(raw)
     migration_log: list[dict] = []
 
-    for node in raw.get('nodes', []):
+    nodes = list(raw.get('nodes', []))
+    for i, node in enumerate(nodes):
         node = dict(node)
         config = dict(node.get('config', {}))
         node_type = node.get('type', '')
@@ -110,47 +120,46 @@ def _migrate_definition(raw: dict) -> dict:
 
             config['loopConfig'] = lc
 
-        # ── 边端口迁移：Loop 旧端口 → 新端口 ──
-        for edge in raw.get('edges', []):
-            edge = dict(edge)
-            source_port = edge.get('sourcePort', 'default')
-            target_port = edge.get('targetPort', 'default')
-
-            # sourcePort break/continue/output → out_end
-            if source_port in ('break', 'continue'):
-                migration_log.append({
-                    'type': 'loop_source_port_migration',
-                    'edgeId': edge['id'],
-                    'oldPort': source_port,
-                    'newPort': 'out_end',
-                })
-                edge['sourcePort'] = 'out_end'
-            elif source_port == 'output':
-                migration_log.append({
-                    'type': 'loop_source_port_migration',
-                    'edgeId': edge['id'],
-                    'oldPort': source_port,
-                    'newPort': 'out_end',
-                })
-                edge['sourcePort'] = 'out_end'
-
-            # targetPort items → in
-            if target_port == 'items':
-                migration_log.append({
-                    'type': 'loop_target_port_migration',
-                    'edgeId': edge['id'],
-                    'oldPort': target_port,
-                    'newPort': 'in',
-                })
-                edge['targetPort'] = 'in'
-
         node['config'] = config
+        nodes[i] = node
+
+    raw['nodes'] = nodes
+
+    # ── 边端口迁移：Loop 旧端口 → 新端口 ──
+    edges = list(raw.get('edges', []))
+    for i, edge in enumerate(edges):
+        edge = dict(edge)
+        source_port = edge.get('sourcePort', 'default')
+        target_port = edge.get('targetPort', 'default')
+
+        # sourcePort break/continue/output → out_end
+        if source_port in ('break', 'continue', 'output'):
+            migration_log.append({
+                'type': 'loop_source_port_migration',
+                'edgeId': edge['id'],
+                'oldPort': source_port,
+                'newPort': 'out_end',
+            })
+            edge['sourcePort'] = 'out_end'
+
+        # targetPort items → in
+        if target_port == 'items':
+            migration_log.append({
+                'type': 'loop_target_port_migration',
+                'edgeId': edge['id'],
+                'oldPort': target_port,
+                'newPort': 'in',
+            })
+            edge['targetPort'] = 'in'
+
+        edges[i] = edge
+
+    raw['edges'] = edges
 
     # ── 移除 router 节点和 continue 边 ──
-    original_nodes = raw.get('nodes', [])
-    router_ids = {n['id'] for n in original_nodes if n.get('type') == 'router'}
+    router_ids = {n['id'] for n in raw.get('nodes', []) if n.get('type') == 'router'}
     if router_ids:
-        raw['nodes'] = [n for n in original_nodes if n.get('type') != 'router']
+        raw['nodes'] = [n for n in raw.get('nodes', []) if n.get('type') != 'router']
         raw['edges'] = [e for e in raw.get('edges', []) if e['source'] not in router_ids and e['target'] not in router_ids]
         for rid in router_ids:
             migration_log.append({'type': 'router_node_removed', 'nodeId': rid})
@@ -316,8 +325,62 @@ async def delete(workflow_id: str) -> bool:
     return True
 
 
-async def list_runs(workflow_id: str) -> list[dict]:
-    return []
+def _read_runs_unlocked() -> dict:
+    if not os.path.exists(WORKFLOW_RUNS_FILE):
+        return {'runs': []}
+    with open(WORKFLOW_RUNS_FILE, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _write_runs_unlocked(data: dict) -> None:
+    tmp = WORKFLOW_RUNS_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, WORKFLOW_RUNS_FILE)
+
+
+async def persist_run_start(workflow_id: str, run_id: str, start_time: int,
+                            initial_input: str = '') -> None:
+    """在 wf_started 时插入一条 status='running' 的运行记录。"""
+    record = {
+        'runId': run_id,
+        'workflowId': workflow_id,
+        'status': 'running',
+        'startTime': start_time,
+        'endTime': None,
+        'totalTokens': 0,
+        'error': None,
+        'initialInput': initial_input,
+    }
+    async with _get_runs_lock():
+        data = await asyncio.to_thread(_read_runs_unlocked)
+        data['runs'].append(record)
+        await asyncio.to_thread(_write_runs_unlocked, data)
+
+
+async def persist_run_end(workflow_id: str, run_id: str, status: str,
+                          end_time: int, total_tokens: int = 0,
+                          error: str | None = None) -> None:
+    """在 wf_completed/wf_errored 时更新对应运行记录。"""
+    async with _get_runs_lock():
+        data = await asyncio.to_thread(_read_runs_unlocked)
+        for r in data['runs']:
+            if r.get('runId') == run_id and r.get('workflowId') == workflow_id:
+                r['status'] = status
+                r['endTime'] = end_time
+                r['totalTokens'] = total_tokens
+                r['error'] = error
+                break
+        await asyncio.to_thread(_write_runs_unlocked, data)
+
+
+async def list_runs(workflow_id: str, limit: int = 50) -> list[dict]:
+    """返回指定工作流的运行记录（按 startTime 倒序）。"""
+    async with _get_runs_lock():
+        data = await asyncio.to_thread(_read_runs_unlocked)
+    runs = [r for r in data.get('runs', []) if r.get('workflowId') == workflow_id]
+    runs.sort(key=lambda r: r.get('startTime', 0), reverse=True)
+    return runs[:limit]
 
 
 async def export_to_file(workflow_id: str, file_path: str) -> None:

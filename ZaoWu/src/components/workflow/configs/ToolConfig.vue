@@ -32,17 +32,41 @@ const requiredFields = computed(() =>
   new Set(selectedTool.value?.parameters?.required ?? []),
 )
 
-function args(): Record<string, string> {
-  return (props.node.config.toolArgs as Record<string, string>) ?? {}
+function args(): Record<string, unknown> {
+  return (props.node.config.toolArgs as Record<string, unknown>) ?? {}
 }
 
-function getArg(key: string): string {
-  return args()[key] ?? ''
+function getArg(key: string): unknown {
+  return args()[key]
 }
 
-function setArg(key: string, value: string) {
-  const next = { ...args(), [key]: value }
+function setArg(key: string, value: unknown) {
+  const next = { ...args() }
+  if (value === undefined) {
+    delete next[key]
+  } else {
+    next[key] = value
+  }
   workflowStore.updateNodeConfig(props.node.id, { toolArgs: next })
+}
+
+function parseNumberInput(value: string): number | undefined {
+  if (value === '' || value === undefined || value === null) return undefined
+  const num = Number(value)
+  return Number.isNaN(num) ? undefined : num
+}
+
+function setArgJson(key: string, raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    setArg(key, undefined)
+    return
+  }
+  try {
+    setArg(key, JSON.parse(trimmed))
+  } catch {
+    // 用户输入不完整 JSON 时保持原值，等用户继续输入
+  }
 }
 
 // 原始 JSON 编辑器（高级 fallback）
@@ -98,17 +122,17 @@ function fieldType(prop: { type: string; enum?: string[] }): string {
           v-if="fieldType(prop) === 'string'"
           class="field-input"
           type="text"
-          :value="getArg(key)"
+          :value="String(getArg(key) ?? '')"
           :placeholder="prop.default != null ? String(prop.default) : key"
-          @input="setArg(key, ($event.target as HTMLInputElement).value)"
+          @input="setArg(key, ($event.target as HTMLInputElement).value || undefined)"
         />
 
         <!-- enum (select) -->
         <select
           v-else-if="fieldType(prop) === 'enum'"
           class="field-input"
-          :value="getArg(key)"
-          @change="setArg(key, ($event.target as HTMLSelectElement).value)"
+          :value="String(getArg(key) ?? '')"
+          @change="setArg(key, ($event.target as HTMLSelectElement).value || undefined)"
         >
           <option value="">--</option>
           <option v-for="opt in prop.enum" :key="opt" :value="opt">{{ opt }}</option>
@@ -120,9 +144,9 @@ function fieldType(prop: { type: string; enum?: string[] }): string {
           class="field-input"
           type="number"
           step="1"
-          :value="getArg(key)"
+          :value="getArg(key) ?? ''"
           :placeholder="prop.default != null ? String(prop.default) : key"
-          @input="setArg(key, ($event.target as HTMLInputElement).value)"
+          @input="setArg(key, parseNumberInput(($event.target as HTMLInputElement).value))"
         />
 
         <!-- number -->
@@ -131,19 +155,19 @@ function fieldType(prop: { type: string; enum?: string[] }): string {
           class="field-input"
           type="number"
           step="any"
-          :value="getArg(key)"
+          :value="getArg(key) ?? ''"
           :placeholder="prop.default != null ? String(prop.default) : key"
-          @input="setArg(key, ($event.target as HTMLInputElement).value)"
+          @input="setArg(key, parseNumberInput(($event.target as HTMLInputElement).value))"
         />
 
         <!-- boolean -->
         <label v-else-if="prop.type === 'boolean'" class="checkbox-field">
           <input
             type="checkbox"
-            :checked="getArg(key) === 'true'"
-            @change="setArg(key, String(($event.target as HTMLInputElement).checked))"
+            :checked="Boolean(getArg(key))"
+            @change="setArg(key, ($event.target as HTMLInputElement).checked)"
           />
-          <span class="checkbox-label-text">{{ getArg(key) === 'true' ? 'true' : 'false' }}</span>
+          <span class="checkbox-label-text">{{ Boolean(getArg(key)) ? 'true' : 'false' }}</span>
         </label>
 
         <!-- array / object fallback textarea -->
@@ -151,9 +175,9 @@ function fieldType(prop: { type: string; enum?: string[] }): string {
           v-else
           class="field-input mono"
           rows="3"
-          :value="getArg(key)"
+          :value="getArg(key) != null ? JSON.stringify(getArg(key)) : ''"
           :placeholder="prop.default != null ? JSON.stringify(prop.default) : `[ ... ]`"
-          @input="setArg(key, ($event.target as HTMLTextAreaElement).value)"
+          @input="setArgJson(key, ($event.target as HTMLTextAreaElement).value)"
         />
       </div>
 

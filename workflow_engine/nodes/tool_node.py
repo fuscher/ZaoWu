@@ -19,7 +19,9 @@ class ToolNode(BaseNode):
         raw_args = self.config.get('toolArgs', {})
         args = ctx.resolve_all(raw_args, ctx_node.inputs)
 
-        requires_approval = tool_name in {'write_file', 'run_command'}
+        registry = ToolRegistry.get_instance()
+        tool_def = registry.get(tool_name)
+        requires_approval = tool_def.requires_approval if tool_def else False
         auto_approve = ctx.execution_config.auto_approve_writes
 
         if requires_approval and not (tool_name == 'write_file' and auto_approve):
@@ -37,7 +39,6 @@ class ToolNode(BaseNode):
                 yield _sse_node_ended(ctx, ctx_node)
                 return
 
-        registry = ToolRegistry.get_instance()
         executor = ToolExecutor(registry, ctx.project_paths)
         result = await executor.execute(tool_name, args)
         ctx_node.outputs = {'default': result}

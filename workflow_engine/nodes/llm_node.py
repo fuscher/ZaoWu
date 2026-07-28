@@ -26,7 +26,7 @@ class LLMNode(BaseNode):
 
         provider = self._resolve_provider(model_config)
         model_id = model_config.get('modelId', '')
-        prompt = ctx.resolve(prompt_config.get('template', '{{input}}'))
+        prompt = ctx.resolve(prompt_config.get('template', '{{input}}'), ctx_node.inputs)
 
         messages = [{'role': 'system', 'content': self._build_system_prompt(slots)}]
         messages.append({'role': 'user', 'content': prompt})

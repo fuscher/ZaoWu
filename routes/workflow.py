@@ -7,7 +7,7 @@ from services import workflow_service
 from services.workflow_service import _dict_to_definition, _definition_to_dict
 from services.tool_registry import ToolRegistry
 from workflow_engine.executor import WorkflowExecutor, execute_workflow
-from workflow_engine.sse_helpers import _generate_run_id
+from workflow_engine.sse_helpers import _generate_run_id, _now_ms
 
 workflow_bp = Blueprint('workflow', __name__)
 stop_events: dict[str, asyncio.Event] = {}
@@ -57,9 +57,24 @@ async def run_workflow(workflow_id):
                 initial_input=initial_input,
                 register_pending_callback=lambda workflow_id_inner, node_id, tc: _register_pending_id(workflow_id_inner, run_id, node_id, tc),
             ):
+                etype = event.get('type')
+                if etype == 'wf_started':
+                    await workflow_service.persist_run_start(
+                        workflow_id, run_id, event.get('startTime', _now_ms()), initial_input)
+                elif etype == 'wf_completed':
+                    await workflow_service.persist_run_end(
+                        workflow_id, run_id, 'completed',
+                        event.get('endTime', _now_ms()),
+                        event.get('totalTokens', 0))
+                elif etype == 'wf_errored':
+                    await workflow_service.persist_run_end(
+                        workflow_id, run_id, 'errored', _now_ms(),
+                        error=event.get('error'))
                 yield f'data: {json.dumps(event, ensure_ascii=False)}\n\n'
         except Exception as e:
             fallback = {'type': 'wf_errored', 'workflowId': workflow_id, 'runId': run_id, 'error': f'SSE 异常: {e}'}
+            await workflow_service.persist_run_end(
+                workflow_id, run_id, 'errored', _now_ms(), error=f'SSE 异常: {e}')
             yield f'data: {json.dumps(fallback, ensure_ascii=False)}\n\n'
         finally:
             stop_events.pop(run_id, None)
