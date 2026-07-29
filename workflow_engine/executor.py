@@ -192,6 +192,9 @@ async def execute_workflow(
                     continue
 
                 if node_def.type != NodeType.START:
+                    # NOTE: 当前执行模型是“任一活跃入边即可触发”，不等待全部上游。
+                    # 因此不支持 fan-in / join 语义：若一个节点有多条上游边，只要其中
+                    # 一条先激活，节点就会以部分输入执行。标准排他分支 DAG 不受影响。
                     active_incoming = [
                         e for e in definition.edges
                         if e.target == node_id and e.id in active_edges
@@ -319,7 +322,7 @@ def _activate_downstream_edges(node_def, ctx_node, definition, active_edges):
         # LoopNode 输出 {'default': ..., 'control': 'out_end'}，
         # control 的值即应保留的出口端口（新版本为 'out_end'）
         control = ctx_node.outputs.get('control', 'output')
-        keep = {'output', control}
+        keep = {control}
         for e in definition.edges:
             if e.source == node_def.id and e.source_port not in keep:
                 active_edges.discard(e.id)

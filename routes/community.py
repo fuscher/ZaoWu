@@ -1,8 +1,10 @@
 """Community collaboration REST API blueprint."""
+import socket
 import uuid
 from functools import wraps
 from quart import Blueprint, request, jsonify, g
 
+from zaowu_paths import get_server_port
 from services.room_service import (
     RoomServiceError,
     create_room,
@@ -32,6 +34,40 @@ community_bp = Blueprint('community', __name__)
 def _now_ms() -> int:
     from datetime import datetime, timezone
     return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _get_lan_address() -> str:
+    """Return a LAN-routable host:port address for this server instance.
+
+    Falls back to 127.0.0.1 if no external interface is reachable. Used when
+    the frontend cannot supply a valid LAN hostAddress (e.g. the app was opened
+    via localhost).
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        # Connecting to a multicast address does not send real traffic; it only
+        # asks the OS to pick the best local interface for reaching it.
+        s.connect(('10.255.255.255', 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = '127.0.0.1'
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    return f'{ip}:{get_server_port()}'
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True if the host looks like localhost or a loopback IP."""
+    if not host:
+        return True
+    h = host.split(':')[0].lower()
+    if h in ('localhost', '0.0.0.0', '::1'):
+        return True
+    return h.startswith('127.') or h == '::1'
 
 
 def _host_id() -> str:
@@ -122,6 +158,11 @@ async def api_create_room():
     max_users = body.get('maxUsers', 5)
     default_role = body.get('defaultRole', 'collaborator')
     host_address = body.get('hostAddress')
+    # Ensure the room advertises a LAN-routable address. If the frontend reports
+    # localhost/127.x (typical for a desktop app opened locally), substitute the
+    # server's best-guess LAN address so remote collaborators can connect.
+    if not host_address or _is_loopback_host(host_address):
+        host_address = _get_lan_address()
 
     try:
         room = create_room(
@@ -316,6 +357,12 @@ async def api_update_user(room_id, user_id):
         return jsonify({'ok': False, 'error': str(e)}), 404
     except PermissionServiceError as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
+    # Broadcast the permission change to all connected clients via WebSocket
+    # so role/permission updates take effect in real time (frontend
+    # useCollaboration handleMessage 'permission_change').
+    import asyncio
+    from community_ws import broadcast_permission_change
+    asyncio.create_task(broadcast_permission_change(room_id, user))
     return jsonify({'ok': True, 'user': _to_camel(user)})
 
 

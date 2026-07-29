@@ -84,7 +84,7 @@ async def chat_env(tmp_path, monkeypatch):
         'providers': [{
             'id': 'test-provider',
             'name': 'Test',
-            'apiBase': 'http://localhost:9999',
+            'apiBase': 'http://1.1.1.1:9999',
             'apiKey': 'test-key',
             'models': [{'id': 'test-model'}],
         }]

@@ -25,6 +25,7 @@ export const useCommunityStore = defineStore('community', () => {
   const error = ref('')
   const inviteCode = ref('')
   const pendingJoinCode = ref('')
+  const pendingJoinHostAddress = ref('')
 
   const isHost = computed(() => currentUser.value?.role === 'host')
   const isInRoom = computed(() => currentRoom.value !== null)
@@ -85,9 +86,9 @@ export const useCommunityStore = defineStore('community', () => {
     }
   }
 
-  async function joinRoom(roomId: string, inviteCode: string, userName: string) {
+  async function joinRoom(roomId: string, inviteCode: string, userName: string, hostAddress?: string) {
     try {
-      const data = await communityApi.joinRoom(roomId, { inviteCode, userName })
+      const data = await communityApi.joinRoom(roomId, { inviteCode, userName }, hostAddress)
       currentUser.value = data.user
       token.value = data.token
       wsUrl.value = data.wsUrl
@@ -205,6 +206,12 @@ export const useCommunityStore = defineStore('community', () => {
     return code
   }
 
+  function consumePendingJoinHostAddress() {
+    const host = pendingJoinHostAddress.value
+    pendingJoinHostAddress.value = ''
+    return host
+  }
+
   return {
     rooms,
     currentRoom,
@@ -234,6 +241,8 @@ export const useCommunityStore = defineStore('community', () => {
     removeUserLocal,
     resetSession,
     pendingJoinCode,
+    pendingJoinHostAddress,
     consumePendingJoinCode,
+    consumePendingJoinHostAddress,
   }
 })

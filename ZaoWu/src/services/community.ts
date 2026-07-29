@@ -8,12 +8,20 @@ import { apiPath } from '@/utils/api'
 
 const API_PREFIX = apiPath('/community')
 
-async function request<T>(path: string, options?: RequestInit & { token?: string }): Promise<T> {
+function _baseUrl(hostAddress?: string) {
+  return hostAddress ? `http://${hostAddress}/api/v1/community` : API_PREFIX
+}
+
+async function request<T>(
+  path: string,
+  options?: RequestInit & { token?: string; hostAddress?: string },
+): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (options?.token) {
     headers.Authorization = `Bearer ${options.token}`
   }
-  const res = await fetch(`${API_PREFIX}${path}`, {
+  const base = _baseUrl(options?.hostAddress)
+  const res = await fetch(`${base}${path}`, {
     headers,
     ...options,
   })
@@ -65,8 +73,8 @@ export function listRooms() {
   return request<{ rooms: CollaborationRoom[] }>('/rooms')
 }
 
-export function lookupRoom(code: string) {
-  return request<{ room: CollaborationRoom }>(`/rooms/lookup?code=${encodeURIComponent(code)}`)
+export function lookupRoom(code: string, hostAddress?: string) {
+  return request<{ room: CollaborationRoom }>(`/rooms/lookup?code=${encodeURIComponent(code)}`, { hostAddress })
 }
 
 export function getRoom(roomId: string, token: string) {
@@ -88,10 +96,11 @@ export function closeRoom(roomId: string, token: string) {
   return request<{ success: boolean }>(`/rooms/${roomId}`, { method: 'DELETE', token })
 }
 
-export function joinRoom(roomId: string, payload: JoinRoomPayload) {
+export function joinRoom(roomId: string, payload: JoinRoomPayload, hostAddress?: string) {
   return request<JoinRoomResult>(`/rooms/${roomId}/join`, {
     method: 'POST',
     body: JSON.stringify(payload),
+    hostAddress,
   })
 }
 

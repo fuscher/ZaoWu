@@ -4,9 +4,12 @@ import uuid
 import asyncio
 import logging
 import threading
+import ipaddress
+import socket
 import requests
 import httpx
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from quart import Blueprint, request, jsonify, Response
 from zaowu_paths import get_project_root
 
@@ -65,6 +68,85 @@ def _init_data_files():
 _init_data_files()
 
 
+# SSRF 防护：拒绝私网、链路本地及元数据地址。
+# 允许回环地址（127.0.0.0/8、localhost、::1），以兼容本地 LLM 服务（Ollama/LM Studio）。
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+    ipaddress.ip_network('169.254.0.0/16'),
+    ipaddress.ip_network('0.0.0.0/32'),
+    ipaddress.ip_network('fc00::/7'),
+    ipaddress.ip_network('fe80::/10'),
+]
+
+
+def _is_private_host(hostname: str) -> bool:
+    """判断主机名是否解析到私网或链路本地地址（回环地址除外）。"""
+    if not hostname:
+        return True
+    hostname_lower = hostname.lower()
+    # 明确允许 localhost / 127.* / ::1，但继续拦截 0.0.0.0
+    if hostname_lower == '0.0.0.0':
+        return True
+    if hostname_lower == 'localhost' or hostname_lower.startswith('127.'):
+        return False
+    try:
+        addr = ipaddress.ip_address(hostname)
+        # 显式放行回环（IPv4 127/8 已由字符串判断覆盖；此处处理 ::1）
+        if addr.is_loopback:
+            return False
+        return any(addr in net for net in _PRIVATE_NETWORKS)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+        for info in infos:
+            ip = info[4][0]
+            try:
+                addr = ipaddress.ip_address(ip)
+                if addr.is_loopback:
+                    return False
+                if any(addr in net for net in _PRIVATE_NETWORKS):
+                    return True
+            except ValueError:
+                continue
+    except socket.gaierror:
+        # 无法解析的主机名无法确认安全，保守拒绝
+        return True
+    return False
+
+
+def validate_api_base(api_base: str) -> tuple[bool, str]:
+    """校验 apiBase 是否指向可公开访问的 HTTP/HTTPS URL，防止 SSRF。
+
+    拒绝私网、链路本地及元数据地址；允许回环地址以支持本地模型服务；
+    DNS 解析失败则拒绝。
+    """
+    if not isinstance(api_base, str) or not api_base.strip():
+        return True, ''
+    api_base = api_base.strip()
+
+    if not api_base.startswith(('http://', 'https://')):
+        return False, 'apiBase must start with http:// or https://'
+    if '\x00' in api_base or '\r' in api_base or '\n' in api_base:
+        return False, 'apiBase contains invalid characters'
+
+    try:
+        parsed = urlparse(api_base)
+    except ValueError:
+        return False, 'apiBase is not a valid URL'
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, 'apiBase has no valid host'
+
+    if _is_private_host(hostname):
+        return False, 'apiBase points to a private or local address which is not allowed'
+
+    return True, ''
+
+
 # ── Providers ──────────────────────────────────────────────
 
 @chat_bp.route('/providers', methods=['GET'])
@@ -96,14 +178,12 @@ async def save_providers():
         pname = p.get('name', pid)
         if not isinstance(pname, str):
             return jsonify({'ok': False, 'error': 'provider name must be a string'}), 400
-        # apiBase: 必须是合法 HTTPS/HTTP URL
+        # apiBase: 必须是可公开访问的 HTTPS/HTTP URL，防止 SSRF
         api_base = p.get('apiBase', '')
         if isinstance(api_base, str) and api_base.strip():
-            if not api_base.strip().startswith(('http://', 'https://')):
-                return jsonify({'ok': False, 'error': f'provider {pid}: apiBase must start with http:// or https://'}), 400
-            # 防止内网地址注入（攻击者设置 apiBase 为内部服务，窃取 apiKey）
-            if '\x00' in api_base or '\r' in api_base or '\n' in api_base:
-                return jsonify({'ok': False, 'error': f'provider {pid}: apiBase contains invalid characters'}), 400
+            valid, err = validate_api_base(api_base.strip())
+            if not valid:
+                return jsonify({'ok': False, 'error': f'provider {pid}: {err}'}), 400
         # apiKey: 类型校验
         api_key = p.get('apiKey', '')
         if not isinstance(api_key, str):
@@ -128,6 +208,10 @@ def get_models(provider_id):
 
     if not api_base or not api_key:
         return jsonify({'ok': True, 'models': [m for m in provider.get('models', [])]})
+
+    valid, err = validate_api_base(api_base)
+    if not valid:
+        return jsonify({'ok': False, 'error': err}), 400
 
     try:
         headers = {'Authorization': f'Bearer {api_key}'}
@@ -320,6 +404,13 @@ async def send_message(conv_id):
 
             if not api_base or not api_key:
                 error_text = 'Provider API 配置不完整，请检查 apiBase 和 apiKey。'
+                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
+                full_content = error_text
+                return
+
+            valid, err = validate_api_base(api_base)
+            if not valid:
+                error_text = f'Provider apiBase 不安全: {err}'
                 yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
                 return
@@ -596,6 +687,11 @@ async def send_agent_message(conv_id):
 
     if not provider:
         return jsonify({'ok': False, 'error': 'provider not configured'}), 400
+
+    api_base = provider.get('apiBase', '').rstrip('/')
+    valid, err = validate_api_base(api_base)
+    if not valid:
+        return jsonify({'ok': False, 'error': f'provider apiBase 不安全: {err}'}), 400
 
     now = datetime.now(timezone.utc).isoformat()
     user_msg = {

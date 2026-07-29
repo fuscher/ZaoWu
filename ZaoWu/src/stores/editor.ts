@@ -1,6 +1,8 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { apiPath } from '@/utils/api'
+import { apiPath, apiPathForProject } from '@/utils/api'
+import { useProjectsStore } from '@/stores/projects'
+import type { Project } from '@/types'
 
 export const useEditorStore = defineStore('editor', () => {
   const openFilePath = ref<string | null>(null)
@@ -15,6 +17,22 @@ export const useEditorStore = defineStore('editor', () => {
 
   const isDirty = computed(() => fileContent.value !== originalContent.value)
 
+  /** Find the project that owns a file path (local or virtual). */
+  function _projectForPath(path: string) {
+    const projectsStore = useProjectsStore()
+    const norm = path.replace(/\\/g, '/')
+    const candidates = [...projectsStore.activeProjects, ...projectsStore.archivedProjects]
+    // Prefer the longest matching prefix so nested projects resolve correctly.
+    let best: Project | null = null
+    for (const p of candidates) {
+      const pNorm = p.path.replace(/\\/g, '/')
+      if (pNorm && (norm === pNorm || norm.startsWith(pNorm + '/'))) {
+        if (!best || p.path.length > best.path.length) best = p
+      }
+    }
+    return best
+  }
+
   async function openFile(path: string) {
     openFilePath.value = path
     fileName.value = path.replace(/\\/g, '/').split('/').pop() || path
@@ -22,7 +40,8 @@ export const useEditorStore = defineStore('editor', () => {
     error.value = ''
 
     try {
-      const res = await fetch(apiPath(`/explorer/read-file?path=${encodeURIComponent(path)}`))
+      const project = _projectForPath(path)
+      const res = await fetch(apiPathForProject(project, `/explorer/read-file?path=${encodeURIComponent(path)}`))
       const data = await res.json()
       if (data.ok) {
         fileContent.value = data.content
@@ -47,7 +66,8 @@ export const useEditorStore = defineStore('editor', () => {
     if (!openFilePath.value || !isDirty.value) return
 
     try {
-      const res = await fetch(apiPath('/explorer/save-file'), {
+      const project = _projectForPath(openFilePath.value)
+      const res = await fetch(apiPathForProject(project, '/explorer/save-file'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: openFilePath.value, content: fileContent.value }),
@@ -73,7 +93,8 @@ export const useEditorStore = defineStore('editor', () => {
     isLoading.value = true
     error.value = ''
     try {
-      const res = await fetch(apiPath(`/explorer/read-file?path=${encodeURIComponent(openFilePath.value)}`))
+      const project = _projectForPath(openFilePath.value)
+      const res = await fetch(apiPathForProject(project, `/explorer/read-file?path=${encodeURIComponent(openFilePath.value)}`))
       const data = await res.json()
       if (data.ok) {
         fileContent.value = data.content

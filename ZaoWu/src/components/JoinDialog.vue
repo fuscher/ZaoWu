@@ -6,7 +6,7 @@ import { useCommunityStore } from '@/stores/community'
 import * as communityApi from '@/services/community'
 import type { CollaborationRoom } from '@/types'
 
-const props = defineProps<{ initialCode?: string }>()
+const props = defineProps<{ initialCode?: string; initialHostAddress?: string }>()
 const emit = defineEmits<{ close: []; joined: [] }>()
 const { t } = useI18n()
 const store = useCommunityStore()
@@ -18,14 +18,20 @@ const lookupLoading = ref(false)
 const error = ref('')
 const selectedRoom = ref<CollaborationRoom | null>(null)
 const lookedUpRoom = ref<CollaborationRoom | null>(null)
+const hostAddress = ref(props.initialHostAddress || '')
 
 // When the user clicks a room card in the side panel before clicking "Join",
 // this sets the selected room and auto-fills the invite code.
 function selectRoom(room: CollaborationRoom | null) {
   selectedRoom.value = room
   lookedUpRoom.value = null
-  if (room && room.inviteCode) {
-    inviteLink.value = `${room.id}:${room.inviteCode}`
+  if (room) {
+    if (room.inviteCode) {
+      inviteLink.value = `${room.id}:${room.inviteCode}`
+    }
+    if (room.hostAddress) {
+      hostAddress.value = room.hostAddress
+    }
   }
 }
 
@@ -100,6 +106,12 @@ const parsed = computed(() => {
   return null
 })
 
+/** For cross-device joins, the host backend address is required because the
+ *  local backend does not hold the host's room data. */
+const needsHostAddress = computed(() => {
+  return !hostAddress.value && !selectedRoom.value && !store.rooms.some((r) => r.inviteCode === (parsed.value?.inviteCode || ''))
+})
+
 // As the user types a plain invite code, try to resolve it on the backend.
 let _lookupTimeout: ReturnType<typeof setTimeout> | null = null
 watch(inviteLink, (value) => {
@@ -111,7 +123,7 @@ watch(inviteLink, (value) => {
   _lookupTimeout = setTimeout(async () => {
     lookupLoading.value = true
     try {
-      const data = await communityApi.lookupRoom(raw)
+      const data = await communityApi.lookupRoom(raw, hostAddress.value || undefined)
       if (inviteLink.value.trim().toUpperCase().replace(/^ZW[-\s]?/, '') === raw) {
         lookedUpRoom.value = data.room
       }
@@ -128,10 +140,21 @@ async function submit() {
     error.value = t('community.invalidInviteLink')
     return
   }
+  if (needsHostAddress.value) {
+    error.value = t('community.needHostAddress')
+    return
+  }
   loading.value = true
   error.value = ''
   try {
-    await store.joinRoom(parsed.value.roomId, parsed.value.inviteCode, userName.value || t('community.anonymous'))
+    await store.joinRoom(
+      parsed.value.roomId,
+      parsed.value.inviteCode,
+      userName.value || t('community.anonymous'),
+      hostAddress.value || undefined,
+    )
+    // The join API does not return the room object; use the looked-up/selected room.
+    store.currentRoom = lookedUpRoom.value || selectedRoom.value || store.rooms.find((r) => r.id === parsed.value?.roomId) || null
     emit('joined')
   } catch (err) {
     error.value = String(err)
@@ -156,8 +179,9 @@ function close() {
       </div>
       <div class="dialog-body">
         <label class="field">
-          <span>{{ t('community.inviteLinkOrCode') }}</span>
+          <span>{{ t('community.inviteLinkLabel') }}</span>
           <input v-model="inviteLink" type="text" :placeholder="t('community.inviteLinkPlaceholder')" @keydown.enter="submit" />
+          <div class="field-hint">{{ t('community.inviteLinkHint') }}</div>
         </label>
         <label class="field">
           <span>{{ t('community.yourName') }}</span>
@@ -253,6 +277,12 @@ function close() {
 
 .field input:focus {
   border-color: var(--accent);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 
 .error {

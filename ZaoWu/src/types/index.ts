@@ -179,6 +179,8 @@ export interface Project {
   lastModified: string | null
   virtual?: boolean
   roomId?: string
+  /** Host address for virtual collaboration projects (e.g. "192.168.1.5:8080"). */
+  hostAddress?: string
 }
 
 export interface TreeNode {

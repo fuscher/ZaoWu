@@ -4,17 +4,31 @@ import { Folder, FolderOpen, File } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useEditorStore } from '@/stores/editor'
 import { useProjectsStore } from '@/stores/projects'
-import type { TreeNode } from '@/types'
+import { apiPathForProject } from '@/utils/api'
+import type { TreeNode, Project } from '@/types'
 
 const props = defineProps<{
   node: TreeNode
   level: number
+  /** Optional project context for virtual-project API routing. If omitted,
+   *  the node path is matched against the projects store. */
+  project?: Project | null
 }>()
 
 const emit = defineEmits<{ 'load-children': [path: string] }>()
 const { t } = useI18n()
 const editorStore = useEditorStore()
 const projectsStore = useProjectsStore()
+
+/** Resolve the project that owns this node (for remote/ local API selection). */
+const nodeProject = computed<Project | null>(() => {
+  if (props.project) return props.project
+  const norm = props.node.path.replace(/\\/g, '/')
+  return projectsStore.activeProjects.find((p) => {
+    const pNorm = p.path.replace(/\\/g, '/')
+    return norm === pNorm || norm.startsWith(pNorm + '/')
+  }) || null
+})
 const expanded = ref(false)
 const loading = ref(false)
 const showMenu = ref(false)
@@ -87,7 +101,7 @@ function handleNewFile() {
   const parentDir = props.node.type === 'directory' ? props.node.path : props.node.path.replace(/[\\/][^\\/]+$/, '')
   const newPath = parentDir + '/' + fileName
   // Create empty file via API, then broadcast via collab event
-  fetch('/api/explorer/save-file', {
+  fetch(apiPathForProject(nodeProject.value, '/explorer/save-file'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: newPath, content: '' }),
@@ -190,12 +204,13 @@ onUnmounted(() => {
         {{ t('fileTree.empty') }}
       </div>
       <FileTreeNode
-        v-for="child in node.children"
-        :key="child.path"
-        :node="child"
-        :level="level + 1"
-        @load-children="onChildLoad"
-      />
+      v-for="child in node.children"
+      :key="child.path"
+      :node="child"
+      :level="level + 1"
+      :project="nodeProject"
+      @load-children="onChildLoad"
+    />
     </div>
   </div>
 

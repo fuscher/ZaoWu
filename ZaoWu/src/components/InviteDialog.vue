@@ -43,25 +43,27 @@ function close() {
       </div>
       <div class="dialog-body">
         <div class="field">
-          <span>{{ t('community.inviteCode') }}</span>
+          <span>{{ t('community.inviteLinkLabel') }}</span>
+          <div class="copy-row">
+            <input :value="inviteLink" readonly />
+            <button class="icon-btn" :title="t('community.copyInviteLink')" @click="copy(inviteLink)">
+              <Copy :size="14" />
+            </button>
+          </div>
+          <div class="field-hint">{{ t('community.inviteLinkHint') }}</div>
+        </div>
+        <div class="field">
+          <span>{{ t('community.inviteCodeLabel') }}</span>
           <div class="copy-row">
             <code>ZW-{{ room.inviteCode }}</code>
-            <button class="icon-btn" :title="t('community.copy')" @click="copy(`ZW-${room.inviteCode}`)">
+            <button class="icon-btn" :title="t('community.copyInviteCode')" @click="copy(`ZW-${room.inviteCode}`)">
               <Copy :size="14" />
             </button>
             <button v-if="store.isHost" class="icon-btn" :title="t('community.refreshInviteCode')" @click="refresh">
               <RefreshCw :size="14" />
             </button>
           </div>
-        </div>
-        <div class="field">
-          <span>{{ t('community.inviteLink') }}</span>
-          <div class="copy-row">
-            <input :value="inviteLink" readonly />
-            <button class="icon-btn" :title="t('community.copy')" @click="copy(inviteLink)">
-              <Copy :size="14" />
-            </button>
-          </div>
+          <div class="field-hint">{{ t('community.inviteCodeHint') }}</div>
         </div>
         <div class="field">
           <span>{{ t('community.hostAddress') }}</span>
@@ -71,6 +73,7 @@ function close() {
               <Copy :size="14" />
             </button>
           </div>
+          <div class="field-hint">{{ t('community.hostAddressHint') }}</div>
         </div>
         <div v-if="copied" class="copied-hint">{{ t('community.copied') }}</div>
       </div>
@@ -182,6 +185,12 @@ function close() {
 .icon-btn:hover {
   background: var(--bg-glass-hover);
   color: var(--text-secondary);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 
 .copied-hint {

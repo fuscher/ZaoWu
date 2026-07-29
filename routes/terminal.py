@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import os
 import shlex
 import subprocess
+import sys
 from quart import Blueprint, request, jsonify
 from routes.log import append_log
 from routes.explorer import is_path_in_projects
@@ -17,9 +20,12 @@ BLOCKED_PATTERNS = [
     'format', 'shutdown', 'taskkill', 'diskpart', 'reg',
 ]
 
-# Shell 操作符检测——防止管道/链式命令绕过白名单
-# 这些字符在 shell=True 模式下会触发命令链接/替换，必须拒绝
-_SHELL_OPERATORS = ('|', '&&', '||', ';', '`', '$(')
+# Shell 操作符检测——防止命令链接/替换绕过白名单
+# 这些字符在 shell 或 cmd /c 模式下会触发命令链接/替换，必须拒绝
+_SHELL_OPERATORS = ('|', '&&', '||', ';', '`', '$(', '\n', '\r')
+
+# Windows cmd 内部命令：无独立可执行文件，需通过 cmd /c 调用
+_WINDOWS_CMD_BUILTINS = {'dir', 'type', 'copy', 'move', 'ren', 'del', 'echo', 'cd'}
 
 
 def validate_terminal_path(cwd):
@@ -41,11 +47,11 @@ def is_command_safe(command):
 
     三层防护：
     1. 黑名单子串检查（BLOCKED_PATTERNS）— 拦截危险命令模式
-    2. Shell 操作符检测（_SHELL_OPERATORS）— 防止 |, &&, ;, `, $() 绕过白名单
+    2. Shell 操作符检测（_SHELL_OPERATORS）— 防止 |, &&, ;, `, $() 及换行绕过白名单
     3. 白名单检查 — 使用 shlex.split 正确解析命令，校验首词
 
-    注意：即使有 shell=True，操作符检测也能阻止命令链接攻击，
-    因为攻击者无法用 `git status && calc.exe` 等模式绕过。
+    执行时配合 shell=False 使用 shlex 分割后的列表，从根上消除 shell 注入；
+    Windows cmd 内置命令通过 cmd /c 调用，并额外拒绝 cmd 元字符。
     """
     cmd = command.strip()
     if not cmd:
@@ -72,6 +78,38 @@ def is_command_safe(command):
     if cmd_parts[0] not in ALLOWED_COMMANDS:
         return False, 'command not allowed: ' + cmd_parts[0]
     return True, ''
+
+
+def _validate_cmd_metacharacters(cmd_parts: list[str]) -> tuple[bool, str]:
+    """Windows cmd /c 会重新解析命令行，需额外拒绝 cmd 元字符。"""
+    for part in cmd_parts[1:]:
+        for ch in '&<>()|^%\n\r':
+            if ch in part:
+                return False, f'cmd metacharacter not allowed: {ch}'
+    return True, ''
+
+
+def build_terminal_args(command: str) -> tuple[list[str] | None, str]:
+    """将命令字符串转换为 subprocess 可接受的参数列表。
+
+    返回 (args, error)——args 为 None 表示构造失败。
+    普通命令直接返回 shlex 分割后的列表（shell=False 使用）；
+    Windows cmd 内置命令自动转为 ['cmd', '/c', ...] 形式。
+    """
+    try:
+        cmd_parts = shlex.split(command)
+    except ValueError as e:
+        return None, f'invalid command syntax: {e}'
+    if not cmd_parts:
+        return None, 'command cannot be empty'
+
+    if sys.platform == 'win32' and cmd_parts[0].lower() in _WINDOWS_CMD_BUILTINS:
+        safe, err = _validate_cmd_metacharacters(cmd_parts)
+        if not safe:
+            return None, err
+        return ['cmd', '/c'] + cmd_parts, ''
+
+    return cmd_parts, ''
 
 
 @terminal_bp.route('/exec', methods=['POST'])
@@ -103,10 +141,14 @@ async def exec_command():
     if not safe:
         return jsonify({'ok': False, 'error': err_msg}), 400
 
+    exec_args, build_err = build_terminal_args(command)
+    if exec_args is None:
+        return jsonify({'ok': False, 'error': build_err}), 400
+
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            exec_args,
+            shell=False,
             cwd=os.path.realpath(cwd),
             capture_output=True,
             text=True,

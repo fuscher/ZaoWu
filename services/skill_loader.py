@@ -172,6 +172,10 @@ def _load_skill_module(name: str, init_path: str):
 
     TODO: share the core import logic with ``plugin_system.loader`` to avoid
     duplication.
+
+    SECURITY: Skill code is executed with the same privileges as the host
+    process. Only load skills from trusted, locally-controlled sources.
+    Third-party skills should be reviewed or run in a sandbox before enable.
     """
     module_name = MODULE_PREFIX + name
     if module_name in sys.modules:

@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 from collections import deque
 from workflow_engine.nodes.base import BaseNode
-from workflow_engine.context import NodeContext
+from workflow_engine.context import NodeContext, _resolve_inputs
+from workflow_engine.schema import WorkflowEdge
 from workflow_engine.sse_helpers import _sse_node_started, _sse_node_progress, _sse_node_ended
 
 
@@ -65,6 +66,10 @@ class SubgraphExecutor:
         from workflow_engine.node_registry import NodeRegistry
         handlers = NodeRegistry.get_handlers()
 
+        # 归一化 body_edges，子图内所有边默认全部激活
+        normalized_edges = self._normalize_edges(self.body_edges)
+        all_body_edge_ids = {e.id for e in normalized_edges}
+
         for nid in sorted_ids:
             if stop_event and stop_event.is_set():
                 return (None, 'break')
@@ -81,9 +86,13 @@ class SubgraphExecutor:
             sub_ctx = NodeContext(nid)
             self.parent_ctx.node_contexts[nid] = sub_ctx
 
-            # 注入输入：入口节点使用 initial_input，其余节点从上游 context 解析
+            # 注入输入：入口节点使用 initial_input，其余节点按 body_edges 解析上游输出
             if nid in entry_ids or in_degree.get(nid, 0) == 0:
                 sub_ctx.inputs = {'default': initial_input}
+            else:
+                sub_ctx.inputs = await _resolve_inputs(
+                    node_def, normalized_edges, self.parent_ctx, all_body_edge_ids,
+                )
 
             async for _ in handler.execute(
                 self.parent_ctx, sub_ctx, confirm_callback, stop_event,
@@ -119,6 +128,23 @@ class SubgraphExecutor:
             if nid == node_id:
                 return n
         return None
+
+    def _normalize_edges(self, body_edges: list[Any]) -> list[WorkflowEdge]:
+        """将 body_edges 统一归一化为 WorkflowEdge 对象，兼容 dict/对象两种形态。"""
+        result: list[WorkflowEdge] = []
+        for edge in body_edges:
+            if isinstance(edge, WorkflowEdge):
+                result.append(edge)
+                continue
+            if isinstance(edge, dict):
+                result.append(WorkflowEdge(
+                    id=edge.get('id', ''),
+                    source=edge.get('source', ''),
+                    source_port=edge.get('sourcePort', edge.get('source_port', 'default')),
+                    target=edge.get('target', ''),
+                    target_port=edge.get('targetPort', edge.get('target_port', 'default')),
+                ))
+        return result
 
     def _topological_sort(
         self,

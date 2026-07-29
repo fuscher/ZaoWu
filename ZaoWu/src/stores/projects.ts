@@ -187,8 +187,17 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
-  function injectVirtualProject(roomId: string, projectPath: string, projectName: string) {
-    if (virtualProjects.value.some(p => p.roomId === roomId)) return
+  function injectVirtualProject(
+    roomId: string,
+    projectPath: string,
+    projectName: string,
+    hostAddress?: string,
+  ) {
+    const existing = virtualProjects.value.find(p => p.roomId === roomId)
+    if (existing) {
+      if (hostAddress) existing.hostAddress = hostAddress
+      return
+    }
     virtualProjects.value.push({
       id: `virtual-${roomId}`,
       path: projectPath,
@@ -198,6 +207,7 @@ export const useProjectsStore = defineStore('projects', () => {
       lastModified: null,
       virtual: true,
       roomId,
+      hostAddress,
     })
   }
 

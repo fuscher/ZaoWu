@@ -167,6 +167,8 @@ def _import_plugin_module(module_name: str, init_path: str, plugin_name: str) ->
     if module_name in sys.modules:
         _unload_module(module_name)
 
+    # SECURITY: Plugin code is executed with the same privileges as the host
+    # process. Only load plugins from trusted, locally-controlled sources.
     try:
         spec = importlib.util.spec_from_file_location(module_name, init_path)
     except (ValueError, ImportError, OSError) as exc:

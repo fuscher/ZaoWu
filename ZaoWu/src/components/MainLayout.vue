@@ -61,8 +61,12 @@ onMounted(() => {
 
   // Handle shared HTTP join links such as http://host/?join=ABCDEF
   const joinCode = (window as any).__JOIN_CODE__
+  const joinHost = (window as any).__HOST_ADDRESS__
   if (joinCode && typeof joinCode === 'string') {
     communityStore.pendingJoinCode = joinCode
+    if (joinHost && typeof joinHost === 'string') {
+      communityStore.pendingJoinHostAddress = joinHost
+    }
     activeView.value = 'community'
     sideCollapsed.value = false
   }

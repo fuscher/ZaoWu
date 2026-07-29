@@ -214,3 +214,96 @@ async def test_loop_control_break_signal():
         assert any(e['type'] == 'node_ended' and e['nodeId'] == 'end' for e in events)
     finally:
         NodeRegistry.register('tool', original or ToolNode)
+
+
+async def test_condition_expression_numeric_comparison():
+    """Condition expression 数值比较不应因字符串类型而静默 fallback。"""
+    nodes = [
+        WorkflowNode(id='start', type=NodeType.START, position={'x': 0, 'y': 0}, label='Start'),
+        WorkflowNode(id='cond', type=NodeType.CONDITION, position={'x': 0, 'y': 0}, label='Cond',
+                     config={'conditionConfig': {
+                         'mode': 'expression',
+                         'expression': 'input > 10',
+                     }}),
+        WorkflowNode(id='t_end', type=NodeType.END, position={'x': 0, 'y': 0}, label='True'),
+        WorkflowNode(id='f_end', type=NodeType.END, position={'x': 0, 'y': 0}, label='False'),
+    ]
+    edges = [
+        WorkflowEdge(id='e1', source='start', source_port='default', target='cond', target_port='default'),
+        WorkflowEdge(id='e2', source='cond', source_port='true', target='t_end', target_port='default', edge_type=EdgeType.CONDITION),
+        WorkflowEdge(id='e3', source='cond', source_port='false', target='f_end', target_port='default', edge_type=EdgeType.CONDITION),
+    ]
+    events = await _collect(_make_def(nodes, edges), '42')
+    assert events[-1]['type'] == 'wf_completed'
+    assert any(e['type'] == 'node_ended' and e['nodeId'] == 't_end' for e in events)
+
+
+async def test_condition_expression_string_equality_preserved():
+    """Condition expression 字符串相等语义应保留，数字串比较也成立。"""
+    nodes = [
+        WorkflowNode(id='start', type=NodeType.START, position={'x': 0, 'y': 0}, label='Start'),
+        WorkflowNode(id='cond', type=NodeType.CONDITION, position={'x': 0, 'y': 0}, label='Cond',
+                     config={'conditionConfig': {
+                         'mode': 'expression',
+                         'expression': 'input == "hello"',
+                     }}),
+        WorkflowNode(id='t_end', type=NodeType.END, position={'x': 0, 'y': 0}, label='True'),
+        WorkflowNode(id='f_end', type=NodeType.END, position={'x': 0, 'y': 0}, label='False'),
+    ]
+    edges = [
+        WorkflowEdge(id='e1', source='start', source_port='default', target='cond', target_port='default'),
+        WorkflowEdge(id='e2', source='cond', source_port='true', target='t_end', target_port='default', edge_type=EdgeType.CONDITION),
+        WorkflowEdge(id='e3', source='cond', source_port='false', target='f_end', target_port='default', edge_type=EdgeType.CONDITION),
+    ]
+    events = await _collect(_make_def(nodes, edges), 'hello')
+    assert events[-1]['type'] == 'wf_completed'
+    assert any(e['type'] == 'node_ended' and e['nodeId'] == 't_end' for e in events)
+
+
+async def test_loop_multi_node_body_data_flow():
+    """Loop 体内多节点时，下游节点应能拿到上游 body 节点的输出。"""
+    class _PassThroughNode(BaseNode):
+        node_type = 'tool'
+
+        async def execute(self, ctx, ctx_node, confirm_callback, stop_event):
+            inp = ctx.resolve('{{input}}', ctx_node.inputs)
+            ctx_node.outputs = {'default': f'processed({inp})'}
+            yield {'type': 'node_started', 'workflowId': ctx.workflow_id,
+                   'runId': ctx.run_id, 'nodeId': ctx_node.node_id}
+            yield {'type': 'node_ended', 'workflowId': ctx.workflow_id,
+                   'runId': ctx.run_id, 'nodeId': ctx_node.node_id}
+
+    original = NodeRegistry.get_handlers().get('tool')
+    NodeRegistry.register('tool', _PassThroughNode)
+    try:
+        nodes = [
+            WorkflowNode(id='start', type=NodeType.START, position={'x': 0, 'y': 0}, label='Start'),
+            WorkflowNode(id='loop', type=NodeType.LOOP, position={'x': 0, 'y': 0}, label='Loop',
+                         config={'loopConfig': {
+                             'mode': 'canvas',
+                             'maxIterations': 2,
+                             'bodyNodeIds': ['body_1', 'body_2'],
+                             'bodyEdges': [
+                                 {'id': 'be1', 'source': 'body_1', 'sourcePort': 'default',
+                                  'target': 'body_2', 'targetPort': 'default'},
+                             ],
+                         }}),
+            WorkflowNode(id='body_1', type=NodeType.TOOL, position={'x': 0, 'y': 0}, label='Body1'),
+            WorkflowNode(id='body_2', type=NodeType.TOOL, position={'x': 0, 'y': 0}, label='Body2'),
+            WorkflowNode(id='end', type=NodeType.END, position={'x': 0, 'y': 0}, label='End'),
+        ]
+        edges = [
+            WorkflowEdge(id='e1', source='start', source_port='default', target='loop', target_port='in'),
+            WorkflowEdge(id='e2', source='loop', source_port='out_end', target='end', target_port='default'),
+        ]
+        events = await _collect(_make_def(nodes, edges), 'go')
+        assert events[-1]['type'] == 'wf_completed'
+        # 第二轮输入来自 body_2 的输出；body_2 的输入又来自 body_1 的输出
+        # 因此循环应能正确运行 2 轮而不是因 feedback 为空而提前退出
+        loop_progress = [e for e in events
+                         if e.get('type') == 'node_progress' and e.get('nodeId') == 'loop']
+        assert len(loop_progress) == 2, (
+            f'多节点 body 数据流异常，循环执行了 {len(loop_progress)} 轮（预期 2 轮）'
+        )
+    finally:
+        NodeRegistry.register('tool', original or ToolNode)

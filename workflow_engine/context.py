@@ -79,6 +79,7 @@ class VariableResolver:
             rest = parts[1:]
             if not rest:
                 return _first(value)
+            value = _first(value)
             for key in rest:
                 if isinstance(value, dict):
                     value = value.get(key, '')

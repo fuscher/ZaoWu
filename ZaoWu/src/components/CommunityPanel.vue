@@ -4,6 +4,7 @@ import { Users, MessageSquare, Shield, LogOut, Wifi, WifiOff, Link } from '@luci
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
 import { useEditorStore } from '@/stores/editor'
+import { useProjectsStore } from '@/stores/projects'
 import { useCollaboration } from '@/composables/useCollaboration'
 import CollabEditor from './CollabEditor.vue'
 import CommunityChatPanel from './CommunityChatPanel.vue'
@@ -14,6 +15,7 @@ import PermissionPanel from './PermissionPanel.vue'
 const { t } = useI18n()
 const store = useCommunityStore()
 const editorStore = useEditorStore()
+const projectsStore = useProjectsStore()
 
 const showInvite = ref(false)
 const showPermissions = ref(false)
@@ -21,6 +23,7 @@ const showPermissions = ref(false)
 const _watching = ref(false)
 const _collab = shallowRef<ReturnType<typeof useCollaboration> | null>(null)
 const _isMounted = ref(true)
+const _activeCollabFile = ref<string | null>(null)
 
 const collab = computed(() => {
   if (!store.currentRoom || !store.currentUser || !store.wsUrl) {
@@ -92,15 +95,48 @@ watch(
   },
 )
 
-// Bridge editor openFile → collaboration updateCursor (P1-1)
+// P1-1: Bind the collaborative editor to the currently opened virtual project file.
+// If the active editor file belongs to this room's virtual project, use a yjs Text
+// keyed by file path; otherwise fall back to the shared scratchpad.
 watch(
   () => editorStore.openFilePath,
   (filePath) => {
-    if (_collab.value && filePath) {
+    if (!_collab.value || !filePath) {
+      _activeCollabFile.value = null
+      return
+    }
+    const normPath = filePath.replace(/\\/g, '/')
+    const virtualProj = projectsStore.virtualProjects.find((vp) => {
+      const vpNorm = vp.path.replace(/\\/g, '/')
+      return vp.roomId === store.currentRoom?.id && (normPath === vpNorm || normPath.startsWith(vpNorm + '/'))
+    })
+    if (virtualProj) {
+      _activeCollabFile.value = filePath
+      const ytext = _collab.value.doc.getText(`file:${filePath}`)
+      if (ytext.length === 0 && virtualProj.hostAddress) {
+        // First opener initializes the yjs Text from the host file system.
+        fetch(`http://${virtualProj.hostAddress}/api/v1/explorer/read-file?path=${encodeURIComponent(filePath)}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.ok && ytext.length === 0) {
+              ytext.insert(0, data.content)
+            }
+          })
+          .catch(() => {})
+      }
       _collab.value.updateCursor({ filePath, line: 0, column: 0 })
+    } else {
+      _activeCollabFile.value = null
     }
   },
 )
+
+// P1-1: Save the collaborative editor's current file via file_diff to the host.
+function handleCollabSave() {
+  if (!_collab.value || !_activeCollabFile.value) return
+  const ytext = _collab.value.doc.getText(`file:${_activeCollabFile.value}`)
+  _collab.value.sendFileDiff(_activeCollabFile.value, ytext.toString(), 'write')
+}
 
 // P2-1: Listen for file operations from FileTreeNode context menu
 function handleCollabFileOperation(e: Event) {
@@ -197,10 +233,11 @@ function copyInviteLink() {
         <div class="editor-area">
           <CollabEditor
             v-if="collab"
-            :ytext="collab.doc.getText('codemirror')"
+            :ytext="collab.doc.getText(_activeCollabFile ? `file:${_activeCollabFile}` : 'codemirror')"
             :awareness="collab.awareness"
-            file-name="collab.txt"
+            :file-name="_activeCollabFile ? editorStore.fileName : 'collab.txt'"
             :readonly="!store.canEdit"
+            @save="handleCollabSave"
           />
         </div>
         <CommunityChatPanel

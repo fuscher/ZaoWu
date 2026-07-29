@@ -18,6 +18,7 @@ import asyncio
 import contextvars
 import json
 import os
+import time
 import uuid
 import logging
 from collections.abc import Awaitable, Callable
@@ -323,18 +324,21 @@ async def _handle_file_diff(room: YRoom, payload: dict[str, Any]) -> None:
 
     # Rate limit per user
     if user_id:
-        now = __import__('time').time()
+        now = time.time()
         last = _user_diff_timestamps.get(user_id, 0)
         if now - last < MIN_DIFF_INTERVAL:
             logger.debug('file_diff rate limited for user %s', user_id)
             return
         _user_diff_timestamps[user_id] = now
 
-    content = payload.get('content')
-    path = payload.get('path')
-    delete_flag = payload.get('delete')
-    old_path = payload.get('oldPath')
-    new_path = payload.get('newPath')
+    # Frontend wraps diff fields inside a nested `payload` object (see
+    # useCollaboration.ts sendFileDiff). Read from there, not the top level.
+    diff = payload.get('payload', {}) or {}
+    content = diff.get('content')
+    path = diff.get('path')
+    delete_flag = diff.get('delete')
+    old_path = diff.get('oldPath')
+    new_path = diff.get('newPath')
 
     # Size limit (write ops only)
     if path and content is not None and delete_flag is not True:
@@ -579,7 +583,7 @@ async def _send_room_info(room: YRoom, room_id: str) -> None:
             'projectPath': project_path,
             'projectName': project_name,
         },
-        'timestamp': int(__import__('time').time() * 1000),
+        'timestamp': int(time.time() * 1000),
     }
     await _broadcast_custom(room, payload, exclude_user=None)
 
@@ -598,23 +602,91 @@ async def _broadcast_room_closed(room_id: str) -> None:
         'type': 'room_closed',
         'roomId': room_id,
         'payload': {},
-        'timestamp': int(__import__('time').time() * 1000),
+        'timestamp': int(time.time() * 1000),
     }
     await _broadcast_custom(room, payload, exclude_user=None)
+
+
+async def _broadcast_user_event(room_id: str, user_id: str, event_type: str) -> None:
+    """Broadcast a user_joined / user_left event to room clients.
+
+    For 'user_joined' the joining client is excluded (it knows its own state);
+    for 'user_left' the event goes to all remaining clients.
+    """
+    user = room_service.get_user(room_id, user_id)
+    if not user:
+        return
+    try:
+        room = await websocket_server.get_room(f'/api/v1/community/ws/{room_id}')
+    except Exception:
+        return
+    if room is None:
+        return
+    payload = {
+        'type': event_type,
+        'roomId': room_id,
+        'userId': user_id,
+        # Include userId inside payload: the frontend user_left handler reads
+        # payload.userId, while user_joined reads payload.user.
+        'payload': {'user': user, 'userId': user_id},
+        'timestamp': int(time.time() * 1000),
+    }
+    await _broadcast_custom(
+        room,
+        payload,
+        exclude_user=user_id if event_type == 'user_joined' else None,
+    )
+
+
+async def broadcast_permission_change(room_id: str, user: dict[str, Any]) -> None:
+    """Broadcast a permission_change event to all clients in a room.
+
+    Called by the REST API (PATCH /rooms/<id>/users/<id>) after a host updates
+    a user's role/permissions, so every connected client — including the
+    affected user — can update its local permission matrix in real time.
+    """
+    try:
+        room = await websocket_server.get_room(f'/api/v1/community/ws/{room_id}')
+    except Exception:
+        return
+    if room is None:
+        return
+    payload = {
+        'type': 'permission_change',
+        'roomId': room_id,
+        'userId': user.get('id', ''),
+        'payload': {
+            'userId': user.get('id', ''),
+            'role': user.get('role', ''),
+            'permissions': user.get('permissions', {}),
+        },
+        'timestamp': int(time.time() * 1000),
+    }
+    try:
+        await _broadcast_custom(room, payload, exclude_user=None)
+    except Exception:
+        # 权限广播失败不应影响 REST API 响应；异常已在日志中体现
+        pass
 
 
 # ── ZaoWuASGIServer (on_disconnect cleanup via ContextVar) ──────────
 
 def _on_disconnect_with_cleanup(message: dict[str, Any]) -> None:
-    """on_disconnect callback: clean up search registration via ContextVar room_id."""
+    """on_disconnect callback: mark user offline and broadcast user_left.
+
+    Room-level registries (_room_project_paths, _room_close_callbacks) are
+    intentionally NOT cleared here — a single disconnect must not evict state
+    that other connected clients in the same room still depend on. They are
+    refreshed on connect and cleaned up when the room is closed (close_room).
+    """
     room_id = _current_room_id.get('')
     user_id = _current_user_id.get('')
-    if room_id:
-        _room_project_paths.pop(room_id, None)
-        _room_close_callbacks.pop(room_id, None)
-        # Fire user-left hook
-        if user_id:
-            _fire_user_hook('zaowu_on_user_left', room_id, user_id)
+    if not room_id:
+        return
+    if user_id:
+        room_service.set_user_status(room_id, user_id, 'offline')
+        _schedule_async(_broadcast_user_event(room_id, user_id, 'user_left'))
+        _fire_user_hook('zaowu_on_user_left', room_id, user_id)
 
 
 class ZaoWuASGIServer(ASGIServer):
@@ -657,6 +729,11 @@ class ZaoWuASGIServer(ASGIServer):
                 # Attach scope so broadcast helpers can read zaowu_user_id.
                 websocket = ASGIWebsocket(receive, send, path, self._on_disconnect)
                 websocket.scope = scope  # type: ignore[attr-defined]
+                # Notify existing clients that a new user joined. The joining
+                # client is excluded via _broadcast_user_event's exclude_user.
+                _joined_user_id = scope.get('zaowu_user_id', '')
+                if _joined_user_id:
+                    _schedule_async(_broadcast_user_event(room_id, _joined_user_id, 'user_joined'))
                 await self._websocket_server.serve(websocket)
             finally:
                 _current_user_id.reset(user_token)

@@ -99,9 +99,12 @@ async def index():
     settings_json = json.dumps(read_settings())
     join_code = request.args.get('join', '')
     join_json = json.dumps(join_code)
+    # Pass the host serving this page so a collaborator joining via a shared
+    # link knows which backend to call for lookup/join APIs.
+    host_address_json = json.dumps(request.host)
     injected = html.replace(
         '<script ',
-        f'<script>window.__SETTINGS__ = {settings_json}; window.__JOIN_CODE__ = {join_json};</script>\n    <script ',
+        f'<script>window.__SETTINGS__ = {settings_json}; window.__JOIN_CODE__ = {join_json}; window.__HOST_ADDRESS__ = {host_address_json};</script>\n    <script ',
         1,
     )
     return injected

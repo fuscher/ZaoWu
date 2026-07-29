@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import shutil
 import tempfile
@@ -332,13 +333,18 @@ async def serve_frontend(name: str, path: str):
     if not os.path.isdir(frontend_dir):
         return jsonify({'ok': False, 'error': 'plugin frontend directory not found'}), 404
 
-    # Ensure the resolved path is inside frontend_dir
-    requested = os.path.normpath(os.path.join(frontend_dir, path))
-    if not requested.startswith(os.path.normpath(frontend_dir) + os.sep):
+    # Ensure the resolved path is inside frontend_dir（使用 resolve 处理 Windows 大小写/软链接）
+    frontend_path = pathlib.Path(frontend_dir).resolve()
+    requested_path = pathlib.Path(frontend_dir, path).resolve()
+    try:
+        requested_path.relative_to(frontend_path)
+    except ValueError:
         return jsonify({'ok': False, 'error': 'invalid path'}), 400
 
-    if not os.path.isfile(requested):
+    if not requested_path.is_file():
         return jsonify({'ok': False, 'error': 'file not found'}), 404
+
+    requested = str(requested_path)
 
     # Determine content type for JS/JSON files
     if requested.endswith('.js'):

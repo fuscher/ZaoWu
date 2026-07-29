@@ -1,20 +1,29 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import FileTreeNode from './FileTreeNode.vue'
+import { useProjectsStore } from '@/stores/projects'
+import { apiPathForProject } from '@/utils/api'
 import type { TreeNode } from '@/types'
 
 const props = defineProps<{
   projectPath: string
 }>()
 
+const projectsStore = useProjectsStore()
 const tree = ref<TreeNode[]>([])
 const loading = ref(false)
+
+const project = computed(() =>
+  projectsStore.activeProjects.find((p) => p.path === props.projectPath) ||
+  projectsStore.archivedProjects.find((p) => p.path === props.projectPath) ||
+  null,
+)
 
 async function loadTree(path?: string) {
   const targetPath = path || props.projectPath
   loading.value = true
   try {
-    const res = await fetch('/api/explorer/get-tree', {
+    const res = await fetch(apiPathForProject(project.value, '/explorer/get-tree'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: targetPath, depth: 1 }),

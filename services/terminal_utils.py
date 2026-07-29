@@ -3,7 +3,10 @@ import os
 import shlex
 import asyncio
 
-from routes.terminal import validate_terminal_path, BLOCKED_PATTERNS, ALLOWED_COMMANDS, _SHELL_OPERATORS
+from routes.terminal import (
+    validate_terminal_path, BLOCKED_PATTERNS, ALLOWED_COMMANDS, _SHELL_OPERATORS,
+    build_terminal_args,
+)
 
 # 智能体模式扩展白名单——在终端面板白名单基础上增加 AI 编程常用工具
 AGENT_ALLOWED_COMMANDS = set(ALLOWED_COMMANDS) | {
@@ -63,9 +66,13 @@ async def execute_command(command: str, cwd: str) -> dict:
     if not safe:
         return {'ok': False, 'error': err_msg}
 
+    exec_args, build_err = build_terminal_args(command)
+    if exec_args is None:
+        return {'ok': False, 'error': build_err}
+
     try:
-        proc = await asyncio.create_subprocess_shell(
-            command,
+        proc = await asyncio.create_subprocess_exec(
+            *exec_args,
             cwd=os.path.realpath(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

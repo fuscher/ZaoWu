@@ -75,6 +75,24 @@ def safe_eval(expression: str, variables: dict) -> Any:
     return _eval_node(tree.body, variables)
 
 
+def _coerce_numeric_pair(a, b):
+    """若两侧都能安全转成数字，则统一为 float 后比较；否则原样返回。"""
+    def _to_float(v):
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            try:
+                return float(v)
+            except ValueError:
+                return None
+        return None
+
+    fa, fb = _to_float(a), _to_float(b)
+    if fa is not None and fb is not None:
+        return fa, fb
+    return a, b
+
+
 def _eval_node(node, variables) -> Any:
     if isinstance(node, ast.Constant):
         return node.value
@@ -94,6 +112,10 @@ def _eval_node(node, variables) -> Any:
             if not op:
                 raise ValueError('不允许的比较操作符')
             right = _eval_node(comparator, variables)
+            # 双侧数值兜底：比较运算符两侧都是数字/数字串时统一转 float 再比，
+            # 既修复 '42' > 10 的 TypeError，又保留 input == 'abc' 的字符串语义。
+            if isinstance(op_node, (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                left, right = _coerce_numeric_pair(left, right)
             if not op(left, right):
                 return False
             left = right

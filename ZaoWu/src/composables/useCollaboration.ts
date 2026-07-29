@@ -308,12 +308,9 @@ export function useCollaboration(options: UseCollaborationOptions) {
         break
       }
       case 'file_diff': {
-        const payload = message.payload as { operation?: string; path?: string; timestamp?: number; oldPath?: string; newPath?: string }
+        const payload = message.payload as { operation?: string; path?: string; content?: string; timestamp?: number; oldPath?: string; newPath?: string }
         const diffPath = payload.path || ''
         const operation = payload.operation || 'write'
-
-        // Skip applying our own file_diff (optimistic update already done in sendFileDiff)
-        if (message.userId === options.userId) break
 
         fileDiffs.value.push({
           userId: message.userId,
@@ -321,6 +318,22 @@ export function useCollaboration(options: UseCollaborationOptions) {
           path: diffPath,
           timestamp: payload.timestamp || Date.now(),
         })
+
+        // Keep collaborative yjs Text synchronized with the persisted file content.
+        // This bridges the REST file persistence layer (host disk) back into the
+        // CRDT so all clients converge. Skip our own echoes — they were already
+        // applied optimistically in sendFileDiff.
+        if (operation === 'write' && diffPath && message.userId !== options.userId) {
+          const newContent = payload.content || ''
+          const ytext = doc.getText(`file:${diffPath}`)
+          if (ytext.toString() !== newContent) {
+            ytext.delete(0, ytext.length)
+            ytext.insert(0, newContent)
+          }
+        }
+
+        // Skip applying our own file_diff (optimistic update already done in sendFileDiff)
+        if (message.userId === options.userId) break
 
         // Apply to editor: reload, close, or update path
         const editorStore = useEditorStore()
@@ -360,10 +373,14 @@ export function useCollaboration(options: UseCollaborationOptions) {
         const payload = message.payload as { projectPath?: string; projectName?: string }
         if (payload.projectPath) {
           const projectsStore = useProjectsStore()
+          // hostAddress is parsed from wsUrl so virtual project file APIs can be
+          // routed to the host backend for cross-device collaboration.
+          const parser = new URL(options.wsUrl)
           projectsStore.injectVirtualProject(
             options.roomId,
             payload.projectPath!,
             payload.projectName || 'Collab Project',
+            parser.host,
           )
         }
         break
@@ -421,6 +438,13 @@ export function useCollaboration(options: UseCollaborationOptions) {
     const diffPayload: Record<string, unknown> = { path, operation, timestamp: Date.now() }
     if (operation === 'write') {
       diffPayload.content = content
+      // Keep the collaborative yjs Text in sync with the content we are saving
+      // so all clients (including this one) converge on the same bytes.
+      const ytext = doc.getText(`file:${path}`)
+      if (ytext.toString() !== content) {
+        ytext.delete(0, ytext.length)
+        ytext.insert(0, content)
+      }
     } else if (operation === 'delete') {
       diffPayload.delete = true
     } else if (operation === 'rename' && extra) {
