@@ -29,9 +29,15 @@ W_WIDTH = 1000
 W_HEIGHT = 680
 _SERVER_URL = f'http://127.0.0.1:{PORT}'
 
-user32 = ctypes.windll.user32
-SCREEN_W = user32.GetSystemMetrics(0)
-SCREEN_H = user32.GetSystemMetrics(1)
+# Screen metrics: Windows uses ctypes; Linux/macOS fall back to defaults.
+# Window managers on X11/Wayland typically center frameless windows anyway.
+if sys.platform == 'win32':
+    user32 = ctypes.windll.user32
+    SCREEN_W = user32.GetSystemMetrics(0)
+    SCREEN_H = user32.GetSystemMetrics(1)
+else:
+    SCREEN_W = 1920
+    SCREEN_H = 1080
 W_X = (SCREEN_W - W_WIDTH) // 2
 W_Y = (SCREEN_H - W_HEIGHT) // 2
 

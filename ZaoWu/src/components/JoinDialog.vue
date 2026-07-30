@@ -64,6 +64,35 @@ const parsed = computed(() => {
     }
   }
 
+  // http://host/?join=INVITECODE or https://host/?join=INVITECODE
+  // InviteDialog copies this exact format; parse the code and target host
+  // so cross-device joins know which backend to call.
+  if (/^https?:\/\//i.test(link)) {
+    try {
+      const url = new URL(link)
+      const code = url.searchParams.get('join') || ''
+      if (code && /^[A-Za-z0-9]{6,8}$/i.test(code)) {
+        const upperCode = code.toUpperCase()
+        if (url.host) {
+          hostAddress.value = url.host
+        }
+        // Resolve against known rooms or a completed backend lookup.
+        if (selectedRoom.value?.inviteCode === upperCode) {
+          return { roomId: selectedRoom.value.id, inviteCode: upperCode }
+        }
+        const matched = store.rooms.find((r) => r.inviteCode === upperCode)
+        if (matched) {
+          return { roomId: matched.id, inviteCode: upperCode }
+        }
+        if (lookedUpRoom.value?.inviteCode === upperCode) {
+          return { roomId: lookedUpRoom.value.id, inviteCode: upperCode }
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
   // "roomId:inviteCode" with colon separator (UUIDs contain hyphens, not colons)
   const colonIdx = link.indexOf(':')
   if (colonIdx > 0 && colonIdx < link.length - 1 && link.slice(colonIdx + 1).length <= 8) {
