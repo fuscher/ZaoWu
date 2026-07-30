@@ -19,6 +19,7 @@ import EndNode from './nodes/EndNode.vue'
 import LoopNode from './nodes/LoopNode.vue'
 import DataFlowEdge from './edges/DataFlowEdge.vue'
 import ConditionEdge from './edges/ConditionEdge.vue'
+import WorkflowMinimap from './WorkflowMinimap.vue'
 import type { NodeType, EdgeType, WorkflowNode, WorkflowEdge } from '@/types/workflow'
 import { useWorkflowStore } from '@/stores/workflow'
 
@@ -234,7 +235,7 @@ function onCanvasMouseDown(event: MouseEvent) {
   // 仅左键 + 空白画布区域才启动框选；点节点/边/连接点交给 Vue Flow 处理
   if (event.button !== 0) return
   const target = event.target as HTMLElement
-  if (target.closest('.vue-flow__node, .vue-flow__edge, .vue-flow__handle')) return
+  if (target.closest('.vue-flow__node, .vue-flow__edge, .vue-flow__handle, .workflow-minimap')) return
   const wrapper = canvasEl.value
   if (!wrapper) return
   const rect = wrapper.getBoundingClientRect()
@@ -668,6 +669,7 @@ defineExpose({
       @contextmenu.prevent
     >
       <Background variant="lines" :gap="20" :line-width="1" color="var(--border-glass)" />
+      <WorkflowMinimap />
     </VueFlow>
     <div
       v-if="selectionRect"

@@ -560,6 +560,12 @@
     "inspectOutputs": "Outputs",
     "inspectError": "Error",
     "inspectHint": "Click a node on the canvas to view runtime details",
+    "minimap": {
+      "title": "Minimap",
+      "show": "Show minimap",
+      "hide": "Hide minimap",
+      "empty": "Canvas is empty"
+    },
     "runHistory": "Run History",
     "runDuration": "Duration",
     "runTokens": "Tokens",

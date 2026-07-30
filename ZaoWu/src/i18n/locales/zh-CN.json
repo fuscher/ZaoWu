@@ -562,6 +562,12 @@
     "inspectOutputs": "输出",
     "inspectError": "错误",
     "inspectHint": "点击画布上的节点查看运行时详情",
+    "minimap": {
+      "title": "小地图",
+      "show": "显示小地图",
+      "hide": "隐藏小地图",
+      "empty": "画布为空"
+    },
     "runHistory": "运行历史",
     "runDuration": "耗时",
     "runTokens": "Token",
