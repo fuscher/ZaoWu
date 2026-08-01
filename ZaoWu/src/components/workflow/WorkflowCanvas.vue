@@ -356,8 +356,7 @@ function onCanvasClickCapture(event: MouseEvent) {
 function inferEdgeKind(connection: Connection): EdgeType {
   const sourcePort = connection.sourceHandle || 'default'
   const targetPort = connection.targetHandle || 'default'
-  // 新 Loop 不再有 break/continue 端口 — out_body / out_end 均为 data 类型
-  // 保留 true/false 条件判断
+  // Loop 流式化后 body / out 均为 data 类型；保留 true/false 条件判断
   if (
     sourcePort === 'true' ||
     sourcePort === 'false' ||
@@ -369,15 +368,94 @@ function inferEdgeKind(connection: Connection): EdgeType {
   return 'data'
 }
 
+function getLoopBodyNodeIds(loopId: string, allEdges: any[], allNodes: any[]): Set<string> {
+  const nodeById = new Map(allNodes.map((n) => [n.id, n]))
+  const visited = new Set<string>()
+  const queue: string[] = []
+  for (const e of allEdges) {
+    if (e.source === loopId && e.sourcePort === 'body') {
+      queue.push(e.target)
+    }
+  }
+  while (queue.length) {
+    const cur = queue.shift()!
+    if (cur === loopId) continue
+    if (visited.has(cur)) continue
+    visited.add(cur)
+    const curNode = nodeById.get(cur)
+    if (curNode?.type === 'loop') {
+      for (const e of allEdges) {
+        if (e.source === cur && e.sourcePort === 'out') {
+          queue.push(e.target)
+        }
+      }
+    } else {
+      for (const e of allEdges) {
+        if (e.source === cur) {
+          queue.push(e.target)
+        }
+      }
+    }
+  }
+  return visited
+}
+
 function validateConnection(connection: Connection): boolean {
   if (!connection.source || !connection.target) return false
   if (connection.source === connection.target) return false
   if (wouldFormCycle(connection.source, connection.target)) return false
 
   const sourceHandle = connection.sourceHandle || 'default'
-  // 新 Loop 不再有 break/continue 端口，不再做 break/continue 边验证
-  // out_body 端口不允许连线（纯 SSE 观察端口）
-  if (sourceHandle === 'out_body') return false
+  const targetHandle = connection.targetHandle || 'default'
+
+  const allNodes = workflowStore.nodes
+  const allEdges = workflowStore.edges
+  const sourceNode = allNodes.find((n) => n.id === connection.source)
+  const targetNode = allNodes.find((n) => n.id === connection.target)
+  if (!sourceNode || !targetNode) return false
+
+  // 每个 Loop 的 body 端口最多只允许一条出边
+  if (sourceNode.type === 'loop' && sourceHandle === 'body') {
+    const existingBodyEdges = allEdges.filter(
+      (e) => e.source === connection.source && e.sourcePort === 'body',
+    )
+    if (existingBodyEdges.length > 0) return false
+  }
+
+  // 禁止 loop.out 连接回 loop.in
+  if (
+    sourceNode.type === 'loop' &&
+    sourceHandle === 'out' &&
+    targetNode.type === 'loop' &&
+    targetHandle === 'in'
+  ) {
+    return false
+  }
+
+  // 循环体边界校验
+  const loopNodes = allNodes.filter((n) => n.type === 'loop')
+  for (const loop of loopNodes) {
+    const bodyIds = getLoopBodyNodeIds(loop.id, allEdges, allNodes)
+    if (!bodyIds.size) continue
+
+    // 禁止向循环体内部节点连线，除非源节点也在同一循环体内或是该 Loop 的 body 端口
+    if (
+      bodyIds.has(connection.target) &&
+      !bodyIds.has(connection.source) &&
+      !(connection.source === loop.id && sourceHandle === 'body')
+    ) {
+      return false
+    }
+
+    // 禁止循环体内部节点向外部连线（End 与嵌套 Loop 的 body/out 端口除外）
+    if (bodyIds.has(connection.source)) {
+      const isNestedLoopPort =
+        sourceNode.type === 'loop' && (sourceHandle === 'body' || sourceHandle === 'out')
+      if (!isNestedLoopPort && !bodyIds.has(connection.target)) {
+        return false
+      }
+    }
+  }
 
   return true
 }

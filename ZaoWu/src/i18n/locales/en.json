@@ -486,7 +486,7 @@
       "tool": "Tool",
       "toolDesc": "Execute a registered tool",
       "loop": "Loop",
-      "loopDesc": "Iterate over a subgraph (for / do-while)",
+      "loopDesc": "Iterate the connected body subgraph",
       "end": "End",
       "endDesc": "Aggregate results and output"
     },
@@ -529,7 +529,7 @@
       "logName": "File Name (optional)",
       "logNameHint": "Leave blank for auto-generated: date_workflow_4-hex",
       "maxIterations": "Max Iterations",
-      "loopCanvasHint": "Drag nodes into the loop body; edges define data flow. out_body is SSE-only (no edges), out_end is the final result port.",
+      "loopCanvasHint": "Drag an edge from the body port to the loop body entry node; the out port emits the final result after the loop finishes.",
       "skills": "Skill Injection",
       "noSkills": "No skills selected",
       "addSkill": "Add Skill",
@@ -583,8 +583,8 @@
       "false": "False(F)",
       "items": "Items",
       "in": "Input",
-      "out_body": "Body",
-      "out_end": "End"
+      "body": "Body",
+      "out": "Output"
     }
   }
 }

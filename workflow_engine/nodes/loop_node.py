@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from workflow_engine.context import _first
 from workflow_engine.nodes.base import BaseNode
 from workflow_engine.nodes.subgraph_executor import SubgraphExecutor
 from workflow_engine.sse_helpers import _sse_node_started, _sse_node_progress, _sse_node_ended
@@ -17,48 +19,63 @@ class LoopNode(BaseNode):
         if ctx.execution_config.max_iterations:
             max_iter = min(max_iter, ctx.execution_config.max_iterations)
 
-        body_node_ids = cfg.get('bodyNodeIds', [])
-        body_edges = cfg.get('bodyEdges', [])
-
-        # 从 definition 中查找 body 节点对象
-        body_nodes = []
-        if ctx.definition:
-            all_nodes = ctx.definition.nodes if ctx.definition else []
-            body_nodes = [n for n in all_nodes if n.id in body_node_ids]
-
-        subgraph = SubgraphExecutor(body_nodes, body_edges, ctx)
-        current_input = ctx_node.inputs.get('default')
+        subgraph = SubgraphExecutor(self.node_def, ctx)
+        current_input = _first(ctx_node.inputs.get('in', ctx_node.inputs.get('default', '')))
 
         for iteration in range(max_iter):
             if stop_event and stop_event.is_set():
                 break
 
-            # out_body SSE 事件：广播当前轮输入（纯观察，无下游边）
             yield _sse_node_progress(
                 ctx, ctx_node,
                 json.dumps({'iteration': iteration, 'input': current_input}, ensure_ascii=False),
             )
 
-            feedback, control = await subgraph.run(
+            # 无界队列：流式 LLM 单节点可能产生大量事件，固定上限容易失真
+            queue = asyncio.Queue()
+            task = asyncio.create_task(subgraph.run(
                 current_input,
                 iteration,
                 confirm_callback,
                 stop_event,
-            )
+                queue,
+            ))
+            try:
+                while not task.done() or not queue.empty():
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                        if event:
+                            yield event
+                    except asyncio.TimeoutError:
+                        pass
 
-            if control == 'break':
-                break
-            elif control == 'continue':
-                if iteration + 1 >= max_iter:
-                    break
-                continue
+                feedback, control = task.result()
+            finally:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
-            current_input = feedback.get('default') if feedback else None
-            if current_input is None:
+            if control == 'end':
+                ctx_node.outputs = {
+                    'default': '',
+                    'out': '',
+                    '__control__': 'end',
+                }
+                yield _sse_node_ended(ctx, ctx_node)
+                return
+
+            if control == 'stopped':
                 break
+
+            if feedback:
+                current_input = feedback.get('default', current_input)
 
         ctx_node.outputs = {
             'default': current_input if current_input is not None else '',
-            'control': 'out_end',
+            'out': current_input if current_input is not None else '',
+            'control': 'out',
         }
         yield _sse_node_ended(ctx, ctx_node)

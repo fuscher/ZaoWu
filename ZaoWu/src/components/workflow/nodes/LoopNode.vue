@@ -21,6 +21,6 @@ const tokens = computed(() => runtime.value?.tokens)
     :label="label"
     icon-name="Workflow"
     :inputs="['in']"
-    :outputs="['out_body', 'out_end']"
+    :outputs="['body', 'out']"
   />
 </template>

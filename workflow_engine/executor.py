@@ -13,6 +13,7 @@ from workflow_engine.schema import (
 )
 from workflow_engine.context import ExecutionContext, NodeContext, _resolve_inputs
 from workflow_engine.node_registry import NodeRegistry
+from workflow_engine.nodes.subgraph_executor import discover_loop_body
 from workflow_engine.sse_helpers import (
     _generate_run_id, _now_ms,
     _sse_wf_started, _sse_wf_errored, _sse_node_errored, _sse_wf_completed,
@@ -74,9 +75,30 @@ class WorkflowExecutor:
         body_ids: set[str] = set()
         for node in self.definition.nodes:
             if node.type == NodeType.LOOP:
-                cfg = (node.config.get('loopConfig') or {})
-                body_ids.update(cfg.get('bodyNodeIds') or [])
+                discovered, _ = discover_loop_body(node.id, self.definition.edges, self.definition.nodes)
+                body_ids.update(discovered)
         return body_ids
+
+    def _collect_out_reachable(self, loop_id: str) -> set[str]:
+        """从 Loop.out 端口出发能到达的所有节点（包含直接下游及其后继）。"""
+        node_by_id = {n.id: n for n in self.definition.nodes}
+        out_reachable: set[str] = set()
+        queue: deque[str] = deque()
+        for edge in self.definition.edges:
+            if edge.source == loop_id and edge.source_port == 'out':
+                if edge.target in node_by_id:
+                    queue.append(edge.target)
+        while queue:
+            cur = queue.popleft()
+            if cur in out_reachable:
+                continue
+            out_reachable.add(cur)
+            for edge in self.definition.edges:
+                if edge.source == cur:
+                    nxt = edge.target
+                    if nxt in node_by_id and nxt not in out_reachable:
+                        queue.append(nxt)
+        return out_reachable
 
     def validate(self) -> list[str]:
         errors = []
@@ -98,11 +120,101 @@ class WorkflowExecutor:
                 continue
             if node.id not in all_connected:
                 errors.append(f"节点 '{node.label}' 未连接到工作流")
+
+        # Loop 循环体验证
+        loop_bodies: dict[str, set[str]] = {}
+        for node in self.definition.nodes:
+            if node.type != NodeType.LOOP:
+                continue
+            loop_id = node.id
+            body_edges_count = sum(
+                1 for e in self.definition.edges
+                if e.source == loop_id and e.source_port == 'body'
+            )
+            if body_edges_count > 1:
+                errors.append(f"Loop 节点 '{node.label}' 的 body 端口最多只能连出一条边")
+            discovered, body_edges = discover_loop_body(
+                loop_id, self.definition.edges, self.definition.nodes,
+            )
+            loop_bodies[loop_id] = discovered
+
+            # 循环体内部环检测
+            graph = {nid: [] for nid in discovered}
+            in_degree = {nid: 0 for nid in discovered}
+            for edge in body_edges:
+                graph[edge.source].append(edge.target)
+                in_degree[edge.target] += 1
+            try:
+                self._topological_sort_internal(graph, in_degree)
+            except ValueError:
+                errors.append(f"Loop 节点 '{node.label}' 的循环体内部存在环路")
+
+            # 计算 Loop.out 下游可达节点：允许循环体节点共享这些外部节点
+            out_reachable = self._collect_out_reachable(loop_id)
+
+            # 循环体节点入边/出边边界检查
+            for edge in self.definition.edges:
+                # 来自循环体外的非法入边（Loop.body 边除外）
+                if edge.target in discovered:
+                    is_loop_body_edge = edge.source == loop_id and edge.source_port == 'body'
+                    if not is_loop_body_edge and edge.source not in discovered:
+                        errors.append(
+                            f"节点 '{self._get_node(edge.target).label}' 在循环体内，"
+                            f"不能接收来自循环体外节点 '{self._get_node(edge.source).label}' 的入边"
+                        )
+                # 指向循环体外的非法出边（嵌套 Loop 的 body/out 端口或 Loop.out 下游除外）
+                if edge.source in discovered:
+                    src_node = self._get_node(edge.source)
+                    is_nested_loop_port = (
+                        src_node.type == NodeType.LOOP
+                        and edge.source_port in ('body', 'out')
+                    )
+                    is_shared_out_downstream = edge.target in out_reachable
+                    if (
+                        not is_nested_loop_port
+                        and not is_shared_out_downstream
+                        and edge.target not in discovered
+                    ):
+                        errors.append(
+                            f"节点 '{src_node.label}' 在循环体内，"
+                            f"不能向循环体外节点 '{self._get_node(edge.target).label}' 连出边"
+                        )
+
+        # 一个节点不能同时属于多个 Loop 的循环体
+        seen: dict[str, str] = {}
+        for loop_id, body_ids in loop_bodies.items():
+            for nid in body_ids:
+                if nid in seen:
+                    errors.append(
+                        f"节点 '{self._get_node(nid).label}' 同时属于多个 Loop 的循环体"
+                    )
+                else:
+                    seen[nid] = loop_id
+
         try:
             self._topological_sort()
         except ValueError:
             errors.append("工作流中存在环路")
         return errors
+
+    def _topological_sort_internal(
+        self,
+        graph: dict[str, list[str]],
+        in_degree: dict[str, int],
+    ) -> list[str]:
+        deg = dict(in_degree)
+        queue = deque([nid for nid, d in deg.items() if d == 0])
+        result: list[str] = []
+        while queue:
+            nid = queue.popleft()
+            result.append(nid)
+            for succ in graph.get(nid, []):
+                deg[succ] -= 1
+                if deg[succ] == 0:
+                    queue.append(succ)
+        if len(result) != len(in_degree):
+            raise ValueError("Graph contains a cycle")
+        return result
 
     def _topological_sort(self) -> list[str]:
         in_degree = dict(self._in_degree)
@@ -231,6 +343,11 @@ async def execute_workflow(
                                 register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
                             yield event
 
+                        # 循环体内部 End 节点透传上来的终止信号：强制结束整个工作流
+                        if ctx_node.outputs.get('__control__') == 'end':
+                            yield _sse_wf_completed(ctx, total_tokens)
+                            return
+
                         total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
                         _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
                         # 对每条仍活跃的出边发 edge_crossed，驱动前端边流动动画
@@ -270,6 +387,9 @@ async def execute_workflow(
                                                 and event.get('type') == 'node_requires_confirmation'):
                                             register_pending_callback(ctx.workflow_id, node_id, event.get('toolCall') or {})
                                         yield event
+                                    if ctx_node.outputs.get('__control__') == 'end':
+                                        yield _sse_wf_completed(ctx, total_tokens)
+                                        return
                                     total_tokens += ctx_node.tokens_in + ctx_node.tokens_out
                                     _activate_downstream_edges(node_def, ctx_node, definition, active_edges)
                                     for e in definition.edges:
@@ -319,9 +439,9 @@ def _activate_downstream_edges(node_def, ctx_node, definition, active_edges):
             if e.source == node_def.id and e.source_port != selected:
                 active_edges.discard(e.id)
     elif node_def.type == NodeType.LOOP:
-        # LoopNode 输出 {'default': ..., 'control': 'out_end'}，
-        # control 的值即应保留的出口端口（新版本为 'out_end'）
-        control = ctx_node.outputs.get('control', 'output')
+        # LoopNode 输出 {'default': ..., 'control': 'out'}，
+        # control 的值即应保留的出口端口（新流式版本为 'out'）
+        control = ctx_node.outputs.get('control', 'out')
         keep = {control}
         for e in definition.edges:
             if e.source == node_def.id and e.source_port not in keep:

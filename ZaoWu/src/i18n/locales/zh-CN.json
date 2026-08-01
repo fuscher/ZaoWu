@@ -488,7 +488,7 @@
       "tool": "工具",
       "toolDesc": "执行注册的工具",
       "loop": "循环",
-      "loopDesc": "迭代执行子图（for / do-while）",
+      "loopDesc": "迭代执行连接的 body 子图",
       "end": "结束",
       "endDesc": "汇聚结果并输出"
     },
@@ -531,7 +531,7 @@
       "logName": "文件名（可选）",
       "logNameHint": "留空自动生成：日期_工作流名_4位随机码",
       "maxIterations": "最大迭代次数",
-      "loopCanvasHint": "将节点拖入循环体内，连线定义数据流。out_body 为纯 SSE 观察端口（不连边），out_end 为最终结果端口。",
+      "loopCanvasHint": "从 body 端口拖出边连接循环体入口节点；out 端口输出循环结束后的最终结果。",
       "skills": "技能注入",
       "noSkills": "未选择技能",
       "addSkill": "添加技能",
@@ -585,8 +585,8 @@
       "false": "假(F)",
       "items": "迭代项",
       "in": "输入",
-      "out_body": "循环体",
-      "out_end": "结束"
+      "body": "循环体",
+      "out": "输出"
     }
   }
 }

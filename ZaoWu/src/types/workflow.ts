@@ -214,10 +214,7 @@ export interface DataContract {
 }
 
 export interface LoopConfig {
-  mode: 'canvas'
   maxIterations: number
-  bodyNodeIds: string[]
-  bodyEdges: WorkflowEdge[]
 }
 
 export interface RetryConfig {

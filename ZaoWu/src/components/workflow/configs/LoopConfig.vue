@@ -13,12 +13,7 @@ const workflowStore = useWorkflowStore()
 
 const cfg = computed<LoopConfigType>({
   get: () =>
-    (props.node.config.loopConfig as LoopConfigType) ?? {
-      mode: 'canvas',
-      maxIterations: 10,
-      bodyNodeIds: [],
-      bodyEdges: [],
-    },
+    (props.node.config.loopConfig as LoopConfigType) ?? { maxIterations: 10 },
   set: (v) => workflowStore.updateNodeConfig(props.node.id, { loopConfig: v }),
 })
 

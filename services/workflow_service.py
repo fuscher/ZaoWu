@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import asyncio
+from typing import Any
 from zaowu_paths import get_project_root
 from workflow_engine.schema import (
     WorkflowDefinition, WorkflowNode, NodeType, WorkflowEdge, EdgeType,
@@ -15,6 +16,34 @@ _runs_lock: asyncio.Lock | None = None
 BASE_DIR = get_project_root()
 WORKFLOWS_FILE = os.path.join(BASE_DIR, 'workflows.json')
 WORKFLOW_RUNS_FILE = os.path.join(BASE_DIR, 'workflow_runs.json')
+
+
+def _normalize_edge_dict(edge: dict | WorkflowEdge | Any) -> dict | None:
+    """把 dict 或 WorkflowEdge 对象归一化为原始 edge dict。"""
+    if isinstance(edge, WorkflowEdge):
+        return {
+            'id': edge.id,
+            'source': edge.source,
+            'sourcePort': edge.source_port,
+            'target': edge.target,
+            'targetPort': edge.target_port,
+            'type': edge.type,
+            'edgeType': edge.edge_type.value,
+            'condition': edge.condition,
+            'dataContract': edge.data_contract,
+            'label': edge.label,
+        }
+    if isinstance(edge, dict):
+        normalized = dict(edge)
+        normalized.setdefault('id', '')
+        normalized.setdefault('source', '')
+        normalized.setdefault('sourcePort', normalized.get('source_port', 'default'))
+        normalized.setdefault('target', '')
+        normalized.setdefault('targetPort', normalized.get('target_port', 'default'))
+        normalized.setdefault('type', 'smoothstep')
+        normalized.setdefault('edgeType', normalized.get('edge_type', 'data'))
+        return normalized
+    return None
 
 
 def _get_workflow_lock() -> asyncio.Lock:
@@ -90,14 +119,14 @@ def _migrate_definition(raw: dict) -> dict:
         if isinstance(lc, dict):
             lc = dict(lc)
             old_mode = lc.get('mode', '')
-            # for/while → canvas
-            if old_mode in ('for', 'while'):
-                lc['mode'] = 'canvas'
+            # 移除 mode 字段（for/while/canvas 均不再使用）
+            if old_mode:
                 migration_log.append({
-                    'type': 'loop_mode_migration',
+                    'type': 'loop_mode_removed',
                     'nodeId': node['id'],
                     'oldMode': old_mode,
                 })
+                lc.pop('mode', None)
 
             # 删除已废弃字段并记录日志
             for deprecated_field in ('condition', 'circuitBreakerAction'):
@@ -156,6 +185,133 @@ def _migrate_definition(raw: dict) -> dict:
 
     raw['edges'] = edges
 
+    # ── 把旧 bodyNodeIds / bodyEdges 提升为真实工作流边 ──
+    node_ids = {n['id'] for n in raw.get('nodes', [])}
+    used_edge_ids = {e['id'] for e in edges}
+    promoted_loop_ids: set[str] = set()
+
+    for node in raw.get('nodes', []):
+        if node.get('type') != 'loop':
+            continue
+        loop_id = node['id']
+        lc = (node.get('config') or {}).get('loopConfig') or {}
+        body_node_ids = lc.get('bodyNodeIds', []) or []
+        body_edges = lc.get('bodyEdges', []) or []
+
+        if not body_node_ids and not body_edges:
+            continue
+
+        # 幂等：如果已经存在 loop.body 边，跳过并视为已迁移
+        if any(e.get('source') == loop_id and e.get('sourcePort') == 'body' for e in edges):
+            promoted_loop_ids.add(loop_id)
+            continue
+
+        # 归一化并校验 bodyEdges
+        normalized_body_edges: list[dict] = []
+        for idx, edge in enumerate(body_edges):
+            norm = _normalize_edge_dict(edge)
+            if not norm:
+                migration_log.append({
+                    'type': 'loop_body_edge_invalid',
+                    'nodeId': loop_id,
+                    'index': idx,
+                })
+                continue
+            if norm['source'] not in node_ids or norm['target'] not in node_ids:
+                migration_log.append({
+                    'type': 'loop_body_edge_node_missing',
+                    'nodeId': loop_id,
+                    'edgeId': norm['id'],
+                })
+                continue
+            base_id = norm['id'] or f'edge-loop-{loop_id}-{idx}'
+            edge_id = base_id
+            suffix = 0
+            while edge_id in used_edge_ids:
+                suffix += 1
+                edge_id = f'{base_id}-{suffix}'
+            norm['id'] = edge_id
+            used_edge_ids.add(edge_id)
+            normalized_body_edges.append(norm)
+
+        # 计算 bodyNodeIds 中节点在 bodyEdges 内的入度
+        in_degree = {nid: 0 for nid in body_node_ids}
+        for edge in normalized_body_edges:
+            if edge['target'] in in_degree:
+                in_degree[edge['target']] += 1
+
+        # 筛选入口节点：在 bodyEdges 里出现过且入度为 0
+        candidate_entries = [
+            nid for nid in body_node_ids
+            if in_degree.get(nid, 0) == 0
+            and (any(e['source'] == nid for e in normalized_body_edges)
+                 or any(e['target'] == nid for e in normalized_body_edges))
+        ]
+
+        # 最常见的旧形态：循环体里只有一个节点，bodyEdges 为空
+        if not candidate_entries and not normalized_body_edges and body_node_ids:
+            candidate_entries = [body_node_ids[0]]
+            migration_log.append({
+                'type': 'loop_single_node_body_promoted',
+                'nodeId': loop_id,
+                'entryId': candidate_entries[0],
+            })
+
+        if not candidate_entries:
+            migration_log.append({
+                'type': 'loop_no_entry_node',
+                'nodeId': loop_id,
+            })
+            # 无法安全迁移，保留 bodyNodeIds / bodyEdges 供人工修复
+            continue
+
+        entry_id = candidate_entries[0]
+        if len(candidate_entries) > 1:
+            migration_log.append({
+                'type': 'loop_multiple_entries_skipped',
+                'nodeId': loop_id,
+                'kept': entry_id,
+                'skipped': candidate_entries[1:],
+            })
+
+        body_edge_id = f'edge-loop-{loop_id}-body-entry'
+        suffix = 0
+        while body_edge_id in used_edge_ids:
+            suffix += 1
+            body_edge_id = f'edge-loop-{loop_id}-body-entry-{suffix}'
+        used_edge_ids.add(body_edge_id)
+        edges.append({
+            'id': body_edge_id,
+            'source': loop_id,
+            'sourcePort': 'body',
+            'target': entry_id,
+            'targetPort': 'default',
+            'type': 'smoothstep',
+            'edgeType': 'data',
+        })
+        edges.extend(normalized_body_edges)
+        promoted_loop_ids.add(loop_id)
+        migration_log.append({
+            'type': 'loop_body_edges_promoted',
+            'nodeId': loop_id,
+            'edgeCount': len(normalized_body_edges),
+        })
+
+    # ── 二次迁移：out_end / output → out ──
+    for i, edge in enumerate(edges):
+        edge = dict(edge)
+        source_port = edge.get('sourcePort', 'default')
+        if source_port in ('out_end', 'output'):
+            migration_log.append({
+                'type': 'loop_source_port_to_out',
+                'edgeId': edge['id'],
+                'oldPort': source_port,
+            })
+            edge['sourcePort'] = 'out'
+        edges[i] = edge
+
+    raw['edges'] = edges
+
     # ── 移除 router 节点和 continue 边 ──
     router_ids = {n['id'] for n in raw.get('nodes', []) if n.get('type') == 'router'}
     if router_ids:
@@ -165,6 +321,38 @@ def _migrate_definition(raw: dict) -> dict:
             migration_log.append({'type': 'router_node_removed', 'nodeId': rid})
 
     raw['edges'] = [e for e in raw.get('edges', []) if e.get('edgeType', e.get('edge_type', 'data')) not in ('break', 'continue')]
+
+    # ── 最终清理：LoopConfig 只保留 maxIterations ──
+    # 成功迁移的 Loop 清除旧字段；无法确定入口的 Loop 保留 bodyNodeIds / bodyEdges
+    # 供人工修复，避免用户打开旧工作流再保存时丢失循环体数据。
+    nodes = list(raw.get('nodes', []))
+    for i, node in enumerate(nodes):
+        node = dict(node)
+        config = dict(node.get('config', {}))
+        lc = config.get('loopConfig')
+        if isinstance(lc, dict):
+            max_iter = lc.get('maxIterations', 10)
+            keep_old_body = node['id'] not in promoted_loop_ids
+            allowed_fields = {'maxIterations'}
+            if keep_old_body:
+                allowed_fields.update({'bodyNodeIds', 'bodyEdges'})
+            removed_fields = [k for k in lc.keys() if k not in allowed_fields]
+            if removed_fields:
+                migration_log.append({
+                    'type': 'loop_config_simplified',
+                    'nodeId': node['id'],
+                    'removedFields': removed_fields,
+                })
+            new_lc: dict[str, Any] = {'maxIterations': max_iter}
+            if keep_old_body:
+                if lc.get('bodyNodeIds'):
+                    new_lc['bodyNodeIds'] = lc['bodyNodeIds']
+                if lc.get('bodyEdges'):
+                    new_lc['bodyEdges'] = lc['bodyEdges']
+            config['loopConfig'] = new_lc
+        node['config'] = config
+        nodes[i] = node
+    raw['nodes'] = nodes
 
     if migration_log:
         raw['_migration_log'] = migration_log

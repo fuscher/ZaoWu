@@ -83,10 +83,11 @@ def test_migrate_loop_old_mode_and_fields_are_persisted():
     migrated = _migrate_definition(raw)
     node = migrated['nodes'][0]
     lc = node['config']['loopConfig']
-    assert lc['mode'] == 'canvas'
-    assert lc['maxIterations'] == 10
-    assert 'condition' not in lc
-    assert 'iterateOver' not in lc
+    assert lc == {'maxIterations': 10}
+    assert any(
+        log['type'] == 'loop_mode_removed' and log['oldMode'] == 'for'
+        for log in migrated['_migration_log']
+    )
 
 
 def test_migrate_loop_edge_ports_are_persisted():
@@ -103,7 +104,7 @@ def test_migrate_loop_edge_ports_are_persisted():
     }
     migrated = _migrate_definition(raw)
     edge = migrated['edges'][0]
-    assert edge['sourcePort'] == 'out_end'
+    assert edge['sourcePort'] == 'out'
     assert edge['targetPort'] == 'in'
 
 
@@ -141,3 +142,116 @@ def test_migrate_does_not_mutate_input():
     original_mode = raw['nodes'][0]['config']['conditionConfig']['mode']
     _migrate_definition(raw)
     assert raw['nodes'][0]['config']['conditionConfig']['mode'] == original_mode
+
+
+def test_migrate_loop_body_edges_promoted():
+    """旧 bodyNodeIds / bodyEdges 应被提升为真实工作流边，loopConfig 仅保留 maxIterations。"""
+    raw = {
+        'id': 'wf-1',
+        'name': 'Test',
+        'nodes': [
+            {'id': 'loop-1', 'type': 'loop', 'config': {
+                'loopConfig': {
+                    'maxIterations': 5,
+                    'bodyNodeIds': ['body_1', 'body_2'],
+                    'bodyEdges': [
+                        {'id': 'be1', 'source': 'body_1', 'sourcePort': 'default',
+                         'target': 'body_2', 'targetPort': 'default'},
+                    ],
+                }
+            }},
+            {'id': 'body_1', 'type': 'tool', 'config': {}},
+            {'id': 'body_2', 'type': 'tool', 'config': {}},
+        ],
+        'edges': [],
+    }
+    migrated = _migrate_definition(raw)
+    loop_node = migrated['nodes'][0]
+    assert loop_node['config']['loopConfig'] == {'maxIterations': 5}
+
+    edge_ports = {(e['source'], e['sourcePort'], e['target'], e['targetPort']) for e in migrated['edges']}
+    assert ('loop-1', 'body', 'body_1', 'default') in edge_ports
+    assert ('body_1', 'default', 'body_2', 'default') in edge_ports
+
+
+def test_migrate_loop_body_edge_idempotent():
+    """已存在 loop.body 边时不再重复生成。"""
+    raw = {
+        'id': 'wf-1',
+        'name': 'Test',
+        'nodes': [
+            {'id': 'loop-1', 'type': 'loop', 'config': {
+                'loopConfig': {
+                    'maxIterations': 5,
+                    'bodyNodeIds': ['body_1'],
+                    'bodyEdges': [],
+                }
+            }},
+            {'id': 'body_1', 'type': 'tool', 'config': {}},
+        ],
+        'edges': [
+            {'id': 'existing-body', 'source': 'loop-1', 'sourcePort': 'body',
+             'target': 'body_1', 'targetPort': 'default'},
+        ],
+    }
+    migrated = _migrate_definition(raw)
+    body_edges = [e for e in migrated['edges']
+                  if e['source'] == 'loop-1' and e['sourcePort'] == 'body']
+    assert len(body_edges) == 1
+    assert body_edges[0]['id'] == 'existing-body'
+
+
+def test_migrate_loop_single_node_body_promoted():
+    """最常见的旧形态：循环体里只有一个节点，bodyEdges 为空，应生成 loop.body 边。"""
+    raw = {
+        'id': 'wf-1',
+        'name': 'Test',
+        'nodes': [
+            {'id': 'loop-1', 'type': 'loop', 'config': {
+                'loopConfig': {
+                    'maxIterations': 5,
+                    'bodyNodeIds': ['body_1'],
+                    'bodyEdges': [],
+                }
+            }},
+            {'id': 'body_1', 'type': 'tool', 'config': {}},
+        ],
+        'edges': [],
+    }
+    migrated = _migrate_definition(raw)
+    loop_node = migrated['nodes'][0]
+    assert loop_node['config']['loopConfig'] == {'maxIterations': 5}
+    edge_ports = {(e['source'], e['sourcePort'], e['target'], e['targetPort']) for e in migrated['edges']}
+    assert ('loop-1', 'body', 'body_1', 'default') in edge_ports
+
+
+def test_migrate_loop_cycle_preserves_body_node_ids():
+    """bodyEdges 成环导致无法确定入口时，应保留 bodyNodeIds 供人工修复。"""
+    raw = {
+        'id': 'wf-1',
+        'name': 'Test',
+        'nodes': [
+            {'id': 'loop-1', 'type': 'loop', 'config': {
+                'loopConfig': {
+                    'maxIterations': 5,
+                    'bodyNodeIds': ['body_1', 'body_2'],
+                    'bodyEdges': [
+                        {'id': 'be1', 'source': 'body_1', 'sourcePort': 'default',
+                         'target': 'body_2', 'targetPort': 'default'},
+                        {'id': 'be2', 'source': 'body_2', 'sourcePort': 'default',
+                         'target': 'body_1', 'targetPort': 'default'},
+                    ],
+                }
+            }},
+            {'id': 'body_1', 'type': 'tool', 'config': {}},
+            {'id': 'body_2', 'type': 'tool', 'config': {}},
+        ],
+        'edges': [],
+    }
+    migrated = _migrate_definition(raw)
+    loop_node = migrated['nodes'][0]
+    lc = loop_node['config']['loopConfig']
+    assert lc['maxIterations'] == 5
+    assert lc.get('bodyNodeIds') == ['body_1', 'body_2']
+    assert len(lc.get('bodyEdges', [])) == 2
+    assert not any(e['source'] == 'loop-1' and e['sourcePort'] == 'body' for e in migrated['edges'])

@@ -64,11 +64,11 @@ const items: PaletteItem[] = [
     icon: RotateCcw,
     description: t('workflow.nodes.loopDesc'),
     defaultData: {
-      label: t('workflow.nodes.loop'),
-      config: {
-        loopConfig: { mode: 'canvas', maxIterations: 10, bodyNodeIds: [], bodyEdges: [] },
+        label: t('workflow.nodes.loop'),
+        config: {
+          loopConfig: { maxIterations: 10 },
+        },
       },
-    },
   },
   {
     type: 'end',
