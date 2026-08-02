@@ -475,10 +475,16 @@ async def save(definition: WorkflowDefinition) -> WorkflowDefinition:
         existing = next((w for w in data['workflows'] if w['id'] == definition.id), None)
         definition.version = (existing.get('version', 0) + 1) if existing else 1
         definition.updated_at = _now_ms()
-        if not existing:
-            definition.created_at = definition.updated_at
         if existing:
+            # lastRunAt / runCount 由 touch_run_metadata 维护、createdAt 由系统管理，
+            # 保存时一律保留服务端值，避免被客户端陈旧数据覆盖——否则运行后再保存会让
+            # lastRunAt 倒退回运行前、runCount 卡在初始值+1，破坏 Launcher 的「最近」排序。
+            definition.last_run_at = existing.get('lastRunAt')
+            definition.run_count = existing.get('runCount', 0)
+            definition.created_at = existing.get('createdAt') or definition.updated_at
             data['workflows'] = [w for w in data['workflows'] if w['id'] != definition.id]
+        else:
+            definition.created_at = definition.updated_at
         # 保存前先做迁移（确保新创建的工作流也经过规范化）
         raw = _definition_to_dict(definition)
         raw = _migrate_definition(raw)
@@ -495,8 +501,12 @@ async def list_all() -> list[dict]:
         {
             'id': w.get('id'),
             'name': w.get('name'),
+            'description': w.get('description', ''),
+            'createdAt': w.get('createdAt'),
             'updatedAt': w.get('updatedAt'),
+            'lastRunAt': w.get('lastRunAt'),
             'version': w.get('version', 1),
+            'runCount': w.get('runCount', 0),
         }
         for w in data.get('workflows', [])
     ]
@@ -511,6 +521,18 @@ async def delete(workflow_id: str) -> bool:
             return False
         await asyncio.to_thread(_write_workflows_unlocked, data)
     return True
+
+
+async def touch_run_metadata(workflow_id: str, run_time: int) -> None:
+    """更新工作流最近运行时间和运行次数。"""
+    async with _get_workflow_lock():
+        data = await asyncio.to_thread(_read_workflows_unlocked)
+        for w in data.get('workflows', []):
+            if w.get('id') == workflow_id:
+                w['lastRunAt'] = run_time
+                w['runCount'] = w.get('runCount', 0) + 1
+                break
+        await asyncio.to_thread(_write_workflows_unlocked, data)
 
 
 def _read_runs_unlocked() -> dict:

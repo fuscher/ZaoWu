@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
 import { useWorkflowEngine } from '@/composables/useWorkflowEngine'
 import WorkflowCanvas from './WorkflowCanvas.vue'
 import WorkflowToolbar from './WorkflowToolbar.vue'
+import WorkflowLauncher from './WorkflowLauncher.vue'
 import PropertyPanel from './PropertyPanel.vue'
 import InspectPanel from './InspectPanel.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import type { WorkflowDefinition } from '@/types/workflow'
+import type { WorkflowSummary } from '@/services/workflow'
 import { fetchWorkflow, createWorkflow, updateWorkflow, deleteWorkflow, listWorkflows, exportWorkflowToFile } from '@/services/workflow'
-import type { WorkflowSummary } from './WorkflowToolbar.vue'
 
 const props = defineProps<{
   theme: 'dark' | 'light'
@@ -22,9 +23,15 @@ const engine = useWorkflowEngine()
 
 const showInspect = ref(false)
 const runError = ref<string | null>(null)
+const showLauncher = computed(() => workflowStore.showLauncher)
 const workflowsList = ref<WorkflowSummary[]>([])
+const listError = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const canvasRef = ref<InstanceType<typeof WorkflowCanvas> | null>(null)
+
+// ── 切换/新建前的未保存改动确认 ──
+const dirtyConfirmVisible = ref(false)
+let pendingAction: (() => void | Promise<void>) | null = null
 
 const workflowName = computed(() => workflowStore.workflow?.name ?? t('workflow.untitled'))
 const isRunning = computed(() => engine.isRunning.value)
@@ -54,25 +61,79 @@ const confirmationMessage = computed(() => {
 async function refreshWorkflowList() {
   try {
     workflowsList.value = await listWorkflows()
+    listError.value = null
   } catch (e) {
     workflowsList.value = []
+    listError.value = e instanceof Error ? e.message : String(e)
   }
 }
 
-function handleCreateBlank() {
-  const now = Date.now()
-  const def: WorkflowDefinition = {
-    id: `wf-${now}`,
-    name: t('workflow.untitled'),
-    version: 1,
-    nodes: [],
-    edges: [],
-    variables: [],
-    executionConfig: { autoApproveWrites: false },
-    createdAt: now,
-    updatedAt: now,
+// 当前工作流有未保存改动时，先弹确认框再执行会丢弃改动的动作（打开/新建/导入）
+function guardDirty(action: () => void | Promise<void>) {
+  if (workflowStore.isDirty) {
+    pendingAction = action
+    dirtyConfirmVisible.value = true
+  } else {
+    action()
   }
-  workflowStore.setWorkflow(def)
+}
+
+async function confirmDiscardChanges() {
+  dirtyConfirmVisible.value = false
+  const action = pendingAction
+  pendingAction = null
+  if (action) await action()
+}
+
+function cancelDiscardChanges() {
+  dirtyConfirmVisible.value = false
+  pendingAction = null
+}
+
+function handleCreateBlank() {
+  guardDirty(() => {
+    const now = Date.now()
+    const def: WorkflowDefinition = {
+      id: `wf-${now}`,
+      name: t('workflow.untitled'),
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: [],
+      executionConfig: { autoApproveWrites: false },
+      createdAt: now,
+      updatedAt: now,
+    }
+    workflowStore.setWorkflow(def)
+    workflowStore.setShowLauncher(false)
+  })
+}
+
+async function handleCreateNamed(name: string) {
+  guardDirty(async () => {
+    const now = Date.now()
+    const def: WorkflowDefinition = {
+      id: `wf-${now}`,
+      name: name.trim() || t('workflow.untitled'),
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: [],
+      executionConfig: { autoApproveWrites: false },
+      createdAt: now,
+      updatedAt: now,
+    }
+    try {
+      runError.value = null
+      const saved = await createWorkflow(def)
+      workflowStore.setWorkflow(saved)
+      workflowStore.markClean()
+      workflowStore.setShowLauncher(false)
+      await refreshWorkflowList()
+    } catch (e) {
+      runError.value = e instanceof Error ? e.message : String(e)
+    }
+  })
 }
 
 async function handleSave() {
@@ -123,10 +184,15 @@ async function handleSaveAs() {
 }
 
 async function handleLoad(id: string) {
+  guardDirty(() => loadWorkflow(id))
+}
+
+async function loadWorkflow(id: string) {
   try {
     runError.value = null
     const def = await fetchWorkflow(id)
     workflowStore.setWorkflow(def)
+    workflowStore.setShowLauncher(false)
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
   }
@@ -170,7 +236,8 @@ async function handleDelete(id: string) {
     await deleteWorkflow(id)
     await refreshWorkflowList()
     if (workflowStore.workflow?.id === id) {
-      handleCreateBlank()
+      workflowStore.setWorkflow(null)
+      workflowStore.setShowLauncher(true)
     }
   } catch (e) {
     runError.value = e instanceof Error ? e.message : String(e)
@@ -215,38 +282,56 @@ async function handleImport(event: Event) {
   const target = event.target as HTMLInputElement
   const file = target.files?.[0]
   if (!file) return
-  try {
-    runError.value = null
-    const text = await file.text()
-    const imported = JSON.parse(text) as Partial<WorkflowDefinition>
-    if (!Array.isArray(imported.nodes) || !imported.id || !imported.name) {
-      throw new Error(t('workflow.importInvalid'))
+  guardDirty(async () => {
+    try {
+      runError.value = null
+      const text = await file.text()
+      const imported = JSON.parse(text) as Partial<WorkflowDefinition>
+      if (!Array.isArray(imported.nodes) || !imported.id || !imported.name) {
+        throw new Error(t('workflow.importInvalid'))
+      }
+      const now = Date.now()
+      const def: WorkflowDefinition = {
+        ...imported,
+        id: `wf-${now}`,
+        name: `${imported.name || t('workflow.untitled')} (${t('workflow.importSuffix')})`,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      } as WorkflowDefinition
+      const saved = await createWorkflow(def)
+      workflowStore.setWorkflow(saved)
+      workflowStore.setShowLauncher(false)
+      await refreshWorkflowList()
+    } catch (e) {
+      runError.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      if (fileInput.value) fileInput.value.value = ''
     }
-    const now = Date.now()
-    const def: WorkflowDefinition = {
-      ...imported,
-      id: `wf-${now}`,
-      name: `${imported.name || t('workflow.untitled')} (${t('workflow.importSuffix')})`,
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    } as WorkflowDefinition
-    const saved = await createWorkflow(def)
-    workflowStore.setWorkflow(saved)
-    await refreshWorkflowList()
-  } catch (e) {
-    runError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    if (fileInput.value) fileInput.value.value = ''
-  }
+  })
 }
 
 onMounted(() => {
   if (!workflowStore.workflow) {
-    handleCreateBlank()
+    workflowStore.setShowLauncher(true)
+  } else {
+    workflowStore.setShowLauncher(false)
   }
   refreshWorkflowList()
 })
+
+// 运行结束后刷新列表：touch_run_metadata 在 wf_started 时更新了服务端 lastRunAt/runCount，
+// 前端列表需重新拉取才能在 Launcher 中反映最新的「最近运行」。
+watch(isRunning, (now, prev) => {
+  if (prev && !now) {
+    refreshWorkflowList()
+  }
+})
+
+function handleOpenLauncher() {
+  workflowStore.setShowLauncher(true)
+  refreshWorkflowList()
+}
 
 function handleDeleteSelected() {
   canvasRef.value?.deleteSelectedItems()
@@ -272,6 +357,7 @@ function handleRedo() {
 <template>
   <div class="workflow-panel" :class="`theme-${props.theme}`">
     <WorkflowToolbar
+      v-if="!showLauncher"
       :id="workflowStore.workflow?.id"
       :name="workflowName"
       :is-running="isRunning"
@@ -282,6 +368,7 @@ function handleRedo() {
       @create-blank="handleCreateBlank"
       @save="handleSave"
       @save-as="handleSaveAs"
+      @open-launcher="handleOpenLauncher"
       @load="handleLoad"
       @delete="handleDelete"
       @rename="handleRename"
@@ -304,17 +391,36 @@ function handleRedo() {
       @change="handleImport"
     />
     <div v-if="runError" class="error-banner">{{ runError }}</div>
-    <div class="workflow-body">
-      <WorkflowCanvas ref="canvasRef" class="workflow-canvas-area" />
-      <PropertyPanel class="workflow-property" />
-    </div>
-    <InspectPanel v-if="showInspect" class="workflow-inspect" />
+    <WorkflowLauncher
+      v-if="showLauncher"
+      :workflows="workflowsList"
+      :list-error="listError"
+      :theme="props.theme"
+      @create-named="handleCreateNamed"
+      @import="triggerImport"
+      @open="handleLoad"
+      @delete="handleDelete"
+    />
+    <template v-else>
+      <div class="workflow-body">
+        <WorkflowCanvas ref="canvasRef" class="workflow-canvas-area" />
+        <PropertyPanel class="workflow-property" />
+      </div>
+      <InspectPanel v-if="showInspect" class="workflow-inspect" />
+      <ConfirmDialog
+        :visible="confirmationVisible"
+        :title="t('workflow.confirmToolTitle')"
+        :message="confirmationMessage"
+        @confirm="handleConfirmTool(true)"
+        @cancel="handleConfirmTool(false)"
+      />
+    </template>
     <ConfirmDialog
-      :visible="confirmationVisible"
-      :title="t('workflow.confirmToolTitle')"
-      :message="confirmationMessage"
-      @confirm="handleConfirmTool(true)"
-      @cancel="handleConfirmTool(false)"
+      :visible="dirtyConfirmVisible"
+      :title="t('workflow.unsavedChangesTitle')"
+      :message="t('workflow.unsavedChangesMessage')"
+      @confirm="confirmDiscardChanges"
+      @cancel="cancelDiscardChanges"
     />
   </div>
 </template>

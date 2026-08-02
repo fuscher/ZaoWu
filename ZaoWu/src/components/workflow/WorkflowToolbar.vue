@@ -2,13 +2,7 @@
 import { ref, nextTick } from 'vue'
 import { Play, Square, Save, Download, Upload, Plus, Activity, FolderOpen, Trash2, Copy, ClipboardPaste, Scissors, Undo2, Redo2 } from '@lucide/vue'
 import { useI18n } from '@/i18n'
-
-export interface WorkflowSummary {
-  id: string
-  name: string
-  updatedAt: number
-  version: number
-}
+import type { WorkflowSummary } from '@/services/workflow'
 
 const props = defineProps<{
   id?: string
@@ -29,6 +23,7 @@ const emit = defineEmits<{
   toggleInspect: []
   run: []
   stop: []
+  openLauncher: []
   load: [id: string]
   delete: [id: string]
   rename: [name: string]
@@ -40,7 +35,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const openMenuVisible = ref(false)
 const renameDialogVisible = ref(false)
 const renameDialogInput = ref<HTMLInputElement | null>(null)
 const renameDialogValue = ref('')
@@ -115,11 +109,6 @@ function confirmDelete() {
 function cancelDelete() {
   deleteDialogVisible.value = false
 }
-
-function handleLoad(id: string) {
-  openMenuVisible.value = false
-  emit('load', id)
-}
 </script>
 
 <template>
@@ -142,24 +131,10 @@ function handleLoad(id: string) {
         <Trash2 :size="14" />
         <span>{{ t('workflow.delete') }}</span>
       </button>
-      <div class="open-menu-wrapper">
-        <button class="tool-btn" :title="t('workflow.open')" @click="openMenuVisible = !openMenuVisible">
-          <FolderOpen :size="14" />
-          <span>{{ t('workflow.open') }}</span>
-        </button>
-        <div v-if="openMenuVisible" class="open-menu">
-          <div v-if="!props.workflows?.length" class="open-menu-empty">{{ t('workflow.noWorkflows') }}</div>
-          <div
-            v-for="w in props.workflows"
-            :key="w.id"
-            class="open-menu-item"
-            @click="handleLoad(w.id)"
-          >
-            <span class="open-menu-name">{{ w.name }}</span>
-            <span class="open-menu-meta">v{{ w.version }}</span>
-          </div>
-        </div>
-      </div>
+      <button class="tool-btn" :title="t('workflow.open')" @click="emit('openLauncher')">
+        <FolderOpen :size="14" />
+        <span>{{ t('workflow.open') }}</span>
+      </button>
 
       <div class="toolbar-divider" />
 
@@ -597,58 +572,6 @@ function handleLoad(id: string) {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-}
-
-.open-menu-wrapper {
-  position: relative;
-}
-
-.open-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  min-width: 240px;
-  max-height: 320px;
-  overflow-y: auto;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
-  z-index: 100;
-}
-
-.open-menu-empty {
-  padding: 12px;
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.open-menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.open-menu-item:hover {
-  background: var(--bg-hover);
-}
-
-.open-menu-name {
-  font-size: 12px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.open-menu-meta {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  flex-shrink: 0;
 }
 
 .tool-btn {

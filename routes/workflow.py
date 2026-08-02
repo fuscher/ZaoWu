@@ -59,8 +59,10 @@ async def run_workflow(workflow_id):
             ):
                 etype = event.get('type')
                 if etype == 'wf_started':
+                    start_time = event.get('startTime', _now_ms())
                     await workflow_service.persist_run_start(
-                        workflow_id, run_id, event.get('startTime', _now_ms()), initial_input)
+                        workflow_id, run_id, start_time, initial_input)
+                    await workflow_service.touch_run_metadata(workflow_id, start_time)
                 elif etype == 'wf_completed':
                     await workflow_service.persist_run_end(
                         workflow_id, run_id, 'completed',

@@ -23,6 +23,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const edgeRuntime = ref<Record<string, boolean>>({})
   const activeRunId = ref<string | null>(null)
   const isDirty = ref(false)
+  const showLauncher = ref(true)
   let lastSavedSnapshot = ''
 
   // ── 撤销 / 重做 ──
@@ -99,21 +100,26 @@ export const useWorkflowStore = defineStore('workflow', () => {
     selectNodes(nodeId ? [nodeId] : null)
   }
 
-  function setWorkflow(def: WorkflowDefinition) {
-    workflow.value = def
-    nodeRuntime.value = {}
-    activeRunId.value = null
-    selectedNodeIds.value = []
-    isDirty.value = false
+function setWorkflow(def: WorkflowDefinition | null) {
+  workflow.value = def
+  nodeRuntime.value = {}
+  activeRunId.value = null
+  selectedNodeIds.value = []
+  isDirty.value = false
+  if (def) {
     lastSavedSnapshot = JSON.stringify({
       nodes: def.nodes,
       edges: def.edges,
       name: def.name,
     })
     historyStack.value = [lastSavedSnapshot]
-    historyIndex.value = 0
-    historyVersion.value = 0
+  } else {
+    lastSavedSnapshot = ''
+    historyStack.value = []
   }
+  historyIndex.value = 0
+  historyVersion.value = 0
+}
 
   function updateNodeConfig(nodeId: string, config: Record<string, unknown>) {
     if (!workflow.value) return
@@ -187,6 +193,10 @@ export const useWorkflowStore = defineStore('workflow', () => {
     isDirty.value = current !== lastSavedSnapshot
   }
 
+  function setShowLauncher(value: boolean) {
+    showLauncher.value = value
+  }
+
   return {
     workflow,
     nodes,
@@ -212,6 +222,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
     markClean,
     checkDirty,
     isDirty,
+    showLauncher,
+    setShowLauncher,
     // 撤销 / 重做
     historyVersion,
     commitHistory,

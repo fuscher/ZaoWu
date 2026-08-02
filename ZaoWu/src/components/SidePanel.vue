@@ -4,6 +4,7 @@ import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
 import { useProjectsStore } from '@/stores/projects'
 import { usePluginsStore } from '@/stores/plugins'
+import { useWorkflowStore } from '@/stores/workflow'
 import { PluginHost, pluginEventBus } from '@/plugin-system'
 import ExplorerPanel from './ExplorerPanel.vue'
 import SearchPanel from './SearchPanel.vue'
@@ -26,6 +27,7 @@ const { t, locale } = useI18n()
 const gitStore = useGitStore()
 const projectsStore = useProjectsStore()
 const pluginsStore = usePluginsStore()
+const workflowStore = useWorkflowStore()
 
 function getLocalizedLabel(label: Record<string, string>): string {
   return label[locale.value] ?? label['en'] ?? Object.values(label)[0] ?? ''
@@ -357,10 +359,17 @@ watch(
         <RoomPanel />
       </template>
       <template v-else-if="view === 'workflow'">
-        <div class="workflow-drag-hint">
-          <span>{{ t('workflow.dragHint') }}</span>
-        </div>
-        <NodePalette class="side-node-palette" />
+        <template v-if="workflowStore.showLauncher">
+          <div class="workflow-launcher-hint">
+            <span>{{ t('workflow.launcherSideHint') }}</span>
+          </div>
+        </template>
+        <template v-else>
+          <div class="workflow-drag-hint">
+            <span>{{ t('workflow.dragHint') }}</span>
+          </div>
+          <NodePalette class="side-node-palette" />
+        </template>
       </template>
       <template v-else-if="view === 'settings'">
         <div class="list-item" @click="handleBannerClick('appearance')">
@@ -730,6 +739,18 @@ watch(
   background: var(--bg-secondary);
   border: 1px dashed var(--border-glass);
   color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.workflow-launcher-hint {
+  padding: 16px 12px;
+  margin: 4px 4px 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-glass);
+  color: var(--text-tertiary);
   font-size: 12px;
   line-height: 1.5;
   text-align: center;

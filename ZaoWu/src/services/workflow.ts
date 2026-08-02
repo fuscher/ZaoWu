@@ -13,8 +13,19 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return data
 }
 
-export async function listWorkflows(): Promise<{ id: string; name: string; updatedAt: number; version: number }[]> {
-  const data = await request<{ workflows: { id: string; name: string; updatedAt: number; version: number }[] }>(BASE)
+export interface WorkflowSummary {
+  id: string
+  name: string
+  description?: string
+  createdAt?: number
+  updatedAt: number
+  lastRunAt?: number
+  version: number
+  runCount?: number
+}
+
+export async function listWorkflows(): Promise<WorkflowSummary[]> {
+  const data = await request<{ workflows: WorkflowSummary[] }>(BASE)
   return data.workflows
 }
 

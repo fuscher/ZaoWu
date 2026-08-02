@@ -1,6 +1,12 @@
 import pytest
 
-from services.workflow_service import _migrate_definition
+from services.workflow_service import (
+    _migrate_definition,
+    _dict_to_definition,
+    save,
+    touch_run_metadata,
+    list_all,
+)
 
 
 def test_migrate_condition_code_to_expression_is_persisted():
@@ -255,3 +261,70 @@ def test_migrate_loop_cycle_preserves_body_node_ids():
     assert lc.get('bodyNodeIds') == ['body_1', 'body_2']
     assert len(lc.get('bodyEdges', [])) == 2
     assert not any(e['source'] == 'loop-1' and e['sourcePort'] == 'body' for e in migrated['edges'])
+
+
+@pytest.mark.anyio
+async def test_save_preserves_run_metadata_after_touch(tmp_path, monkeypatch):
+    """save() 不应让客户端陈旧的 lastRunAt/runCount 覆盖 touch_run_metadata 写入的运行元数据。
+
+    回归场景：运行后 touch_run_metadata 更新了服务端 lastRunAt/runCount，但前端 store
+    仍持有运行前的陈旧值；用户再次保存时，PUT body 带陈旧值，若 save() 不保留服务端值，
+    会让 lastRunAt 倒退、runCount 卡在初始值+1，破坏 Launcher 的「最近」排序。
+    """
+    import services.workflow_service as workflow_service_module
+    monkeypatch.setattr(
+        workflow_service_module, 'WORKFLOWS_FILE', str(tmp_path / 'workflows.json')
+    )
+
+    # 1. 创建工作流
+    definition = _dict_to_definition({
+        'id': 'wf-meta', 'name': 'Meta', 'nodes': [], 'edges': [],
+    })
+    await save(definition)
+    assert definition.run_count == 0
+    assert definition.last_run_at is None
+
+    # 2. 模拟一次运行：touch_run_metadata 更新服务端 lastRunAt/runCount
+    run_time = 1_700_000_000_000
+    await touch_run_metadata('wf-meta', run_time)
+    summary = next(s for s in await list_all() if s['id'] == 'wf-meta')
+    assert summary['lastRunAt'] == run_time
+    assert summary['runCount'] == 1
+
+    # 3. 模拟前端带着运行前的陈旧 lastRunAt/runCount 再次保存
+    stale_def = _dict_to_definition({
+        'id': 'wf-meta', 'name': 'Meta Renamed', 'nodes': [], 'edges': [],
+        'lastRunAt': None, 'runCount': 0,
+    })
+    await save(stale_def)
+
+    # 4. 服务端运行元数据应被保留，未被陈旧值覆盖
+    summary = next(s for s in await list_all() if s['id'] == 'wf-meta')
+    assert summary['lastRunAt'] == run_time
+    assert summary['runCount'] == 1
+    assert summary['name'] == 'Meta Renamed'
+
+
+@pytest.mark.anyio
+async def test_run_count_accumulates_across_runs(tmp_path, monkeypatch):
+    """连续多次运行后 runCount 应正确累加，不被每次保存前的陈旧值复位。"""
+    import services.workflow_service as workflow_service_module
+    monkeypatch.setattr(
+        workflow_service_module, 'WORKFLOWS_FILE', str(tmp_path / 'workflows.json')
+    )
+
+    await save(_dict_to_definition({
+        'id': 'wf-acc', 'name': 'Acc', 'nodes': [], 'edges': [],
+    }))
+
+    for i in range(3):
+        await touch_run_metadata('wf-acc', 1_700_000_000_000 + i)
+        # 每次运行后都模拟前端用陈旧 runCount=0 保存（运行前的值）
+        await save(_dict_to_definition({
+            'id': 'wf-acc', 'name': 'Acc', 'nodes': [], 'edges': [],
+            'lastRunAt': None, 'runCount': 0,
+        }))
+
+    summary = next(s for s in await list_all() if s['id'] == 'wf-acc')
+    assert summary['runCount'] == 3
+    assert summary['lastRunAt'] == 1_700_000_000_002
