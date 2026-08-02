@@ -208,8 +208,16 @@ class ConditionNode(BaseNode):
 
         if mode == 'expression':
             expression = condition_cfg.get('expression', 'True')
+            # 兼容模板写法：旧版提示词引导用户写 {{input}}，此处统一替换为变量名 input
+            expression = _re_module.sub(r'\{\{\s*input\s*\}\}', 'input', expression)
             try:
-                result = safe_eval(expression, {'input': raw_input})
+                result = safe_eval(expression, {
+                    'input': raw_input,
+                    # JS 风格布尔/空值别名，避免用户写小写 true/false/null 时抛 NameError
+                    'true': True,
+                    'false': False,
+                    'null': None,
+                })
                 branch = 'true' if result else 'false'
             except Exception as e:
                 ctx_node.error = f'条件表达式求值失败: {e}'

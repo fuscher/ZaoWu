@@ -520,7 +520,7 @@
       "expressionMode": "Expression",
       "promptMode": "Prompt Judge",
       "expression": "Condition Expression",
-      "expressionHint": "Available variable: {{input}}; supports comparison, arithmetic, boolean ops and re.search/match/findall",
+      "expressionHint": "Variable input is the upstream value ({{input}} also accepted), e.g. input == 'true'; supports comparison, arithmetic, boolean ops and re.search/match/findall",
       "prompt": "Prompt",
       "judgePrompt": "Judge Prompt",
       "judgePromptHint": "Describe the condition in natural language. Available variable: {{input}}",

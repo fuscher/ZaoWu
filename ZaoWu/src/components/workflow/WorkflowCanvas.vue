@@ -781,53 +781,90 @@ defineExpose({
   border-radius: 3px;
 }
 
-/* 框选命中的节点：蓝色辉光高亮 */
+/* 选中节点：柔和蓝光包裹（非矩形描边）*/
 :deep(.vue-flow__node.selected) {
+  border-radius: 12px;
   box-shadow:
-    0 0 0 2px #3b82f6,
-    0 0 16px 2px rgba(59, 130, 246, 0.55);
+    0 0 0 1.5px var(--accent-border),
+    0 0 16px 2px var(--accent-muted);
 }
 
-/* 框选命中的连接线：蓝色描边 + 辉光 */
-:deep(.vue-flow__edge.selected) .vue-flow__edge-path {
-  stroke: #3b82f6 !important;
-  stroke-width: 2.5;
-  filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.9));
+/* 框选命中的自定义边：蓝色描边 + 辉光 */
+:deep(.vue-flow__edge.selected) .edge-path,
+:deep(.vue-flow__edge.selected) .condition-edge .edge-path {
+  stroke: var(--accent) !important;
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 6px var(--accent));
 }
 
-/* ── Handle 扩大触摸区域 ── */
+/* ── Handle：半圆凹槽（缩小 + 灰色匹配节点配色）── */
 :deep(.vue-flow__handle) {
-  width: 14px;
+  width: 7px;
   height: 14px;
-  border: 2px solid var(--bg-secondary);
-  background: var(--border-glass);
-  border-radius: 50%;
-  transition: all 0.15s ease;
+  border: none;
+  background: var(--text-tertiary);
+  opacity: 0.5;
+  border-radius: 0;
+  transition: all 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
   cursor: crosshair;
   z-index: 5;
+  /* 覆盖 Vue Flow 默认的 translate(±50%, -50%)，仅做垂直居中 */
+  transform: translateY(-50%) !important;
 }
 
-:deep(.vue-flow__handle[type="source"]) {
-  right: -7px;
+/* 源端点：贴右壁，弧面朝内（左侧圆角） */
+:deep(.vue-flow__handle.source) {
+  right: 0 !important;
+  left: auto !important;
+  border-radius: 7px 0 0 7px;
 }
 
-:deep(.vue-flow__handle[type="target"]) {
-  left: -7px;
+/* 目标端点：贴左壁，弧面朝内（右侧圆角） */
+:deep(.vue-flow__handle.target) {
+  left: 0 !important;
+  right: auto !important;
+  border-radius: 0 7px 7px 0;
 }
 
+/* 悬停：向内扩展 + 点亮 */
 :deep(.vue-flow__handle:hover) {
-  width: 20px;
-  height: 20px;
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 10px rgba(59, 130, 246, 0.45);
+  width: 10px;
+  height: 18px;
+  opacity: 1;
+  box-shadow: 0 0 8px var(--accent);
 }
 
-:deep(.vue-flow__handle[type="source"]:hover) {
-  right: -10px;
+:deep(.vue-flow__handle.source:hover) {
+  border-radius: 10px 0 0 10px;
 }
 
-:deep(.vue-flow__handle[type="target"]:hover) {
-  left: -10px;
+:deep(.vue-flow__handle.target:hover) {
+  border-radius: 0 10px 10px 0;
+}
+
+/* 正在拖拽连线（源端） */
+:deep(.vue-flow__handle.connecting),
+:deep(.vue-flow__handle.vue-flow__handle-connecting) {
+  opacity: 1;
+  animation: handle-pulse 0.8s ease-in-out infinite;
+}
+
+/* 可连接目标高亮 */
+:deep(.vue-flow__handle.valid) {
+  background: var(--success);
+  opacity: 1;
+  box-shadow: 0 0 10px var(--success);
+}
+
+@keyframes handle-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 6px var(--accent);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 16px var(--accent);
+    opacity: 0.7;
+  }
 }
 </style>

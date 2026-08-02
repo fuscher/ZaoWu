@@ -307,9 +307,16 @@ async def execute_workflow(
                     # NOTE: 当前执行模型是“任一活跃入边即可触发”，不等待全部上游。
                     # 因此不支持 fan-in / join 语义：若一个节点有多条上游边，只要其中
                     # 一条先激活，节点就会以部分输入执行。标准排他分支 DAG 不受影响。
+                    #
+                    # 额外要求：入边的源节点必须已执行完成。条件节点只会 deactivate
+                    # 未选中分支的“直连边”，但死分支内部的下游边仍处于 active 状态；
+                    # 若不校验源节点完成，死分支上的节点会在其上游从未执行的情况下被
+                    # 误触发（表现为条件选了 F，却跑了对侧分支里的 LLM/工具节点）。
                     active_incoming = [
                         e for e in definition.edges
-                        if e.target == node_id and e.id in active_edges
+                        if e.target == node_id
+                        and e.id in active_edges
+                        and e.source in completed_node_ids
                     ]
                     if not active_incoming:
                         continue

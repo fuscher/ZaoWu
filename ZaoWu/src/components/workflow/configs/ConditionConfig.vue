@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
 import type { WorkflowNode, ConditionConfig as ConditionConfigType, ConditionRule, ModelSlot } from '@/types/workflow'
@@ -12,6 +12,9 @@ const props = defineProps<{
 const { t } = useI18n()
 const workflowStore = useWorkflowStore()
 
+// 表达式模式默认表达式：演示用 input 变量与上游输出做字符串比较
+const DEFAULT_EXPRESSION = "input == 'true'"
+
 const cfg = computed<ConditionConfigType>({
   get: () =>
     (props.node.config.conditionConfig as ConditionConfigType) ?? {
@@ -21,6 +24,16 @@ const cfg = computed<ConditionConfigType>({
     },
   set: (v) => workflowStore.updateNodeConfig(props.node.id, { conditionConfig: v }),
 })
+
+// 切换到表达式模式时，若表达式为空则填入默认表达式（不在挂载时填充，避免查看节点即标记 dirty）
+watch(
+  () => cfg.value.mode,
+  (mode) => {
+    if (mode === 'expression' && !cfg.value.expression) {
+      update({ expression: DEFAULT_EXPRESSION })
+    }
+  },
+)
 
 const modeOptions = [
   { value: 'simple', label: t('workflow.config.simpleMode') },
@@ -66,7 +79,7 @@ function updateRule(index: number, patch: Partial<ConditionRule>) {
     <template v-if="cfg.mode === 'expression'">
       <label class="field-label">{{ t('workflow.config.expression') }}</label>
       <textarea
-        :value="cfg.expression ?? 'True'"
+        :value="cfg.expression ?? DEFAULT_EXPRESSION"
         class="field-input mono"
         rows="3"
         @input="update({ expression: ($event.target as HTMLTextAreaElement).value })"

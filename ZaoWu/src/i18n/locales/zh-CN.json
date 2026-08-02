@@ -522,7 +522,7 @@
       "expressionMode": "表达式",
       "promptMode": "提示词判断",
       "expression": "条件表达式",
-      "expressionHint": "可用变量：{{input}}；支持比较、算术、布尔运算及 re.search/match/findall",
+      "expressionHint": "变量 input 为上游输入（也兼容 {{input}} 写法），如 input == 'true'；支持比较、算术、布尔运算及 re.search/match/findall",
       "prompt": "提示词",
       "judgePrompt": "判断提示词",
       "judgePromptHint": "用自然语言描述判断条件，可用变量：{{input}}",

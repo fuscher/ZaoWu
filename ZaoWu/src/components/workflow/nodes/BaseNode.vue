@@ -1,6 +1,16 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
-import { Bot, GitBranch, Hammer, Play, Square, Workflow, type LucideIcon } from '@lucide/vue'
+import {
+  Bot,
+  Check,
+  GitBranch,
+  Hammer,
+  Play,
+  Square,
+  Workflow,
+  X,
+  type LucideIcon,
+} from '@lucide/vue'
 import { computed } from 'vue'
 import type { NodeStatus } from '@/types/workflow'
 import { useI18n } from '@/i18n'
@@ -37,13 +47,21 @@ function portTitle(portId: string, dir: 'input' | 'output'): string {
 
 <template>
   <div class="base-node" :class="`status-${props.status}`">
-    <div v-if="props.status === 'running'" class="node-glow" />
+    <!-- 运行时扫描光效 -->
+    <div v-if="props.status === 'running'" class="node-scan-glow" />
+
+    <!-- 完成/错误：状态角标 -->
+    <div v-if="props.status === 'done'" class="status-badge badge-done">
+      <Check :size="10" stroke-width="3" />
+    </div>
+    <div v-if="props.status === 'error'" class="status-badge badge-error">
+      <X :size="10" stroke-width="3" />
+    </div>
 
     <div class="node-header">
       <component :is="iconComponent" class="node-icon" :size="16" />
-      <span>{{ props.label }}</span>
+      <span class="node-title">{{ props.label }}</span>
       <span v-if="props.tokens" class="token-badge">{{ props.tokens }}T</span>
-      <span class="status-dot" :class="props.status" />
     </div>
 
     <div class="node-body">
@@ -78,53 +96,135 @@ function portTitle(portId: string, dir: 'input' | 'output'): string {
 <style scoped>
 .base-node {
   position: relative;
-  min-width: 160px;
+  min-width: 170px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  overflow: hidden;
+  border-radius: 12px;
+  overflow: visible;
   font-size: 12px;
   color: var(--text-primary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease, border-color 0.25s ease, transform 0.15s ease;
 }
 
+.base-node:hover {
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+
+/* ── 状态色 ── */
 .status-running {
-  border-color: var(--accent);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border), 0 0 20px var(--accent-muted);
 }
 
 .status-done {
-  border-color: #22c55e;
+  border-color: var(--success);
+  box-shadow: 0 0 0 1px var(--success), 0 0 14px var(--success-muted);
 }
 
 .status-error {
-  border-color: #ef4444;
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger), 0 0 14px var(--danger-bg);
+  animation: error-shake 0.4s ease;
 }
 
-.node-glow {
+@keyframes error-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+}
+
+/* ── 扫描光效 ── */
+.node-scan-glow {
   position: absolute;
   inset: -2px;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  opacity: 0.5;
-  animation: glow-sweep 1.5s linear infinite;
+  border-radius: 13px;
+  overflow: hidden;
   pointer-events: none;
+  z-index: 0;
 }
 
-@keyframes glow-sweep {
+.node-scan-glow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -50%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(100, 210, 255, 0.22),
+    transparent
+  );
+  animation: scan-sweep 1.6s linear infinite;
+}
+
+@keyframes scan-sweep {
   0% {
-    transform: translateX(-100%);
+    left: -50%;
   }
   100% {
-    transform: translateX(100%);
+    left: 150%;
   }
 }
 
+/* ── 状态角标 ── */
+.status-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  z-index: 2;
+  box-shadow: var(--shadow-sm);
+  animation: badge-pop 0.3s ease;
+}
+
+.badge-done {
+  background: var(--success);
+}
+
+.badge-error {
+  background: var(--danger);
+}
+
+@keyframes badge-pop {
+  0% {
+    transform: scale(0);
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ── 头部 ── */
 .node-header {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 10px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-tertiary);
+  border-radius: 12px 12px 0 0;
 }
 
 .node-icon {
@@ -132,43 +232,28 @@ function portTitle(portId: string, dir: 'input' | 'output'): string {
   color: var(--accent);
 }
 
+.node-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .token-badge {
   margin-left: auto;
   font-size: 10px;
   color: var(--text-tertiary);
-}
-
-.status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-tertiary);
-}
-
-.status-dot.running {
-  background: var(--accent);
-  animation: pulse 1s ease-in-out infinite;
-}
-
-.status-dot.done {
-  background: #22c55e;
-}
-
-.status-dot.error {
-  background: #ef4444;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
+  background: var(--bg-glass);
+  padding: 2px 6px;
+  border-radius: 999px;
 }
 
 .node-body {
-  padding: 10px;
+  position: relative;
+  z-index: 1;
+  padding: 10px 12px;
   min-height: 32px;
+  border-radius: 0 0 12px 12px;
 }
 </style>
