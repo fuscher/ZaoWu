@@ -23,7 +23,11 @@ def agent_service():
         ToolRegistry.get_instance(),
         stop_event=asyncio.Event(),
     )
+    # 技能改为「全部启用即生效」后，_get_enabled_skills 读取全局 registry 全部
+    # enabled skills；测试间需保证 registry 干净，避免相互污染。
+    service.skill_registry.clear()
     yield service
+    service.skill_registry.clear()
     loop.close()
 
 
@@ -189,23 +193,28 @@ def test_build_system_prompt_replaces_placeholders(agent_service):
     assert service.project_path in prompt
 
 
-def test_build_system_prompt_injects_enabled_skill(agent_service):
+def test_build_system_prompt_injects_all_enabled_skills(agent_service):
     service = agent_service
-    skill = SkillDefinition(
-        name='code_review',
-        description='code review skill',
-        system_prompt='你是一位代码审查专家。',
+    skill_a = SkillDefinition(
+        name='aaa_skill',
+        description='a skill',
+        system_prompt='你是技能 A。',
     )
-    service.skill_registry.register(skill)
+    skill_b = SkillDefinition(
+        name='bbb_skill',
+        description='b skill',
+        system_prompt='你是技能 B。',
+    )
+    service.skill_registry.register(skill_a)
+    service.skill_registry.register(skill_b)
 
-    conv = {
-        'agentConfig': {
-            'selectedSkill': 'code_review',
-        },
-    }
-    prompt = service._build_system_prompt(conv)
-    assert '## 当前技能' in prompt
-    assert '你是一位代码审查专家。' in prompt
+    prompt = service._build_system_prompt({})
+    # 所有 enabled skills 均注入，按 name 字典序拼接
+    assert '## 当前技能：aaa_skill' in prompt
+    assert '你是技能 A。' in prompt
+    assert '## 当前技能：bbb_skill' in prompt
+    assert '你是技能 B。' in prompt
+    assert prompt.index('aaa_skill') < prompt.index('bbb_skill')
 
 
 def test_build_system_prompt_ignores_disabled_skill(agent_service):
@@ -217,47 +226,46 @@ def test_build_system_prompt_ignores_disabled_skill(agent_service):
     )
     service.skill_registry.register(skill, enabled=False)
 
-    conv = {
-        'agentConfig': {
-            'selectedSkill': 'code_review',
-        },
-    }
-    prompt = service._build_system_prompt(conv)
+    prompt = service._build_system_prompt({})
     assert '## 当前技能' not in prompt
     assert '你是一位代码审查专家。' not in prompt
 
 
-def test_build_system_prompt_ignores_unknown_skill(agent_service):
+def test_build_system_prompt_no_skill_section_without_enabled_skills(agent_service):
     service = agent_service
-    conv = {
-        'agentConfig': {
-            'selectedSkill': 'unknown_skill',
-        },
-    }
-    prompt = service._build_system_prompt(conv)
+    # 无任何启用技能时不注入技能段（取代原 ignores_unknown_skill：警告分支已移除）
+    prompt = service._build_system_prompt({})
     assert '## 当前技能' not in prompt
 
 
-def test_resolve_skill_config_merges_default_and_user_config(agent_service):
+def test_resolve_merged_skill_config_merges_multiple_skills(agent_service):
     service = agent_service
-    skill = SkillDefinition(
-        name='code_review',
-        description='code review skill',
-        default_config={'max_files': 5, 'strict': False},
+    skill_a = SkillDefinition(
+        name='aaa_skill',
+        description='a',
+        default_config={'key_a': 'a_default', 'shared': 'from_a'},
     )
-    service.skill_registry.register(skill)
+    skill_b = SkillDefinition(
+        name='bbb_skill',
+        description='b',
+        default_config={'key_b': 'b_default', 'shared': 'from_b'},
+    )
+    service.skill_registry.register(skill_a)
+    service.skill_registry.register(skill_b)
 
     conv = {
         'agentConfig': {
-            'selectedSkill': 'code_review',
             'skillConfig': {
-                'code_review': {'max_files': 10},
+                'aaa_skill': {'max_files': 10},
             },
         },
     }
-    config = service._resolve_skill_config(conv)
-    assert config['max_files'] == 10
-    assert config['strict'] is False
+    config = service._resolve_merged_skill_config(conv)
+    assert config['key_a'] == 'a_default'   # aaa default
+    assert config['key_b'] == 'b_default'   # bbb default
+    assert config['max_files'] == 10        # aaa user skillConfig 覆盖 default
+    # 冲突 key 按 skill.name 序后者覆盖：bbb 在 aaa 之后
+    assert config['shared'] == 'from_b'
 
 
 # ── Stage 9: F05 连续死循环检测 ───────────────────────────────
@@ -467,32 +475,58 @@ def test_f19_limit_path_takes_priority(tmp_path):
     assert os.path.realpath(str(project)) == paths[0]
 
 
-def test_resolve_skill_config_returns_empty_without_selected_skill(agent_service):
+def test_resolve_merged_skill_config_empty_without_enabled_skills(agent_service):
     service = agent_service
-    assert service._resolve_skill_config({}) == {}
-    assert service._resolve_skill_config({'agentConfig': {}}) == {}
+    assert service._resolve_merged_skill_config({}) == {}
+    assert service._resolve_merged_skill_config({'agentConfig': {}}) == {}
 
 
-def test_build_sandbox_allows_all_tools_without_skill(agent_service):
+def test_build_sandbox_allows_all_tools_without_enabled_skills(agent_service):
     service = agent_service
     sandbox = service._build_sandbox({'agentConfig': {}})
     assert sandbox.allowed_tools == set()
 
 
-def test_build_sandbox_restricts_to_allowed_tools(agent_service):
+def test_build_sandbox_merges_allowed_tools_union(agent_service):
     service = agent_service
-    skill = SkillDefinition(
-        name='restricted',
-        description='restricted skill',
+    skill_a = SkillDefinition(
+        name='aaa_skill',
+        description='a',
         allowed_tools=['read_file', 'search_code'],
     )
-    service.skill_registry.register(skill)
+    skill_b = SkillDefinition(
+        name='bbb_skill',
+        description='b',
+        allowed_tools=['search_code', 'write_file'],
+    )
+    service.skill_registry.register(skill_a)
+    service.skill_registry.register(skill_b)
 
-    sandbox = service._build_sandbox({'agentConfig': {'selectedSkill': 'restricted'}})
-    assert sandbox.allowed_tools == {'read_file', 'search_code'}
+    sandbox = service._build_sandbox({'agentConfig': {}})
+    assert sandbox.allowed_tools == {'read_file', 'search_code', 'write_file'}
 
 
-def test_build_sandbox_unrestricted_when_skill_disabled(agent_service):
+def test_build_sandbox_unrestricted_when_any_skill_has_empty_allowed_tools(agent_service):
+    """任一 enabled skill 无白名单（空）= 不限制 → 全放行。"""
+    service = agent_service
+    skill_a = SkillDefinition(
+        name='aaa_skill',
+        description='a',
+        allowed_tools=['read_file'],
+    )
+    skill_b = SkillDefinition(
+        name='bbb_skill',
+        description='b',
+        allowed_tools=[],  # 空 = 不限制
+    )
+    service.skill_registry.register(skill_a)
+    service.skill_registry.register(skill_b)
+
+    sandbox = service._build_sandbox({'agentConfig': {}})
+    assert sandbox.allowed_tools == set()
+
+
+def test_build_sandbox_unrestricted_when_all_skills_disabled(agent_service):
     service = agent_service
     skill = SkillDefinition(
         name='restricted',
@@ -501,5 +535,5 @@ def test_build_sandbox_unrestricted_when_skill_disabled(agent_service):
     )
     service.skill_registry.register(skill, enabled=False)
 
-    sandbox = service._build_sandbox({'agentConfig': {'selectedSkill': 'restricted'}})
+    sandbox = service._build_sandbox({'agentConfig': {}})
     assert sandbox.allowed_tools == set()

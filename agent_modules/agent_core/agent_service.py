@@ -400,70 +400,65 @@ class AgentService:
 
         return messages
 
-    def _resolve_skill_config(self, conv: dict) -> Dict[str, Any]:
-        """解析当前选中 skill 的最终配置。
+    def _resolve_merged_skill_config(self, conv: dict) -> Dict[str, Any]:
+        """合并所有已启用技能的最终配置。
 
-        配置优先级（从高到低）：
-        1. conv.agentConfig.skillConfig[skill.name]
-        2. SkillDefinition.default_config（其中 manifest.config 已在加载阶段合并）
+        技能改为「全部启用即生效」后，不再依赖 conv.agentConfig.selectedSkill；
+        改为遍历所有 enabled skills 合并配置。优先级（低→高），按 skill.name
+        字典序逐个应用，key 冲突时后者覆盖前者：
+        1. SkillDefinition.default_config（其中 manifest.config 已在加载阶段合并）
+        2. conv.agentConfig.skillConfig[skill.name]
         """
+        skills = self._get_enabled_skills()  # 已按 name 排序
         agent_config = conv.get('agentConfig') or {}
-        skill_name = agent_config.get('selectedSkill')
-        if not skill_name:
-            return {}
+        user_skill_config = agent_config.get('skillConfig') or {}
 
-        skill = self.skill_registry.get(skill_name)
-        if not skill:
-            return {}
-
-        merged = dict(skill.default_config)
-        user_skill_config = (agent_config.get('skillConfig') or {}).get(skill_name) or {}
-        merged.update(user_skill_config)
+        merged: Dict[str, Any] = {}
+        for skill in skills:
+            merged.update(skill.default_config)
+            merged.update(user_skill_config.get(skill.name) or {})
         return merged
 
-    def _get_selected_skill(self, conv: dict) -> Optional[SkillDefinition]:
-        """Return the selected skill if it exists and is enabled.
+    def _get_enabled_skills(self) -> List[SkillDefinition]:
+        """Return all enabled skills, deterministically ordered by name.
 
-        Logs a warning and returns ``None`` when no skill is selected, the skill
-        does not exist, or it is disabled.  This centralises the lookup logic used
-        by both the sandbox and system prompt builders.
+        技能启用状态由全局 SkillRegistry 管理（list_enabled()），与具体对话
+        配置无关，故不接收 conv 参数。
         """
-        agent_config = conv.get('agentConfig') or {}
-        skill_name = agent_config.get('selectedSkill')
-        if not skill_name:
-            return None
-
-        skill = self.skill_registry.get(skill_name)
-        if skill is None:
-            logger.warning('selected skill %r not found', skill_name)
-            return None
-        if not self.skill_registry.is_enabled(skill_name):
-            logger.warning('selected skill %r is disabled', skill_name)
-            return None
-        return skill
+        skills = self.skill_registry.list_enabled()
+        return sorted(skills, key=lambda s: s.name)
 
     def _build_sandbox(self, conv: dict) -> SkillSandbox:
-        """根据当前选中的 Skill 构建工具调用沙箱。
+        """根据所有已启用 Skill 构建工具调用沙箱。
 
-        若 Skill 声明了 ``allowed_tools`` 白名单，则 LLM 只能看到并使用这些工具；
-        否则放行全部工具，保持原有行为。
+        合并规则：任一 enabled skill 的 ``allowed_tools`` 为空（= 不限制）→
+        沙箱全放行；否则取所有 enabled skills 的 ``allowed_tools`` 并集。
+        无启用技能时全放行，与原「无 selectedSkill」行为一致。
         """
-        skill = self._get_selected_skill(conv)
+        skills = self._get_enabled_skills()
         allowed_tools: set[str] = set()
 
-        if skill is None:
-            logger.debug('no selected skill; sandbox unrestricted')
-        elif skill.allowed_tools:
-            allowed_tools = set(skill.allowed_tools)
-            logger.debug('skill %r restricts tools to %s', skill.name, sorted(allowed_tools))
+        if any(not s.allowed_tools for s in skills):
+            allowed_tools = set()  # 空 set 传给 SkillSandbox 即全放行
+        else:
+            for s in skills:
+                allowed_tools |= set(s.allowed_tools)
+
+        if skills:
+            logger.debug(
+                'enabled skills %s restrict tools to %s',
+                [s.name for s in skills],
+                sorted(allowed_tools) if allowed_tools else '(unrestricted)',
+            )
 
         return SkillSandbox(self.tool_registry, self.executor, allowed_tools)
 
     def _build_system_prompt(self, conv: dict) -> str:
-        """构建系统提示词，注入运行时上下文与选中技能。
+        """构建系统提示词，注入运行时上下文与所有已启用技能。
 
-        Skill 提示词追加在默认系统提示词之后，以 "## 当前技能" 分隔。
-        若 selectedSkill 不存在或已禁用，则追加警告提示。
+        技能改为「全部启用即生效」：遍历所有 enabled skills，按 skill.name
+        字典序拼接其 system_prompt，每段以 "## 当前技能：{name}" 分隔；
+        随后注入合并后的技能配置 JSON。无启用技能时仅返回基础提示词。
         """
         agent_config = conv.get('agentConfig') or {}
         system_prompt = agent_config.get('systemPrompt') or AGENT_SYSTEM_PROMPT
@@ -475,26 +470,18 @@ class AgentService:
         system_prompt = system_prompt.replace('<<PROJECT_STRUCTURE>>', project_structure)
         system_prompt = system_prompt.replace('<<GIT_BRANCH>>', git_branch)
 
-        # 注入技能提示词（追加模式）
-        selected_skill_name = agent_config.get('selectedSkill')
-        if selected_skill_name:
-            skill = self._get_selected_skill(conv)
-            if skill is None:
-                warning = (
-                    f"⚠️ 选中的技能 '{selected_skill_name}' 不存在或已被禁用，"
-                    f"将以默认模式继续。"
-                )
-                system_prompt += f"\n\n{warning}"
-            elif skill.system_prompt:
-                system_prompt += f"\n\n## 当前技能\n\n{skill.system_prompt}"
+        # 注入所有已启用技能的提示词（按 name 字典序拼接）
+        for skill in self._get_enabled_skills():
+            if skill.system_prompt:
+                system_prompt += f"\n\n## 当前技能：{skill.name}\n\n{skill.system_prompt}"
 
-            # 注入 skill 最终配置（default_config + manifest.config + skillConfig 合并）
-            skill_config = self._resolve_skill_config(conv)
-            if skill_config:
-                system_prompt += (
-                    f"\n\n## 技能配置\n\n"
-                    f"```json\n{json.dumps(skill_config, ensure_ascii=False, indent=2)}\n```"
-                )
+        # 注入合并后的技能配置（所有 enabled skills 的 default_config + skillConfig）
+        skill_config = self._resolve_merged_skill_config(conv)
+        if skill_config:
+            system_prompt += (
+                f"\n\n## 技能配置\n\n"
+                f"```json\n{json.dumps(skill_config, ensure_ascii=False, indent=2)}\n```"
+            )
 
         return system_prompt
 

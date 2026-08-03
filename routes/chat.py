@@ -299,18 +299,9 @@ async def update_conversation(conv_id):
     # 支持更新 agentConfig
     if 'agentConfig' in body:
         agent_config = body['agentConfig'] or {}
-        selected_skill = agent_config.get('selectedSkill')
-        if selected_skill == '':
-            agent_config['selectedSkill'] = None
-            selected_skill = None
-        if selected_skill is not None:
-            from services.skill_registry import SkillRegistry
-            registry = SkillRegistry.get_instance()
-            skill = registry.get(selected_skill)
-            if skill is None:
-                return jsonify({'ok': False, 'error': f'skill {selected_skill!r} not found'}), 400
-            if not registry.is_enabled(selected_skill):
-                return jsonify({'ok': False, 'error': f'skill {selected_skill!r} is disabled'}), 400
+        # selectedSkill 字段废弃（技能改为「全部启用即生效」）：
+        # 若客户端仍传，静默忽略（不校验、不存储）。skillConfig 仍按 per-skill 透传。
+        agent_config.pop('selectedSkill', None)
         conv['agentConfig'] = agent_config
 
     conv['updatedAt'] = datetime.now(timezone.utc).isoformat()

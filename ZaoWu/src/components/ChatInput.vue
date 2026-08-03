@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { Send, Square, Bot, Sparkles } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
@@ -10,6 +10,15 @@ const chatStore = useChatStore()
 const { t } = useI18n()
 const input = ref('')
 const isComposing = ref(false)
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
+
+// 自适应高度：从单行起随内容增长，最高 160px，超出则内部滚动
+function autoResize() {
+  const el = textareaRef.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+}
 
 function handleSend() {
   if (!input.value.trim() || isComposing.value) return
@@ -19,6 +28,12 @@ function handleSend() {
     chatStore.sendMessage(input.value.trim())
   }
   input.value = ''
+  nextTick(autoResize) // 发送清空后重置回单行高度
+}
+
+function onInput() {
+  isComposing.value = false
+  autoResize()
 }
 
 function handleStop() {
@@ -31,6 +46,11 @@ async function toggleAgentMode() {
   }
   chatStore.agentMode = !chatStore.agentMode
 }
+
+// 技能改为「全部启用即生效」：仅展示当前已启用技能数量，设置模块启用的技能对所有对话生效
+const enabledSkillsCount = computed(() =>
+  chatStore.availableSkills.filter((s) => s.enabled).length
+)
 
 onMounted(() => {
   chatStore.loadSkills()
@@ -48,13 +68,14 @@ function handleKeydown(e: KeyboardEvent) {
   <div class="chat-input">
     <div class="input-wrapper">
       <textarea
+        ref="textareaRef"
         v-model="input"
         :placeholder="t('chat.placeholder')"
         rows="1"
         @keydown="handleKeydown"
         @compositionstart="isComposing = true"
         @compositionend="isComposing = false"
-        @input="isComposing = false"
+        @input="onInput"
       />
       <button
         v-if="chatStore.isStreaming"
@@ -82,22 +103,14 @@ function handleKeydown(e: KeyboardEvent) {
           <span>{{ t('agent.agentMode') }}</span>
         </button>
 
-        <select
+        <span
           v-if="chatStore.agentMode"
-          v-model="chatStore.selectedSkill"
-          class="skill-select"
-          :title="t('agent.skill')"
+          class="skill-indicator"
+          :title="t('agent.skillsEnabledHint')"
         >
-          <option value="">{{ t('agent.noSkill') }}</option>
-          <option
-            v-for="skill in chatStore.availableSkills.filter((s) => s.enabled)"
-            :key="skill.name"
-            :value="skill.name"
-            :title="skill.description || skill.name"
-          >
-            {{ skill.name }}
-          </option>
-        </select>
+          <Sparkles :size="14" />
+          <span>{{ enabledSkillsCount }} {{ t('agent.skillsUnit') }}</span>
+        </span>
 
         <!-- F04: 自动批准写入文件开关 — 仅 write_file 受影响，run_command 仍需确认 -->
         <label
@@ -155,7 +168,8 @@ textarea {
   font-family: inherit;
   resize: none;
   line-height: 1.5;
-  max-height: 120px;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 textarea::placeholder {
@@ -261,35 +275,17 @@ textarea::placeholder {
   color: #fff;
 }
 
-.skill-select {
-  appearance: none;
-  -webkit-appearance: none;
-  padding: 4px 24px 4px 10px;
+.skill-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
   border-radius: 6px;
-  border: 1px solid var(--border-subtle);
-  background:
-    linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%),
-    linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%),
-    var(--bg-secondary);
-  background-position: right 10px center, right 6px center, 0 0;
-  background-size: 4px 4px, 4px 4px, 100% 100%;
-  background-repeat: no-repeat;
-  color: var(--text-secondary);
+  border: 1px solid var(--border-glass);
+  background: var(--bg-glass);
+  color: var(--text-tertiary);
   font-size: 11.5px;
-  cursor: pointer;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.skill-select:hover {
-  border-color: var(--border-glass);
-}
-
-.skill-select:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 /* F04: 自动批准写入开关 — 与项目统一 toggle-slider 风格保持一致 */

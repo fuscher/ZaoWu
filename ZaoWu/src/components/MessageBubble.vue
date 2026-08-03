@@ -103,7 +103,7 @@ const displayName = computed(() => {
   if (isUser.value && communityStore.isInRoom && props.message.role === 'user') {
     return communityStore.currentUser?.name ?? 'You'
   }
-  return isUser.value ? 'You' : 'AI'
+  return isUser.value ? 'You' : 'ZaoWu'
 })
 </script>
 
@@ -117,7 +117,6 @@ const displayName = computed(() => {
       <div class="bubble-header">
         <span class="role-name">{{ displayName }}</span>
         <span class="time">{{ timeStr }}</span>
-        <span v-if="message.model && !isUser" class="model-tag">{{ message.model }}</span>
       </div>
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
@@ -229,14 +228,6 @@ const displayName = computed(() => {
 .time {
   font-size: 11px;
   color: var(--text-tertiary);
-}
-
-.model-tag {
-  font-size: 10px;
-  color: var(--text-tertiary);
-  background: var(--bg-glass);
-  padding: 1px 6px;
-  border-radius: 4px;
 }
 
 .content-text {

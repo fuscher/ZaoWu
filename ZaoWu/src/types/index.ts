@@ -287,6 +287,7 @@ export interface AgentConfig {
   maxIterations?: number
   projectPath?: string
   requiresApproval?: boolean
+  /** @deprecated 技能改为「全部启用即生效」，此字段已忽略，不再读写 */
   selectedSkill?: string
   skillConfig?: Record<string, Record<string, any>>
   autoApproveWrites?: boolean

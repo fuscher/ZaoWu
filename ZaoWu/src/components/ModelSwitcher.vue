@@ -29,7 +29,8 @@ async function selectModel(providerId: string, modelId: string) {
     chatStore.currentConversation.modelId = modelId
     await updateConversation(chatStore.currentConversation.id, { providerId, modelId })
   } else {
-    chatStore.updateConfig({ defaultProviderId: providerId, defaultModelId: modelId })
+    // 与 toggleAgentMode 行为一致：无当前对话时创建新对话
+    await chatStore.createNewConversation({ providerId, modelId })
   }
   isOpen.value = false
 }

@@ -46,26 +46,12 @@ export const useChatStore = defineStore('chat', () => {
   const pendingByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
 
   // ── Skill state ─────────────────────────────────────────
+  // 技能改为「全部启用即生效」：不再有 selectedSkill 单选概念，
+  // 设置模块启用的技能对所有对话默认生效，故移除 selectedSkill computed。
   const availableSkills = ref<Skill[]>([])
-  const selectedSkill = computed<string | undefined>({
-    get: () => currentConversation.value?.agentConfig?.selectedSkill,
-    set: async (value) => {
-      const conv = currentConversation.value
-      if (!conv) return
-      // Normalize an empty string ("no skill" option) to undefined.
-      const normalized = value || undefined
-      const nextConfig = { ...(conv.agentConfig || {}), selectedSkill: normalized }
-      conv.agentConfig = nextConfig
-      try {
-        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
-      } catch {
-        conv.agentConfig = { ...conv.agentConfig, selectedSkill: undefined }
-      }
-    },
-  })
 
   // F04: 自动批准写入文件 — 仅影响 write_file，run_command 仍需手动确认。
-  // 与 agentMode/selectedSkill 一样绑定到当前对话的 agentConfig，切换时自动持久化。
+  // 与 agentMode 一样绑定到当前对话的 agentConfig，切换时自动持久化。
   const autoApproveWrites = computed<boolean>({
     get: () => currentConversation.value?.agentConfig?.autoApproveWrites ?? false,
     set: async (value) => {
@@ -135,18 +121,12 @@ export const useChatStore = defineStore('chat', () => {
     await ai.disableSkill(name)
     const skill = availableSkills.value.find((s) => s.name === name)
     if (skill) skill.enabled = false
-    // 如果当前对话正使用该 skill，清空选择
-    if (selectedSkill.value === name) {
-      selectedSkill.value = undefined
-    }
+    // 技能改为全部启用即生效：禁用后下一次 agent 请求自然排除该 skill，无需清空选择
   }
 
   async function deleteSkill(name: string) {
     await ai.deleteSkill(name)
     availableSkills.value = availableSkills.value.filter((s) => s.name !== name)
-    if (selectedSkill.value === name) {
-      selectedSkill.value = undefined
-    }
   }
 
   async function importSkill(content: string): Promise<Skill> {
@@ -496,7 +476,6 @@ export const useChatStore = defineStore('chat', () => {
     confirmTool,
     // Skills
     availableSkills,
-    selectedSkill,
     loadSkills,
     enableSkill,
     disableSkill,
