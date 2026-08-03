@@ -83,7 +83,17 @@ def read_settings():
                 return saved
         except (json.JSONDecodeError, IOError):
             pass
-    return {**DEFAULTS, 'language': detect_language()}
+    defaults = {**DEFAULTS, 'language': detect_language()}
+    # In a frozen build the deployment root may have no markers yet, which can
+    # make get_project_root() walk up to an unrelated directory. Materialising
+    # settings.json on first run pins the root. In development, leave the repo
+    # untouched and fall back to in-memory defaults.
+    if getattr(sys, 'frozen', False):
+        try:
+            write_settings(defaults)
+        except OSError:
+            pass
+    return defaults
 
 
 def write_settings(data):
