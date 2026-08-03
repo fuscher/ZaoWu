@@ -116,3 +116,60 @@ def test_result_truncation(real_executor):
     formatted = real_executor._format_result(raw, 'read_file')
     assert len(formatted['content']) <= ToolExecutor.MAX_RESULT_LENGTH
     assert formatted.get('truncated') is True
+
+
+def test_format_result_write_file_packs_json(real_executor):
+    raw = {'ok': True, 'path': '/p/a.py', 'diff': '--- a/a.py\n+++ b/a.py\n',
+           'created': True, 'bytes_written': 10}
+    formatted = real_executor._format_result(raw, 'write_file')
+    assert formatted['success'] is True
+    payload = json.loads(formatted['content'])
+    assert payload['path'] == '/p/a.py'
+    assert 'diff' in payload
+    assert payload['created'] is True
+
+
+def test_format_result_edit_file_packs_json(real_executor):
+    raw = {'ok': True, 'path': '/p/a.py', 'diff': '--- a/a.py\n+++ b/a.py\n',
+           'replacements': 2, 'bytes_written': 10}
+    formatted = real_executor._format_result(raw, 'edit_file')
+    assert formatted['success'] is True
+    payload = json.loads(formatted['content'])
+    assert payload['replacements'] == 2
+    assert 'diff' in payload
+
+
+def test_format_result_write_file_truncation(real_executor):
+    long_diff = 'x' * 20_000
+    raw = {'ok': True, 'path': '/p/a.py', 'diff': long_diff, 'created': False}
+    formatted = real_executor._format_result(raw, 'write_file')
+    assert len(formatted['content']) <= ToolExecutor.MAX_RESULT_LENGTH
+    assert formatted.get('truncated') is True
+
+
+def test_validate_arguments_edit_file_path_not_in_project(real_executor):
+    edit_tool = real_executor.registry.get('edit_file')
+    error = real_executor.validate_arguments(
+        edit_tool,
+        {'path': 'C:/Windows/system.ini', 'old_string': 'a', 'new_string': 'b'},
+    )
+    assert error is not None
+    assert 'path not in project' in error
+
+
+def test_validate_arguments_edit_file_path_ok(tmp_path):
+    target = tmp_path / 'edit_target.py'
+    target.write_text('old code', encoding='utf-8')
+    executor = ToolExecutor(ToolRegistry.get_instance(), project_bases=[str(tmp_path)])
+    edit_tool = executor.registry.get('edit_file')
+    error = executor.validate_arguments(
+        edit_tool,
+        {'path': str(target), 'old_string': 'old', 'new_string': 'new'},
+    )
+    assert error is None
+
+
+def test_execute_edit_file_missing_required(real_executor):
+    result = asyncio.run(real_executor.execute('edit_file', {'path': '/tmp/x.py'}))
+    assert result['success'] is False
+    assert 'missing required parameter' in result['error']

@@ -38,22 +38,36 @@ AGENT_SYSTEM_PROMPT = """你是一个专业的 AI 编程助手，运行在 ZaoWu
 3. 如果需要修改文件或执行命令，先用其他工具收集足够信息，再向用户说明将要进行的操作
 4. 工具执行后，根据结果生成清晰的总结回复
 
+## 工具使用规范
+- 优先使用专用工具而非 run_command：能用 read_file 就不要用 `cat`，能用 edit_file/write_file 就不要用 `sed/echo >`，能用 git_status/git_diff/git_log 就不要用裸 `git` 命令
+- 编辑文件前必须先用 read_file 读取目标文件，确认要修改的内容存在
+- 局部修改优先使用 edit_file（保留未提及的内容），整文件重写才使用 write_file
+- 不随意创建新文件：仅在用户明确要求或为完成任务必需时才创建
+- 不随意执行 git commit / git push：除非用户明确要求
+- 独立的工具调用（无依赖关系）可以在同一轮并行发起，节省往返时间
+- 引用代码位置时使用 `file:line` 格式（如 `src/main.py:42`）
+
 ## 安全规则
-- 仅操作当前项目目录内的文件
+- 仅操作已加载项目目录内的文件（路径白名单由系统强制校验，越界读写会被拒绝）
 - 写入文件和执行命令前确保用户知晓
 - 不要执行破坏性命令（如 rm -rf 等）
+- 不要向二进制文件（.png/.exe/.pdf 等）写入文本内容
 - 如果工具执行失败，尝试替代方案或告知用户
 
-## 当前项目
-- 项目路径: <<PROJECT_PATH>>
-- 项目结构 (顶层):
-<<PROJECT_STRUCTURE>>
-- Git 分支: <<GIT_BRANCH>>
-
-## 回复风格
+## 输出规范
+- 写入文件内容时不使用 emoji，除非用户明确要求添加
+- 代码注释和文档保持简洁专业，不添加装饰性 emoji
 - 使用与用户消息相同的语言（中文或英文）
 - 代码块使用正确的语言标记
-- 直接给出结论和操作，避免不必要的客套话
+- 直接给出结论和操作，语言随用户（中文/英文），避免不必要的客套话
+- 代码引用用 `file:line` 格式
+
+## 当前项目
+- 可操作的项目路径（白名单，仅以下目录可读写）:
+<<PROJECT_PATH>>
+- 主项目结构 (顶层):
+<<PROJECT_STRUCTURE>>
+- Git 分支: <<GIT_BRANCH>>
 """
 
 
@@ -62,7 +76,7 @@ class AgentService:
 
     LOOP_THRESHOLD = 3  # 同一工具+参数连续调用达到此次数时自动中断
     CONFIRMATION_TIMEOUT = 60  # F11: 用户确认等待超时（秒），从 300 缩短到 60
-    REQUIRES_APPROVAL_TOOLS = {'write_file', 'run_command'}
+    REQUIRES_APPROVAL_TOOLS = {'write_file', 'edit_file', 'run_command'}
 
     def __init__(self, tool_registry: ToolRegistry, project_path: str = None,
                  model_id: str = '', stop_event=None, limit_path: str = None,
@@ -203,7 +217,7 @@ class AgentService:
                     for tc in collected_tool_calls:
                         if tc['name'] in self.REQUIRES_APPROVAL_TOOLS:
                             # F04: run_command 永远需要确认，write_file 可被 autoApproveWrites 跳过
-                            if not (tc['name'] == 'write_file' and self._auto_approve_writes):
+                            if not (tc['name'] in ('write_file', 'edit_file') and self._auto_approve_writes):
                                 # F12: 先注册 pending id，处理用户批准早于 event 创建的竞态
                                 self._pending_confirmation_ids.add(tc['requestId'])
                                 yield self._requires_confirmation_event(assistant_msg_id, tc)
@@ -466,7 +480,11 @@ class AgentService:
         project_structure = self._get_project_structure()
         git_branch = self._get_git_branch()
 
-        system_prompt = system_prompt.replace('<<PROJECT_PATH>>', self.project_path)
+        # <<PROJECT_PATH>> 填充真实白名单（self.executor.project_bases），
+        # 而非单一展示路径 self.project_path —— 与工具层路径校验保持一致，
+        # 让 LLM 准确知道可操作哪些项目根目录。
+        project_paths_lines = '\n'.join(f'- {p}' for p in self.executor.project_bases)
+        system_prompt = system_prompt.replace('<<PROJECT_PATH>>', project_paths_lines)
         system_prompt = system_prompt.replace('<<PROJECT_STRUCTURE>>', project_structure)
         system_prompt = system_prompt.replace('<<GIT_BRANCH>>', git_branch)
 

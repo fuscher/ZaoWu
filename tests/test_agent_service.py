@@ -190,7 +190,9 @@ def test_build_system_prompt_replaces_placeholders(agent_service):
     prompt = service._build_system_prompt(conv)
     assert '<<PROJECT_PATH>>' not in prompt
     assert '<<GIT_BRANCH>>' not in prompt
-    assert service.project_path in prompt
+    # <<PROJECT_PATH>> 填充真实白名单（project_bases），而非单一展示路径
+    for p in service.executor.project_bases:
+        assert p in prompt
 
 
 def test_build_system_prompt_injects_all_enabled_skills(agent_service):
@@ -537,3 +539,76 @@ def test_build_sandbox_unrestricted_when_all_skills_disabled(agent_service):
 
     sandbox = service._build_sandbox({'agentConfig': {}})
     assert sandbox.allowed_tools == set()
+
+
+def test_requires_approval_tools_includes_edit_file():
+    """edit_file 与 write_file / run_command 同属需确认工具集。"""
+    assert 'edit_file' in AgentService.REQUIRES_APPROVAL_TOOLS
+    assert 'write_file' in AgentService.REQUIRES_APPROVAL_TOOLS
+    assert 'run_command' in AgentService.REQUIRES_APPROVAL_TOOLS
+
+
+def test_f04_auto_approve_writes_covers_edit_file(agent_service, monkeypatch):
+    """F04: autoApproveWrites=True 时，edit_file 应跳过用户确认直接执行。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    tc = {'requestId': 'call_edit_1', 'name': 'edit_file',
+          'arguments': {'path': '/tmp/e.py', 'old_string': 'a', 'new_string': 'b'}}
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 仅第一轮返回工具调用；第二轮不 yield → collected_tool_calls 为空 → 退出循环
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'test-provider', 'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 5, 'autoApproveWrites': True},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    execute_calls = []
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            execute_calls.append((name, args))
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'test-model'}],
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-f04-edit', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 不应产生 requires_confirmation 事件（autoApproveWrites 跳过确认）
+    assert not any('requires_confirmation' in ev for ev in events)
+    # sandbox.execute 应被调用 1 次（edit_file）
+    assert len(execute_calls) == 1
+    assert execute_calls[0][0] == 'edit_file'

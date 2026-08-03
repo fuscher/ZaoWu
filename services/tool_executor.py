@@ -51,7 +51,7 @@ class ToolExecutor:
                     return f'path not in project: {arguments[path_key]}'
 
         # 写文件需要确认
-        if tool.name == 'write_file' and 'path' in arguments:
+        if tool.name in ('write_file', 'edit_file') and 'path' in arguments:
             if not self.validate_path(arguments['path']):
                 return f'write path not in project: {arguments["path"]}'
 
@@ -105,10 +105,19 @@ class ToolExecutor:
                     'totalMatches': raw.get('totalMatches', 0),
                 }
                 formatted['content'] = json.dumps(payload, ensure_ascii=False)[:self.MAX_RESULT_LENGTH]
+            elif tool_name in ('write_file', 'edit_file'):
+                payload = {
+                    'path': raw.get('path', ''),
+                    'diff': raw.get('diff', ''),
+                }
+                if 'replacements' in raw:
+                    payload['replacements'] = raw['replacements']
+                if 'created' in raw:
+                    payload['created'] = raw['created']
+                formatted['content'] = json.dumps(payload, ensure_ascii=False)[:self.MAX_RESULT_LENGTH]
             else:
                 content_fields = {
                     'read_file': 'content',
-                    'write_file': 'path',
                     'list_files': 'tree',
                     'search_code': 'results',
                     'git_status': 'files',

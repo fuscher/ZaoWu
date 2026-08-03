@@ -41,6 +41,7 @@ function iconForTool(name: string): string {
   const map: Record<string, string> = {
     read_file: '📄',
     write_file: '✏️',
+    edit_file: '✂️',
     list_files: '📁',
     search_code: '🔍',
     git_status: '📊',
@@ -54,17 +55,27 @@ function iconForTool(name: string): string {
 function summaryForResult(result: ToolResult): string {
   if (!result.content) return ''
   switch (result.tool) {
+    case 'write_file':
+    case 'edit_file':
+      try {
+        const r = JSON.parse(result.content)
+        if (r.replacements != null) {
+          const key = r.replacements === 1 ? 'agent.summary.replacement' : 'agent.summary.replacements'
+          return t(key, { n: r.replacements })
+        }
+        return r.created ? t('agent.summary.created') : t('agent.summary.written')
+      } catch { return result.content.slice(0, 80) }
     case 'read_file':
-      return `Read ${result.content.length} chars`
+      return t('agent.summary.readChars', { n: result.content.length })
     case 'list_files':
       try {
         const tree = JSON.parse(result.content)
-        return `${Array.isArray(tree) ? tree.length : 0} items`
+        return t('agent.summary.items', { n: Array.isArray(tree) ? tree.length : 0 })
       } catch { return '' }
     case 'search_code':
       try {
         const search = JSON.parse(result.content)
-        return `${search.totalMatches || 0} matches in ${search.totalFiles || 0} files`
+        return t('agent.summary.matches', { n: search.totalMatches || 0, files: search.totalFiles || 0 })
       } catch { return '' }
     case 'git_status':
       return ''
@@ -73,18 +84,18 @@ function summaryForResult(result: ToolResult): string {
         const lines = result.content.split('\n')
         const added = lines.filter(l => l.startsWith('+') && !l.startsWith('+++')).length
         const removed = lines.filter(l => l.startsWith('-') && !l.startsWith('---')).length
-        return `+${added} -${removed} lines`
+        return t('agent.summary.diffLines', { added, removed })
       } catch { return result.content.slice(0, 80) }
     case 'git_log':
       try {
         const log = JSON.parse(result.content)
-        return `${Array.isArray(log) ? log.length : 0} commits`
+        return t('agent.summary.commits', { n: Array.isArray(log) ? log.length : 0 })
       } catch { return result.content.slice(0, 80) }
     case 'run_command':
       try {
         const cmd = JSON.parse(result.content)
-        return `Exit code: ${cmd.exitCode ?? 0}`
-      } catch { return 'Exit code: ?' }
+        return t('agent.summary.exitCode', { code: cmd.exitCode ?? 0 })
+      } catch { return t('agent.summary.exitCodeUnknown') }
     default:
       return result.content.slice(0, 80)
   }

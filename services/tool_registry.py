@@ -4,7 +4,7 @@ import typing
 from typing import get_type_hints, get_origin, get_args, Optional, List, Dict, Any, Callable
 from dataclasses import dataclass, field
 
-from services.file_utils import read_file_content, write_file_content, list_directory
+from services.file_utils import read_file_content, write_file_content, edit_file_content, list_directory
 from services.search_utils import search_project
 from services.web_search_utils import search_web
 from services.git_utils import get_git_status, get_git_diff, get_recent_commits
@@ -187,13 +187,19 @@ class ToolRegistry:
 # ── 核心工具定义（使用 @tool 装饰器） ──────────────────────────
 
 @tool(name='read_file', tags=['filesystem', 'read'])
-def _read_file_tool(path: str) -> dict:
-    """读取指定文件的内容。适用于查看代码文件、配置文件、文档等。
+def _read_file_tool(path: str, offset: int = 1, limit: int = 2000) -> dict:
+    """读取指定文件的内容，返回带行号前缀的文本（`行号: 内容`）。适用于查看代码、配置、文档等。
+
+    引用代码位置时使用 file:line 格式。使用 edit_file 时 old_string/new_string
+    不要包含行号前缀，只取实际内容。大文件用 offset/limit 分页：默认读前 2000 行，
+    需要后续内容时增大 offset。
 
     Args:
         path: 文件的绝对路径
+        offset: 起始行号（1-indexed，默认 1）
+        limit: 读取的最大行数（默认 2000）
     """
-    return read_file_content(path)
+    return read_file_content(path, offset=offset, limit=limit)
 
 
 @tool(name='write_file', requires_approval=True, tags=['filesystem', 'write'])
@@ -205,6 +211,29 @@ def _write_file_tool(path: str, content: str) -> dict:
         content: 要写入的文件内容
     """
     return write_file_content(path, content)
+
+
+@tool(name='edit_file', requires_approval=True, tags=['filesystem', 'write'])
+def _edit_file_tool(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict:
+    """精确编辑文件的一段内容。用 old_string 定位替换为 new_string。
+    优先使用此工具而非 write_file 进行局部修改，因为它不会覆盖整个文件。
+
+    匹配策略:
+    - 第一层: 精确字符串匹配
+    - 第二层(精确失败时): 行 strip 后逐行比较，容忍缩进差异
+
+    错误处理:
+    - old_string 未找到 -> 报错
+    - 多处匹配且 replace_all=false -> 报错(需要更多上下文)
+    - old_string == new_string -> 报错(无变化)
+
+    Args:
+        path: 文件的绝对路径
+        old_string: 要被替换的原文片段(建议包含足够上下文以确保唯一)
+        new_string: 替换后的内容
+        replace_all: 是否替换所有匹配(默认 false)
+    """
+    return edit_file_content(path, old_string, new_string, replace_all=replace_all)
 
 
 @tool(name='list_files', tags=['filesystem', 'read'])

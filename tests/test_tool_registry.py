@@ -8,7 +8,7 @@ def test_core_tools_auto_registered():
     registry = ToolRegistry.get_instance()
     names = set(registry.list_tools().keys())
     expected = {
-        'read_file', 'write_file', 'list_files', 'search_code', 'web_search',
+        'read_file', 'write_file', 'edit_file', 'list_files', 'search_code', 'web_search',
         'git_status', 'git_diff', 'git_log', 'run_command',
     }
     assert names == expected
@@ -17,7 +17,7 @@ def test_core_tools_auto_registered():
 def test_build_openai_tools_spec_count():
     registry = ToolRegistry.get_instance()
     spec = registry.build_openai_tools_spec()
-    assert len(spec) == 9
+    assert len(spec) == 10
     assert all(item['type'] == 'function' for item in spec)
 
 
@@ -31,6 +31,22 @@ def test_tool_metadata():
     assert 'path' in read_tool.parameters.get('required', [])
     assert read_tool.tags == ['filesystem', 'read']
     assert read_tool.requires_approval is False
+
+
+def test_read_file_parameters():
+    """read_file 支持 offset/limit 可选参数（分页读取大文件）。"""
+    registry = ToolRegistry.get_instance()
+    read_tool = registry.get('read_file')
+    props = read_tool.parameters['properties']
+    assert 'path' in props
+    assert 'offset' in props
+    assert 'limit' in props
+    required = read_tool.parameters.get('required', [])
+    assert 'path' in required
+    assert 'offset' not in required
+    assert 'limit' not in required
+    # docstring 应提示行号前缀格式，便于 LLM 正确引用 file:line
+    assert '行号' in read_tool.description or 'file:line' in read_tool.description
 
 
 def test_write_file_requires_approval():
@@ -99,3 +115,41 @@ def test_register_tool_definition_directly():
 def test_unknown_tool_returns_none():
     registry = ToolRegistry.get_instance()
     assert registry.get('nonexistent_tool') is None
+
+
+def test_edit_file_requires_approval():
+    registry = ToolRegistry.get_instance()
+    tool_def = registry.get('edit_file')
+    assert tool_def is not None
+    assert tool_def.requires_approval is True
+
+
+def test_edit_file_tags():
+    registry = ToolRegistry.get_instance()
+    tool_def = registry.get('edit_file')
+    assert tool_def is not None
+    assert tool_def.tags == ['filesystem', 'write']
+
+
+def test_edit_file_parameters():
+    registry = ToolRegistry.get_instance()
+    tool_def = registry.get('edit_file')
+    assert tool_def is not None
+    props = tool_def.parameters['properties']
+    assert 'path' in props
+    assert 'old_string' in props
+    assert 'new_string' in props
+    assert 'replace_all' in props
+    required = tool_def.parameters.get('required', [])
+    assert 'path' in required
+    assert 'old_string' in required
+    assert 'new_string' in required
+    assert 'replace_all' not in required
+
+
+def test_edit_file_description_mentions_strategy():
+    registry = ToolRegistry.get_instance()
+    tool_def = registry.get('edit_file')
+    assert tool_def is not None
+    desc = tool_def.description
+    assert '精确' in desc or '匹配' in desc

@@ -434,7 +434,7 @@
     "skillsEnabledHint": "Enabled skills apply to all agent conversations",
     "skillsUnit": "skills",
     "autoApproveWrites": "Auto-approve writes",
-    "autoApproveWritesDesc": "Write files without confirmation (commands still require approval)",
+    "autoApproveWritesDesc": "Write/edit files without confirmation (commands still require approval)",
     "agentExecuting": "Executing tools...",
     "requiresApproval": "Requires Approval",
     "parameters": "Parameters",
@@ -442,6 +442,19 @@
     "error": "Error",
     "approve": "Approve",
     "reject": "Reject",
+    "summary": {
+      "created": "created",
+      "written": "written",
+      "replacement": "{n} replacement",
+      "replacements": "{n} replacements",
+      "readChars": "Read {n} chars",
+      "items": "{n} items",
+      "matches": "{n} matches in {files} files",
+      "diffLines": "+{added} -{removed} lines",
+      "commits": "{n} commits",
+      "exitCode": "Exit code: {code}",
+      "exitCodeUnknown": "Exit code: ?"
+    },
     "system": {
       "loopDetected": "[System] Detected repeated call to {tool} ({count} times), auto-stopped",
       "stopped": "[System] Generation stopped by user",

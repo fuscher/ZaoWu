@@ -434,7 +434,7 @@
     "skillsEnabledHint": "已启用的技能将对所有智能体对话生效",
     "skillsUnit": "个技能",
     "autoApproveWrites": "自动批准写入",
-    "autoApproveWritesDesc": "写入文件无需确认（执行命令仍需手动确认）",
+    "autoApproveWritesDesc": "写入/编辑文件无需确认（执行命令仍需手动确认）",
     "agentExecuting": "执行工具...",
     "requiresApproval": "需确认",
     "parameters": "参数",
@@ -442,6 +442,19 @@
     "error": "错误",
     "approve": "批准",
     "reject": "拒绝",
+    "summary": {
+      "created": "已创建",
+      "written": "已写入",
+      "replacement": "{n} 处替换",
+      "replacements": "{n} 处替换",
+      "readChars": "读取 {n} 字符",
+      "items": "{n} 项",
+      "matches": "{files} 个文件中 {n} 处匹配",
+      "diffLines": "+{added} -{removed} 行",
+      "commits": "{n} 个提交",
+      "exitCode": "退出码: {code}",
+      "exitCodeUnknown": "退出码: ?"
+    },
     "system": {
       "loopDetected": "[系统] 检测到重复调用 {tool} 已达 {count} 次，已自动中断循环",
       "stopped": "[系统] 生成已被用户终止",
