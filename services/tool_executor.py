@@ -85,6 +85,7 @@ class ToolExecutor:
 
         run_command 的 output 字段需打包 output + exitCode 为 JSON 对象后序列化。
         search_code 需打包 results + totalFiles + totalMatches 为 JSON 对象后序列化。
+        截断统一在末尾按序列化后的实际内容长度执行，truncated 标志与真实截断一致。
         """
         formatted = {
             'success': raw.get('ok', False),
@@ -97,14 +98,14 @@ class ToolExecutor:
                     'output': raw.get('output', ''),
                     'exitCode': raw.get('exitCode', 0),
                 }
-                formatted['content'] = json.dumps(payload, ensure_ascii=False)[:self.MAX_RESULT_LENGTH]
+                formatted['content'] = json.dumps(payload, ensure_ascii=False)
             elif tool_name == 'search_code':
                 payload = {
                     'results': raw.get('results', []),
                     'totalFiles': raw.get('totalFiles', 0),
                     'totalMatches': raw.get('totalMatches', 0),
                 }
-                formatted['content'] = json.dumps(payload, ensure_ascii=False)[:self.MAX_RESULT_LENGTH]
+                formatted['content'] = json.dumps(payload, ensure_ascii=False)
             elif tool_name in ('write_file', 'edit_file'):
                 payload = {
                     'path': raw.get('path', ''),
@@ -114,7 +115,7 @@ class ToolExecutor:
                     payload['replacements'] = raw['replacements']
                 if 'created' in raw:
                     payload['created'] = raw['created']
-                formatted['content'] = json.dumps(payload, ensure_ascii=False)[:self.MAX_RESULT_LENGTH]
+                formatted['content'] = json.dumps(payload, ensure_ascii=False)
             else:
                 content_fields = {
                     'read_file': 'content',
@@ -133,11 +134,13 @@ class ToolExecutor:
                         content = json.dumps(content, ensure_ascii=False, indent=2)
                     else:
                         content = str(content)
-                    formatted['content'] = content[:self.MAX_RESULT_LENGTH]
+                    formatted['content'] = content
                 else:
-                    formatted['content'] = json.dumps(raw, ensure_ascii=False, indent=2)[:self.MAX_RESULT_LENGTH]
+                    formatted['content'] = json.dumps(raw, ensure_ascii=False, indent=2)
 
-            if len(str(raw)) > self.MAX_RESULT_LENGTH:
+            # 统一截断：以序列化后的实际内容长度为准，避免 truncated 标志失真
+            if len(formatted['content']) > self.MAX_RESULT_LENGTH:
+                formatted['content'] = formatted['content'][:self.MAX_RESULT_LENGTH]
                 formatted['truncated'] = True
         else:
             formatted['error'] = raw.get('error', 'unknown error')

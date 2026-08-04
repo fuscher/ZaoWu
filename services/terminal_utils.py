@@ -9,12 +9,13 @@ from routes.terminal import (
 )
 
 # 智能体模式扩展白名单——在终端面板白名单基础上增加 AI 编程常用工具
+# 注：docker/kubectl 不纳入 agent 默认白名单——本地 AI 编程极少需要，却是高危面
+# （容器可挂载宿主文件系统、kubectl 可操作集群）。如确需，应由用户在终端面板执行。
 AGENT_ALLOWED_COMMANDS = set(ALLOWED_COMMANDS) | {
     'pytest', 'mypy', 'flake8', 'black', 'ruff', 'isort',
     'go', 'cargo', 'make', 'cmake',
     'curl', 'wget', 'grep', 'find', 'diff', 'sed', 'awk',
     'tsc', 'eslint', 'prettier', 'vite', 'webpack', 'rollup',
-    'docker', 'kubectl',
 }
 
 

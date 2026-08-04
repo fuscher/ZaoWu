@@ -118,6 +118,31 @@ def test_result_truncation(real_executor):
     assert formatted.get('truncated') is True
 
 
+def test_truncated_flag_not_set_when_content_under_limit(monkeypatch):
+    """N2 回归：truncated 标志应基于序列化后实际内容长度，而非 str(raw)。
+
+    旧实现用 len(str(raw)) 比较，dict repr 的开销会让「未实际截断」的内容
+    误报 truncated=True。此处 content 长度 45 < 50（未截断），但
+    str({'ok': True, 'content': 'x'*45}) 的 repr 长度 > 50。
+    """
+    monkeypatch.setattr(ToolExecutor, 'MAX_RESULT_LENGTH', 50)
+    executor = ToolExecutor(ToolRegistry(), project_bases=['/tmp'])
+    raw = {'ok': True, 'content': 'x' * 45}
+    formatted = executor._format_result(raw, 'read_file')
+    assert 'truncated' not in formatted, '内容未超限不应标记 truncated'
+    assert len(formatted['content']) == 45
+
+
+def test_truncated_flag_set_and_content_capped_when_over_limit(monkeypatch):
+    """N2：内容超限时 truncated=True 且 content 截断到上限长度。"""
+    monkeypatch.setattr(ToolExecutor, 'MAX_RESULT_LENGTH', 50)
+    executor = ToolExecutor(ToolRegistry(), project_bases=['/tmp'])
+    raw = {'ok': True, 'content': 'x' * 200}
+    formatted = executor._format_result(raw, 'read_file')
+    assert formatted.get('truncated') is True
+    assert len(formatted['content']) == 50
+
+
 def test_format_result_write_file_packs_json(real_executor):
     raw = {'ok': True, 'path': '/p/a.py', 'diff': '--- a/a.py\n+++ b/a.py\n',
            'created': True, 'bytes_written': 10}

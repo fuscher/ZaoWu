@@ -149,6 +149,7 @@ def test_wait_for_confirmation_timeout(agent_service, monkeypatch):
 
 def test_build_messages_structure(agent_service):
     service = agent_service
+    loop = asyncio.get_event_loop()
     conv = {
         'messages': [
             {'role': 'system', 'content': 'old system'},
@@ -161,7 +162,7 @@ def test_build_messages_structure(agent_service):
             {'role': 'tool', 'tool_call_id': 'call_1', 'name': 'read_file', 'content': '{}'},
         ],
     }
-    messages = service._build_messages(conv, 'new question')
+    messages = loop.run_until_complete(service._build_messages(conv, 'new question'))
 
     # 系统提示词被替换为最新
     assert messages[0]['role'] == 'system'
@@ -182,12 +183,13 @@ def test_build_messages_structure(agent_service):
 
 def test_build_system_prompt_replaces_placeholders(agent_service):
     service = agent_service
+    loop = asyncio.get_event_loop()
     conv = {
         'agentConfig': {
             'systemPrompt': 'Project: <<PROJECT_PATH>>, Git: <<GIT_BRANCH>>',
         },
     }
-    prompt = service._build_system_prompt(conv)
+    prompt = loop.run_until_complete(service._build_system_prompt(conv))
     assert '<<PROJECT_PATH>>' not in prompt
     assert '<<GIT_BRANCH>>' not in prompt
     # <<PROJECT_PATH>> 填充真实白名单（project_bases），而非单一展示路径
@@ -210,7 +212,8 @@ def test_build_system_prompt_injects_all_enabled_skills(agent_service):
     service.skill_registry.register(skill_a)
     service.skill_registry.register(skill_b)
 
-    prompt = service._build_system_prompt({})
+    loop = asyncio.get_event_loop()
+    prompt = loop.run_until_complete(service._build_system_prompt({}))
     # 所有 enabled skills 均注入，按 name 字典序拼接
     assert '## 当前技能：aaa_skill' in prompt
     assert '你是技能 A。' in prompt
@@ -228,7 +231,8 @@ def test_build_system_prompt_ignores_disabled_skill(agent_service):
     )
     service.skill_registry.register(skill, enabled=False)
 
-    prompt = service._build_system_prompt({})
+    loop = asyncio.get_event_loop()
+    prompt = loop.run_until_complete(service._build_system_prompt({}))
     assert '## 当前技能' not in prompt
     assert '你是一位代码审查专家。' not in prompt
 
@@ -236,7 +240,8 @@ def test_build_system_prompt_ignores_disabled_skill(agent_service):
 def test_build_system_prompt_no_skill_section_without_enabled_skills(agent_service):
     service = agent_service
     # 无任何启用技能时不注入技能段（取代原 ignores_unknown_skill：警告分支已移除）
-    prompt = service._build_system_prompt({})
+    loop = asyncio.get_event_loop()
+    prompt = loop.run_until_complete(service._build_system_prompt({}))
     assert '## 当前技能' not in prompt
 
 
@@ -402,6 +407,63 @@ def test_f05_alternating_ababa_no_false_positive(agent_service, monkeypatch):
         and json.loads(ev[6:]).get('id') == 'system'
     ]
     assert not any('连续重复调用' in c for c in system_deltas), 'A-B-A-B-A should NOT trigger loop detection'
+
+
+def test_stop_event_prevents_tool_execution_after_stream(agent_service, monkeypatch):
+    """3.1 回归：流式期间用户点停止，llm_stream 仍 yield 已积累的 tool_call_part，
+    回到 process_message 后 collected_tool_calls 非空但 stop_event 已置位，
+    此时应立即终止，不再执行任何工具。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    tc = _make_tool_call('read_file', {'path': '/tmp/test.txt'}, 'call_stop_1')
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 模拟流式过程中已积累工具调用，随后用户点击停止（llm_stream 检测后置位）
+        yield {'type': 'tool_call_part', 'tool_call': tc}
+        service.stop_event.set()
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'test-provider', 'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 5}, 'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    execute_calls = []
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            execute_calls.append((name, args))
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-stop', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 关键断言：stop 后不应执行任何工具
+    assert execute_calls == [], 'no tool should execute after stop'
+    # 应有终止文案
+    assert any('已被用户终止' in ev for ev in events), 'should emit termination notice'
 
 
 # ── Stage 9: F12 确认竞态与过期 ID ────────────────────────────

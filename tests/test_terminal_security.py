@@ -78,6 +78,25 @@ def test_agent_is_command_safe_blocks_dangerous_pattern():
     assert safe is False
 
 
+def test_agent_does_not_allow_docker_or_kubectl():
+    """3.2: docker/kubectl 不纳入 agent 默认白名单（高危，本地 AI 编程极少需要）。"""
+    safe, err = agent_is_command_safe('docker ps')
+    assert safe is False
+    assert 'not allowed' in err
+    safe, err = agent_is_command_safe('kubectl get pods')
+    assert safe is False
+    assert 'not allowed' in err
+
+
+def test_agent_is_command_safe_blocks_shell_operators():
+    """3.2: agent 模式拒绝 shell 操作符，防止管道/链式命令绕过白名单。"""
+    for cmd in ('git status | cat', 'git status && whoami', 'git status; ls',
+                'echo `whoami`', 'echo $(whoami)'):
+        safe, err = agent_is_command_safe(cmd)
+        assert safe is False, f'{cmd} should be blocked'
+        assert 'shell operator' in err
+
+
 def test_full_flow_windows_builtin_allowed():
     """Windows cmd 内置命令应通过 is_command_safe 与 build_terminal_args 完整链路。"""
     safe, err = is_command_safe('dir')

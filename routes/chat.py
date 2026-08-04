@@ -645,6 +645,9 @@ def delete_preset(preset_id):
 from typing import Dict, Any
 
 # 智能体停止事件字典（convId 键 + asyncio.Event，独立于 _stop_events）
+# 注意：停止/确认依赖这两个进程内字典，仅适用于单 worker 部署（当前 onedir 单进程打包）。
+# 多 worker（如 uvicorn --workers >1）下 SSE 流与停止/确认请求可能落到不同进程导致失效；
+# 如需多 worker，应改用共享存储（如 Redis）分发停止/确认事件。
 agent_stop_events: Dict[str, asyncio.Event] = {}
 
 # 当前活跃的智能体服务实例（convId -> AgentService），供确认端点查找
