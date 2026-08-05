@@ -199,7 +199,7 @@ async def save_providers():
 @chat_bp.route('/models/<provider_id>', methods=['GET'])
 def get_models(provider_id):
     data = _read_json(PROVIDERS_FILE, {'providers': []})
-    provider = next((p for p in data.get('providers', []) if p['id'] == provider_id), None)
+    provider = next((p for p in (data.get('providers') or []) if p['id'] == provider_id), None)
     if not provider:
         return jsonify({'ok': False, 'error': 'provider not found'}), 404
 
@@ -253,6 +253,18 @@ async def create_conversation():
     conv_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    # 类型校验：与 PATCH 一致，防止非字符串/非 dict 写入后破坏字符串拼接或 .get 调用
+    for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
+        if key in body and not isinstance(body[key], str):
+            return jsonify({'ok': False, 'error': f'{key} must be a string'}), 400
+    agent_config = body.get('agentConfig')
+    if agent_config is not None and not isinstance(agent_config, dict):
+        return jsonify({'ok': False, 'error': 'agentConfig must be an object'}), 400
+    if isinstance(agent_config, dict):
+        sp = agent_config.get('systemPrompt')
+        if sp is not None and not isinstance(sp, str):
+            return jsonify({'ok': False, 'error': 'agentConfig.systemPrompt must be a string'}), 400
+
     conv = {
         'id': conv_id,
         'title': body.get('title', '新对话'),
@@ -262,11 +274,11 @@ async def create_conversation():
         'messages': [],
         'createdAt': now,
         'updatedAt': now,
-        'agentConfig': body.get('agentConfig', {
+        'agentConfig': agent_config or {
             'enabled': False,
             'maxIterations': 10,
             'requiresApproval': False,
-        }),
+        },
     }
 
     await _get_store().create(conv)
@@ -292,13 +304,32 @@ async def update_conversation(conv_id):
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
+    # 字符串字段类型校验：非字符串（dict/list/int/null）写入后会破坏后续字符串拼接
+    # （如 context_service 的 body += ...）或前端展示（title: null 覆盖为 NULL）。
+    # 必须为字符串，null 也不接受（与已修的 NoneType 崩溃同族：类型假设被打破）。
+    for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
+        if key in body and not isinstance(body[key], str):
+            return jsonify({'ok': False, 'error': f'{key} must be a string'}), 400
+
     for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
         if key in body:
             conv[key] = body[key]
 
     # 支持更新 agentConfig
     if 'agentConfig' in body:
-        agent_config = body['agentConfig'] or {}
+        agent_config = body['agentConfig']
+        # null → 空对象（与历史 `or {}` 行为兼容）；非 dict（str/list/int）直接拒绝，
+        # 否则 .pop/.get 会在 PATCH 自身或后续 agent_service._build_approval_rules
+        # 里抛 AttributeError → 500 / 对话中断。
+        if agent_config is None:
+            agent_config = {}
+        elif not isinstance(agent_config, dict):
+            return jsonify({'ok': False, 'error': 'agentConfig must be an object'}), 400
+        # agentConfig.systemPrompt 必须为字符串：context_service.build 用 `body += str`
+        # 拼接技能段，非字符串会 TypeError 中断整轮对话。
+        sp = agent_config.get('systemPrompt')
+        if sp is not None and not isinstance(sp, str):
+            return jsonify({'ok': False, 'error': 'agentConfig.systemPrompt must be a string'}), 400
         # selectedSkill 字段废弃（技能改为「全部启用即生效」）：
         # 若客户端仍传，静默忽略（不校验、不存储）。skillConfig 仍按 per-skill 透传。
         agent_config.pop('selectedSkill', None)
@@ -349,7 +380,7 @@ async def send_message(conv_id):
     if not conv:
         return jsonify({'ok': False, 'error': 'conversation not found'}), 404
 
-    providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers', [])
+    providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers') or []
     provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
 
     config = _read_json(CONFIG_FILE, {})
@@ -676,7 +707,7 @@ async def send_agent_message(conv_id):
     if not agent_config.get('enabled', False):
         return jsonify({'ok': False, 'error': 'agent mode not enabled for this conversation'}), 400
 
-    providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers', [])
+    providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers') or []
     provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
 
     if not provider:

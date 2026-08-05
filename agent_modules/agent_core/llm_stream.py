@@ -107,6 +107,16 @@ async def llm_stream(
     api_base = provider.get('apiBase', '').rstrip('/')
     api_key = provider.get('apiKey', '')
 
+    # 协议校验：工作流路径（llm_node）直连 llm_stream，绕过路由层 validate_api_base。
+    # 空/相对 apiBase 会触发 httpx.RequestError → 建连前 3 次指数退避重试（~7s 白等）
+    # 才报错。此处前置校验，非法直接抛不可重试错误，不进入重试循环（与 agent 路径行为一致）。
+    if not api_base or not api_base.startswith(('http://', 'https://')):
+        raise LLMError(
+            'unknown', 0,
+            f'apiBase must start with http:// or https:// (got: {api_base!r})',
+            retryable=False,
+        )
+
     payload = {
         'model': model_id,
         'messages': messages,
@@ -178,12 +188,17 @@ async def llm_stream(
                                 usage = chunk['usage']
                             choices = chunk.get('choices') or [{}]
                             choice = choices[0]
-                            delta = choice.get('delta', {})
+                            # delta 键存在但为 null 时 .get 返回 None，or {} 兜底防 'in' 迭代 None
+                            delta = choice.get('delta', {}) or {}
                             if 'content' in delta and delta['content']:
                                 yielded = True
                                 yield {'type': 'delta', 'delta': delta['content']}
-                            if 'tool_calls' in delta:
+                            # 键存在但值为 null/空（部分 Provider 流式 chunk 会发 tool_calls: null）
+                            # 必须判空，否则 for tc in None 抛 'NoneType' object is not iterable
+                            if 'tool_calls' in delta and delta['tool_calls']:
                                 for tc in delta['tool_calls']:
+                                    if not tc:  # 数组内可能混入 null 元素
+                                        continue
                                     idx = tc.get('index', 0)
                                     if idx not in accumulated_tool_calls:
                                         accumulated_tool_calls[idx] = {

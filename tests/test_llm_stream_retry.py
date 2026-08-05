@@ -328,3 +328,35 @@ async def test_stop_event_breaks_before_request(fast_backoffs):
     ))
     assert err is None
     assert client.call_count == 0
+
+
+# ── 回归：Provider 异常 chunk 防御（tool_calls: null / delta: null） ──
+
+async def test_null_delta_and_tool_calls_do_not_crash(fast_backoffs):
+    """Provider 流式 chunk 携带 null 值时不崩溃（回归修复）。
+
+    旧代码 `if 'tool_calls' in delta: for tc in delta['tool_calls']`——
+    delta 键存在但值为 null 时 for tc in None 抛
+    'NoneType' object is not iterable，整轮对话中断（前端显示 error）。
+    覆盖四个同族坑：tool_calls 为 null / delta 整体为 null /
+    tool_calls 数组含 null 元素 / 正常 tool_call 仍可累积。
+    """
+    chunk = lambda d: f'data: {json.dumps({"choices": [{"delta": d}]})}'
+    resp = _FakeResponse(status_code=200, sse_lines=[
+        chunk({'content': 'ok'}),
+        chunk({'content': None, 'tool_calls': None}),       # 键存在值为 null（回归主因）
+        chunk(None),                                        # delta 整体为 null
+        chunk({'tool_calls': [None]}),                      # 数组含 null 元素
+        chunk({'tool_calls': [{'index': 0, 'id': 'call_1',
+                               'function': {'name': 'f', 'arguments': '{}'}}]}),
+        _sse_usage(),
+        _sse_done(),
+    ])
+    client = _ScriptedClient([resp])
+    deltas, usage, err = await _consume(llm_stream(
+        provider=_PROVIDER, model_id='m', messages=[], http_client=client,
+    ))
+    assert err is None
+    assert deltas == ['ok']   # 正常正文不受影响
+    assert usage is not None  # 后续 chunk 正常消费
+    assert client.call_count == 1

@@ -182,7 +182,7 @@ class LLMNode(BaseNode):
         try:
             with open(PROVIDERS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return next((p for p in data.get('providers', []) if p['id'] == provider_id), {})
+            return next((p for p in (data.get('providers') or []) if p['id'] == provider_id), {})
         except Exception:
             return {}
 

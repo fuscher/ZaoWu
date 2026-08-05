@@ -152,7 +152,16 @@ class ConversationStore:
         if row['model']:
             msg['model'] = row['model']
         if row['tool_calls_json']:
-            msg['tool_calls'] = json.loads(row['tool_calls_json'])
+            try:
+                msg['tool_calls'] = json.loads(row['tool_calls_json'])
+            except json.JSONDecodeError:
+                # 历史脏数据（旧版本写入 / 手动改库 / 写入中断）不应瘫痪整轮对话：
+                # 丢弃该字段并记日志，其余消息正常返回。否则 store.get 抛 JSONDecodeError
+                # → agent_service._get_conversation 吞掉返回 None → 整个对话显示 not found。
+                logger.warning(
+                    'corrupt tool_calls_json for message %s; dropping field',
+                    row['id'],
+                )
         if row['tool_call_id']:
             msg['tool_call_id'] = row['tool_call_id']
         if row['name']:

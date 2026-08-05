@@ -158,6 +158,8 @@ class AgentService:
 
             # full_text 在循环外初始化，跨迭代累加，保留中间推理过程
             full_text = ''
+            # 跨迭代累计实际执行过的工具名（含各轮），供无正文时生成执行摘要
+            executed_tool_names: List[str] = []
 
             # 5.2 主动压缩（预算触发）：system+历史超 0.8*max_tokens 时摘要化早期对话。
             # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
@@ -309,6 +311,9 @@ class AgentService:
 
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
                         tool_results.append(result)
+                    executed_tool_names.extend(
+                        tc['name'] for tc in collected_tool_calls
+                    )
 
                     # F13: 批量注入消息历史（合并为一条 assistant 消息 + N 条 tool 结果，符合 OpenAI 格式）
                     await self._inject_tool_results_batch(
@@ -319,11 +324,21 @@ class AgentService:
                     break
 
             # Step 3: 发送完成事件，持久化最终消息
-            yield self._done_event(assistant_msg_id, full_text or '(tool execution completed)')
+            # 无正文但执行过工具时，生成执行摘要替代无信息量的占位文本（历史/LLM 上下文更友好）
+            if not full_text and executed_tool_names:
+                from collections import Counter
+                counts = Counter(executed_tool_names)
+                final_content = '已执行工具：' + '、'.join(
+                    f'{name}×{cnt}' if cnt > 1 else name
+                    for name, cnt in counts.items()
+                )
+            else:
+                final_content = full_text or '(completed)'
+            yield self._done_event(assistant_msg_id, final_content)
             await self._append_message(conv_id, {
                 'id': assistant_msg_id,
                 'role': 'assistant',
-                'content': full_text or '(tool execution completed)',
+                'content': final_content,
                 'timestamp': _now_ts(),
                 'model': self._model_id,
             })
@@ -518,7 +533,7 @@ class AgentService:
         try:
             with open(PROVIDERS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            return next((p for p in data.get('providers', []) if p['id'] == provider_id), None)
+            return next((p for p in (data.get('providers') or []) if p['id'] == provider_id), None)
         except Exception:
             return None
 
