@@ -40,9 +40,9 @@ AGENT_PRESETS: Dict[str, dict] = {
             ApprovalRule(action='run_command', resource='command:*', effect='deny'),
         ],
         'system_suffix': (
-            '\n\n## 当前模式：规划模式\n'
+            '\n\n## 当前模式：计划模式\n'
             '你只能读取和探索，不能修改文件或执行命令。'
-            '产出方案后由用户切回 build 模式执行。'
+            '产出方案后由用户切回执行模式落地。'
         ),
     },
 }

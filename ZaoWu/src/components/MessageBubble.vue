@@ -133,16 +133,16 @@ const displayName = computed(() => {
           :tool-call="chatStore.toolCallsFor(message.id).get(requestId)"
           :tool-result="result"
           :requires-approval="chatStore.pendingFor(message.id).has(requestId)"
-          @approve="chatStore.confirmTool($event, true)"
-          @reject="chatStore.confirmTool($event, false)"
+          @approve="(id, scope) => chatStore.confirmTool(id, true, scope)"
+          @reject="(id, feedback) => chatStore.confirmTool(id, false, 'once', feedback)"
         />
         <ToolCallCard
           v-for="[requestId, toolCall] in chatStore.pendingFor(message.id)"
           :key="`pending-${requestId}`"
           :tool-call="toolCall"
           :requires-approval="true"
-          @approve="chatStore.confirmTool($event, true)"
-          @reject="chatStore.confirmTool($event, false)"
+          @approve="(id, scope) => chatStore.confirmTool(id, true, scope)"
+          @reject="(id, feedback) => chatStore.confirmTool(id, false, 'once', feedback)"
         />
       </div>
       <!-- Stage 9: 历史工具调用配对卡片（合并 call + result） -->

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { Send, Square, Bot, Sparkles } from '@lucide/vue'
+import { Send, Square, Bot, Sparkles, Hammer, ClipboardList } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
 import ModelSwitcher from './ModelSwitcher.vue'
@@ -112,13 +112,44 @@ function handleKeydown(e: KeyboardEvent) {
           <span>{{ enabledSkillsCount }} {{ t('agent.skillsUnit') }}</span>
         </span>
 
+        <!-- 6.3.1: 预设模式切换 — build=全工具可写；plan=只读规划（写工具被 deny） -->
+        <div
+          v-if="chatStore.agentMode"
+          class="preset-switcher"
+          :title="t('agent.presetModeDesc')"
+        >
+          <button
+            type="button"
+            class="preset-btn"
+            :class="{ active: chatStore.preset === 'build' }"
+            @click="chatStore.preset = 'build'"
+          >
+            <Hammer :size="13" />
+            {{ t('agent.presetModeBuild') }}
+          </button>
+          <button
+            type="button"
+            class="preset-btn"
+            :class="{ active: chatStore.preset === 'plan' }"
+            @click="chatStore.preset = 'plan'"
+          >
+            <ClipboardList :size="13" />
+            {{ t('agent.presetModePlan') }}
+          </button>
+        </div>
         <!-- F04: 自动批准写入文件开关 — 仅 write_file 受影响，run_command 仍需确认 -->
+        <!-- plan 模式下写工具被 deny，autoApproveWrites 无意义，禁用并提示 -->
         <label
           v-if="chatStore.agentMode"
           class="auto-approve-toggle"
-          :title="t('agent.autoApproveWritesDesc')"
+          :class="{ disabled: chatStore.preset === 'plan' }"
+          :title="chatStore.preset === 'plan' ? t('agent.presetModePlanAutoApproveDisabled') : t('agent.autoApproveWritesDesc')"
         >
-          <input type="checkbox" v-model="chatStore.autoApproveWrites" />
+          <input
+            type="checkbox"
+            v-model="chatStore.autoApproveWrites"
+            :disabled="chatStore.preset === 'plan'"
+          />
           <span class="toggle-track"><span class="toggle-thumb" /></span>
           <span class="toggle-label">{{ t('agent.autoApproveWrites') }}</span>
         </label>
@@ -288,6 +319,40 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
+/* 6.3.1: 预设模式切换器 — 分段按钮 */
+.preset-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.preset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.preset-btn:hover {
+  color: var(--text-secondary);
+}
+
+.preset-btn.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
 /* F04: 自动批准写入开关 — 与项目统一 toggle-slider 风格保持一致 */
 .auto-approve-toggle {
   display: flex;
@@ -349,5 +414,15 @@ textarea::placeholder {
 
 .auto-approve-toggle input:checked ~ .toggle-label {
   color: var(--accent);
+}
+
+/* 6.3.1: plan 模式下 autoApproveWrites 无意义，禁用并降低不透明度 */
+.auto-approve-toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.auto-approve-toggle.disabled:hover .toggle-label {
+  color: var(--text-tertiary);
 }
 </style>

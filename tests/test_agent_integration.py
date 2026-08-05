@@ -217,16 +217,24 @@ def test_agent_write_file_requires_confirmation_and_executes_when_approved(agent
 
     service._stream_llm = mock_stream_llm
 
-    async def approve_after_delay():
-        await asyncio.sleep(0.1)
-        service.submit_confirmation('call_write', True)
+    async def approve_after_confirmation(request_id):
+        # 模拟真实 UI 时序：前端收到 requires_confirmation 事件、渲染面板后用户才点击。
+        # 固定 sleep 0.1s 会与 _build_messages/ContextService 首次构建竞态
+        # （submit 早于 ask 分支执行 → _pending_confirmation_ids 为空 → 返回 False → 确认丢失）。
+        await asyncio.sleep(0.05)
+        service.submit_confirmation(request_id, True)
 
     async def run():
-        task = loop.create_task(approve_after_delay())
         events = []
+        approve_task = None
         async for event in service.process_message('conv-1', 'Write new.txt'):
             events.append(event)
-        await task
+            # 收到 requires_confirmation 后再触发批准，避免竞态
+            if (approve_task is None
+                    and json.loads(event[6:]).get('type') == 'requires_confirmation'):
+                approve_task = loop.create_task(approve_after_confirmation('call_write'))
+        if approve_task:
+            await approve_task
         return events
 
     events = loop.run_until_complete(run())
@@ -270,16 +278,21 @@ def test_agent_write_file_rejected_does_not_execute(agent_env, tmp_path, monkeyp
 
     service._stream_llm = mock_stream_llm
 
-    async def reject_after_delay():
-        await asyncio.sleep(0.1)
-        service.submit_confirmation('call_write', False)
+    async def reject_after_confirmation(request_id):
+        # 同 approve 测试：收到 requires_confirmation 后再触发，避免竞态
+        await asyncio.sleep(0.05)
+        service.submit_confirmation(request_id, False)
 
     async def run():
-        task = loop.create_task(reject_after_delay())
         events = []
+        reject_task = None
         async for event in service.process_message('conv-1', 'Write rejected.txt'):
             events.append(event)
-        await task
+            if (reject_task is None
+                    and json.loads(event[6:]).get('type') == 'requires_confirmation'):
+                reject_task = loop.create_task(reject_after_confirmation('call_write'))
+        if reject_task:
+            await reject_task
         return events
 
     events = loop.run_until_complete(run())

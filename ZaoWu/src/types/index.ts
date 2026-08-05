@@ -291,6 +291,8 @@ export interface AgentConfig {
   selectedSkill?: string
   skillConfig?: Record<string, Record<string, any>>
   autoApproveWrites?: boolean
+  /** 智能体预设模式：build=默认（全工具）；plan=只读规划（写工具被 deny） */
+  preset?: 'build' | 'plan'
 }
 
 export interface Skill {

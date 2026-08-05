@@ -9,7 +9,12 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     ...options,
   })
   const data = await res.json()
-  if (!data.ok) throw new Error(data.error || 'request failed')
+  if (!data.ok) {
+    // 暴露 HTTP 状态码供调用方区分（如 410 确认过期可重试）
+    const err = new Error(data.error || 'request failed') as Error & { status: number }
+    err.status = res.status
+    throw err
+  }
   return data
 }
 
@@ -244,12 +249,25 @@ export async function stopAgentGeneration(convId: string): Promise<void> {
 export async function confirmToolCall(
   convId: string,
   requestId: string,
-  approved: boolean
+  approved: boolean,
+  scope: 'once' | 'always' = 'once',
+  feedback?: string,
 ): Promise<void> {
-  await request(`${BASE}/conversations/${convId}/confirm-tool`, {
-    method: 'POST',
-    body: JSON.stringify({ requestId, approved }),
-  })
+  const url = `${BASE}/conversations/${convId}/confirm-tool`
+  const body = JSON.stringify({ requestId, approved, scope, feedback })
+  // P3 方案 B：410 表示确认早于 ask 分支执行（_pending_confirmation_ids 尚未注册）。
+  // 真实 UI 场景极少触发（requires_confirmation 事件到达后前端才渲染面板），
+  // 但跨秒级窗口下 submit 可能早于 ask 分支，410 无重试会致确认永久丢失。短延迟重试一次。
+  try {
+    await request<void>(url, { method: 'POST', body })
+  } catch (err) {
+    if ((err as Error & { status?: number }).status === 410) {
+      await new Promise((r) => setTimeout(r, 200))
+      await request<void>(url, { method: 'POST', body })
+      return
+    }
+    throw err
+  }
 }
 
 // ── Skills ────────────────────────────────────────────────

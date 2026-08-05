@@ -12,29 +12,44 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  approve: [requestId: string]
-  reject: [requestId: string]
+  approve: [requestId: string, scope: 'once' | 'always']
+  reject: [requestId: string, feedback?: string]
 }>()
 
 const { t } = useI18n()
 const isExpanded = ref(false)
 const approved = ref(false)
+// 6.3.2: 三态确认 — reject 展开原因输入框
+const rejecting = ref(false)
+const rejectFeedback = ref('')
 
 function toggle() {
   isExpanded.value = !isExpanded.value
 }
 
-function approve() {
+function approve(scope: 'once' | 'always') {
   approved.value = true
   if (props.toolCall?.requestId) {
-    emit('approve', props.toolCall.requestId)
+    emit('approve', props.toolCall.requestId, scope)
   }
 }
 
-function reject() {
+function startReject() {
+  rejecting.value = true
+}
+
+function cancelReject() {
+  rejecting.value = false
+  rejectFeedback.value = ''
+}
+
+function confirmReject() {
+  approved.value = true // 隐藏确认按钮（已响应）
   if (props.toolCall?.requestId) {
-    emit('reject', props.toolCall.requestId)
+    emit('reject', props.toolCall.requestId, rejectFeedback.value.trim() || undefined)
   }
+  rejecting.value = false
+  rejectFeedback.value = ''
 }
 
 function iconForTool(name: string): string {
@@ -140,14 +155,35 @@ function summaryForResult(result: ToolResult): string {
         <div class="section-label">{{ toolResult.success ? t('agent.result') : t('agent.error') }}</div>
         <pre class="tool-content" :class="{ 'error-text': !toolResult.success }"><code>{{ toolResult.content || toolResult.error }}</code></pre>
       </div>
-      <!-- Phase 2: user confirmation buttons -->
+      <!-- 6.3.2: 三态确认 — 仅本次/始终允许/拒绝(带原因) -->
       <div v-if="requiresApproval && !approved" class="tool-actions">
-        <button class="btn-approve" @click.stop="approve">
-          <Check :size="14" /> {{ t('agent.approve') }}
-        </button>
-        <button class="btn-reject" @click.stop="reject">
-          <X :size="14" /> {{ t('agent.reject') }}
-        </button>
+        <template v-if="!rejecting">
+          <button class="btn-approve" @click.stop="approve('once')">
+            <Check :size="14" /> {{ t('agent.approve') }}
+          </button>
+          <button class="btn-approve-always" @click.stop="approve('always')">
+            <Check :size="14" /> {{ t('agent.approveAlways') }}
+          </button>
+          <button class="btn-reject" @click.stop="startReject">
+            <X :size="14" /> {{ t('agent.reject') }}
+          </button>
+        </template>
+        <div v-else class="reject-form">
+          <textarea
+            v-model="rejectFeedback"
+            class="reject-input"
+            :placeholder="t('agent.rejectReasonPlaceholder')"
+            rows="2"
+          />
+          <div class="reject-actions">
+            <button class="btn-reject" @click.stop="confirmReject">
+              {{ t('agent.reject') }}
+            </button>
+            <button class="btn-cancel" @click.stop="cancelReject">
+              {{ t('common.cancel') }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -313,7 +349,9 @@ function summaryForResult(result: ToolResult): string {
 }
 
 .btn-approve,
-.btn-reject {
+.btn-approve-always,
+.btn-reject,
+.btn-cancel {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -335,6 +373,16 @@ function summaryForResult(result: ToolResult): string {
   filter: brightness(0.88);
 }
 
+/* 6.3.2: 始终允许 — 用 accent 色与"仅本次"区分 */
+.btn-approve-always {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-approve-always:hover {
+  filter: brightness(0.88);
+}
+
 .btn-reject {
   background: var(--danger);
   color: #fff;
@@ -342,5 +390,45 @@ function summaryForResult(result: ToolResult): string {
 
 .btn-reject:hover {
   filter: brightness(0.88);
+}
+
+/* 6.3.2: 拒绝原因输入区 */
+.reject-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.reject-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.reject-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.reject-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-cancel {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.btn-cancel:hover {
+  filter: brightness(0.96);
 }
 </style>

@@ -138,4 +138,35 @@ describe('F02: messageId 两级索引工具 Map', () => {
       expect(msg2Calls.get('r1')).toBeUndefined()
     })
   })
+
+  describe('6.3.1: preset computed（plan/build 切换）', () => {
+    it('默认 build（agentConfig 无 preset 时回退）', () => {
+      expect(store.preset).toBe('build')
+    })
+
+    it('set plan 后更新 agentConfig 并持久化', async () => {
+      const ai = await import('@/services/ai')
+      vi.mocked(ai.updateConversation).mockClear()
+      store.preset = 'plan'
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation?.agentConfig?.preset).toBe('plan')
+      expect(ai.updateConversation).toHaveBeenCalledWith('conv-test', {
+        agentConfig: {
+          enabled: true,
+          maxIterations: 5,
+          preset: 'plan',
+        },
+      })
+    })
+
+    it('updateConversation 失败时回退本地状态', async () => {
+      const ai = await import('@/services/ai')
+      store.currentConversation!.agentConfig!.preset = 'build'
+      vi.mocked(ai.updateConversation).mockRejectedValueOnce(new Error('network'))
+      store.preset = 'plan'
+      await new Promise((r) => setTimeout(r, 0))
+      // 失败回退：preset 回到 build
+      expect(store.currentConversation?.agentConfig?.preset).toBe('build')
+    })
+  })
 })

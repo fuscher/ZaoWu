@@ -1053,13 +1053,13 @@ def test_build_system_prompt_plan_mode_appends_suffix(agent_service):
     prompt = loop.run_until_complete(
         service._build_system_prompt({'agentConfig': {'preset': 'plan'}})
     )
-    assert '规划模式' in prompt
+    assert '计划模式' in prompt
     assert '不能修改文件或执行命令' in prompt
     # build 模式无后缀
     prompt_build = loop.run_until_complete(
         service._build_system_prompt({'agentConfig': {'preset': 'build'}})
     )
-    assert '规划模式' not in prompt_build
+    assert '计划模式' not in prompt_build
 
 
 def test_three_state_always_persists_rule_and_skips_next_confirmation(

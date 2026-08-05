@@ -18,7 +18,7 @@ def test_get_preset_plan():
     p = get_preset('plan')
     assert p['tools'] == PLAN_READ_ONLY_TOOLS
     assert len(p['approval_rules']) == 3
-    assert p['system_suffix'].startswith('\n\n## 当前模式：规划模式')
+    assert p['system_suffix'].startswith('\n\n## 当前模式：计划模式')
 
 
 def test_get_preset_unknown_falls_back_to_build():
@@ -68,7 +68,7 @@ def test_preset_approval_rules_returns_copy():
 
 def test_preset_system_suffix_plan_has_text():
     suffix = preset_system_suffix('plan')
-    assert '规划模式' in suffix
+    assert '计划模式' in suffix
     assert '不能修改文件或执行命令' in suffix
 
 

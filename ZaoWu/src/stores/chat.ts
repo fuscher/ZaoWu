@@ -68,6 +68,25 @@ export const useChatStore = defineStore('chat', () => {
     },
   })
 
+  // 6.3.1: 预设模式切换 — build=全工具；plan=只读规划（写工具被 deny 规则拦截）。
+  // 与 agentMode/autoApproveWrites 一样绑定当前对话 agentConfig，切换时自动持久化。
+  // plan 模式下 autoApproveWrites 无意义（写工具已被 preset deny 拦截），
+  // UI 层禁用该开关；不强制清值，切回 build 时恢复。
+  const preset = computed<'build' | 'plan'>({
+    get: () => currentConversation.value?.agentConfig?.preset ?? 'build',
+    set: async (value) => {
+      const conv = currentConversation.value
+      if (!conv) return
+      const nextConfig = { ...(conv.agentConfig || {}), preset: value }
+      conv.agentConfig = nextConfig
+      try {
+        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      } catch {
+        conv.agentConfig = { ...conv.agentConfig, preset: value === 'build' ? 'plan' : 'build' }
+      }
+    },
+  })
+
   // ── Computed ───────────────────────────────────────────
   const currentMessages = computed(() => currentConversation.value?.messages || [])
   const currentProvider = computed(() =>
@@ -300,11 +319,16 @@ export const useChatStore = defineStore('chat', () => {
     loadConversations()
   }
 
-  async function confirmTool(requestId: string, approved: boolean) {
+  async function confirmTool(
+    requestId: string,
+    approved: boolean,
+    scope: 'once' | 'always' = 'once',
+    feedback?: string,
+  ) {
     const conv = currentConversation.value
     if (!conv) return
     try {
-      await ai.confirmToolCall(conv.id, requestId, approved)
+      await ai.confirmToolCall(conv.id, requestId, approved, scope, feedback)
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'confirm failed'
     }
@@ -465,6 +489,7 @@ export const useChatStore = defineStore('chat', () => {
     // Agent mode
     agentMode,
     autoApproveWrites,
+    preset,
     toolCallsByMessage,
     toolResultsByMessage,
     pendingByMessage,
