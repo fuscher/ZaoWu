@@ -114,7 +114,10 @@ def test_submit_confirmation_sets_result_and_event(agent_service):
     ok = service.submit_confirmation(request_id, True)
     assert ok is True
     assert event.is_set()
-    assert service._confirmation_results[request_id] is True
+    # 阶段三 6.1：确认结果改为三态 dict
+    assert service._confirmation_results[request_id] == {
+        'approved': True, 'scope': 'once', 'feedback': None,
+    }
 
 
 def test_submit_confirmation_unknown_request_returns_false(agent_service):
@@ -137,14 +140,17 @@ def test_wait_for_confirmation_approved(agent_service):
         await task
         return result
 
-    assert loop.run_until_complete(run()) is True
+    # 阶段三 6.1：返回三态 dict，approved=True
+    result = loop.run_until_complete(run())
+    assert result == {'approved': True, 'scope': 'once', 'feedback': None}
 
 
 def test_wait_for_confirmation_timeout(agent_service, monkeypatch):
     service = agent_service
     monkeypatch.setattr(service, 'CONFIRMATION_TIMEOUT', 0.05)
     loop = asyncio.get_event_loop()
-    assert loop.run_until_complete(service._wait_for_confirmation('call_1')) is False
+    # 阶段三 6.1：超时返回 None（与"拒绝"区分）
+    assert loop.run_until_complete(service._wait_for_confirmation('call_1')) is None
 
 
 def test_build_messages_structure(agent_service):
@@ -479,15 +485,17 @@ def test_f12_submit_confirmation_before_wait(agent_service):
     service._pending_confirmation_ids.add(request_id)
     ok = service.submit_confirmation(request_id, True)
     assert ok is True
-    # 结果应被预缓存
-    assert service._confirmation_results[request_id] is True
+    # 结果应被预缓存（三态 dict）
+    assert service._confirmation_results[request_id] == {
+        'approved': True, 'scope': 'once', 'feedback': None,
+    }
 
     # 随后 _wait_for_confirmation 应直接消费预缓存结果，不阻塞
     async def run():
         return await service._wait_for_confirmation(request_id)
 
     result = loop.run_until_complete(run())
-    assert result is True
+    assert result == {'approved': True, 'scope': 'once', 'feedback': None}
     # pending id 应被清理
     assert request_id not in service._pending_confirmation_ids
 
@@ -603,11 +611,19 @@ def test_build_sandbox_unrestricted_when_all_skills_disabled(agent_service):
     assert sandbox.allowed_tools == set()
 
 
-def test_requires_approval_tools_includes_edit_file():
-    """edit_file 与 write_file / run_command 同属需确认工具集。"""
-    assert 'edit_file' in AgentService.REQUIRES_APPROVAL_TOOLS
-    assert 'write_file' in AgentService.REQUIRES_APPROVAL_TOOLS
-    assert 'run_command' in AgentService.REQUIRES_APPROVAL_TOOLS
+def test_default_rules_mark_write_tools_as_ask():
+    """阶段三 6.1：默认规则从 ToolDefinition.requires_approval 元数据生成。
+    write_file/edit_file/run_command 标注 requires_approval=True → 默认 ask；
+    read_file 等只读工具 → 默认 allow。REQUIRES_APPROVAL_TOOLS 硬编码已删除。"""
+    from services.tool_approval import build_default_rules
+    from services.tool_registry import ToolRegistry
+    rules = {r.action: r.effect for r in build_default_rules(ToolRegistry.get_instance())}
+    assert rules.get('write_file') == 'ask'
+    assert rules.get('edit_file') == 'ask'
+    assert rules.get('run_command') == 'ask'
+    assert rules.get('read_file') == 'allow'
+    # 硬编码常量已删除，改由元数据驱动
+    assert not hasattr(AgentService, 'REQUIRES_APPROVAL_TOOLS')
 
 
 def test_f04_auto_approve_writes_covers_edit_file(agent_service, monkeypatch):
@@ -834,3 +850,408 @@ def test_context_overflow_twice_does_not_loop_forever(agent_service, monkeypatch
 
 async def _async_none():
     return None
+
+
+# ── 阶段三 6.1/6.2：审批引擎 + plan 模式集成测试 ───────────────
+
+
+def _stub_agent_env(service, monkeypatch, conv_payload, stream_llm_mock,
+                    sandbox_execute_spy=None, load_rules=None):
+    """统一桩件：为 process_message 集成测试注入 mock，避免真实 DB/LLM。
+
+    - conv_payload: mock _get_conversation 返回的 conv dict
+    - stream_llm_mock: 替换 _stream_llm 的异步生成器函数
+    - sandbox_execute_spy: list，记录 sandbox.execute 调用（None 则用空 sandbox）
+    - load_rules: async 函数，替换 _load_persisted_rules（默认返回 []）
+    """
+    service._stream_llm = stream_llm_mock
+
+    async def mock_get_conversation(conv_id):
+        return conv_payload
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    if load_rules is None:
+        async def load_rules(conv_id):
+            return []
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+    monkeypatch.setattr(service, '_load_persisted_rules', load_rules)
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm'}],
+    })
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            if sandbox_execute_spy is not None:
+                sandbox_execute_spy.append((name, args))
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+
+
+def test_plan_mode_denies_write_file_without_confirmation(agent_service, monkeypatch):
+    """6.2：plan 模式下 write_file 被 deny 规则拦截，不发起确认、不执行。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    tc = _make_tool_call('write_file', {'path': '/a/b.py', 'content': 'x'}, 'call_plan_1')
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    conv = {
+        'id': 'conv-plan', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-plan', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 不应出现 requires_confirmation（plan 直接 deny，无需询问）
+    assert not any('requires_confirmation' in ev for ev in events)
+    # sandbox.execute 不应被调用（deny 在执行前拦截）
+    assert execute_spy == []
+    # 应有 tool_call_end 且 success=False
+    end_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'tool_call_end'
+    ]
+    assert len(end_events) == 1
+    assert end_events[0]['toolResult']['success'] is False
+    assert '禁止' in end_events[0]['toolResult']['error']
+
+
+def test_plan_mode_run_command_also_denied(agent_service, monkeypatch):
+    """6.2：plan 模式下 run_command 同样被 deny（覆盖 command:* 规则）。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    tc = _make_tool_call('run_command', {'command': 'ls', 'cwd': '/a'}, 'call_plan_cmd')
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    conv = {
+        'id': 'conv-plan2', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-plan2', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    assert execute_spy == []
+    assert not any('requires_confirmation' in ev for ev in events)
+
+
+def test_plan_mode_readonly_tool_executes_normally(agent_service, monkeypatch):
+    """6.2：plan 模式下只读工具（read_file）正常执行，不受 deny 影响。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    tc = _make_tool_call('read_file', {'path': '/a/b.py'}, 'call_plan_read')
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    conv = {
+        'id': 'conv-plan3', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-plan3', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    # read_file 默认 allow → 直接执行
+    assert len(execute_spy) == 1
+    assert execute_spy[0][0] == 'read_file'
+    assert not any('requires_confirmation' in ev for ev in events)
+
+
+def test_build_sandbox_plan_mode_restricts_to_readonly(agent_service):
+    """6.2：_build_sandbox 在 plan 模式下只暴露只读工具集。"""
+    service = agent_service
+    sandbox = service._build_sandbox({'agentConfig': {'preset': 'plan'}})
+    # 只读工具可见
+    assert 'read_file' in sandbox.allowed_tools
+    assert 'search_code' in sandbox.allowed_tools
+    # 写工具不在白名单
+    assert 'write_file' not in sandbox.allowed_tools
+    assert 'edit_file' not in sandbox.allowed_tools
+    assert 'run_command' not in sandbox.allowed_tools
+
+
+def test_build_sandbox_build_mode_unrestricted(agent_service):
+    """6.2：build 模式（默认）不限制工具可见性（由 skill 决定）。"""
+    service = agent_service
+    sandbox = service._build_sandbox({'agentConfig': {'preset': 'build'}})
+    assert sandbox.allowed_tools == set()  # 空=全放行
+
+
+def test_build_sandbox_plan_intersects_with_skill_whitelist(agent_service):
+    """6.2：plan 模式与 skill 白名单取交集；skill 只能收窄不能放开写工具。"""
+    service = agent_service
+    skill = SkillDefinition(
+        name='reader_skill',
+        description='只读技能',
+        allowed_tools=['read_file', 'search_code'],  # 都是只读
+    )
+    service.skill_registry.register(skill)
+    try:
+        sandbox = service._build_sandbox({'agentConfig': {'preset': 'plan'}})
+        # 交集：{read_file, search_code} ∩ readonly = {read_file, search_code}
+        assert sandbox.allowed_tools == {'read_file', 'search_code'}
+    finally:
+        service.skill_registry.unregister('reader_skill')
+
+
+def test_build_system_prompt_plan_mode_appends_suffix(agent_service):
+    """6.2：plan 模式系统提示词末尾追加只读声明。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    prompt = loop.run_until_complete(
+        service._build_system_prompt({'agentConfig': {'preset': 'plan'}})
+    )
+    assert '规划模式' in prompt
+    assert '不能修改文件或执行命令' in prompt
+    # build 模式无后缀
+    prompt_build = loop.run_until_complete(
+        service._build_system_prompt({'agentConfig': {'preset': 'build'}})
+    )
+    assert '规划模式' not in prompt_build
+
+
+def test_three_state_always_persists_rule_and_skips_next_confirmation(
+    agent_service, monkeypatch,
+):
+    """6.1：用户选 scope='always' 批准 → 持久化规则 + 本轮后续相同调用直接放行。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    tc = _make_tool_call('write_file', {'path': '/a/b.py', 'content': 'x'}, 'call_always_1')
+
+    persist_calls = []
+
+    async def mock_persist(conv_id, action, resource, effect):
+        persist_calls.append((conv_id, action, resource, effect))
+
+    monkeypatch.setattr(service, '_persist_approval_rule', mock_persist)
+
+    # 首轮：发确认事件后，用户用 scope=always 批准
+    async def approve_after_confirm(request_id):
+        await asyncio.sleep(0.05)
+        service.submit_confirmation(request_id, True, scope='always')
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    conv = {
+        'id': 'conv-always', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+
+    # 拦截 _wait_for_confirmation：启动批准任务，返回真实等待
+    original_wait = service._wait_for_confirmation
+
+    async def patched_wait(request_id):
+        task = loop.create_task(approve_after_confirm(request_id))
+        result = await original_wait(request_id)
+        await task
+        return result
+
+    monkeypatch.setattr(service, '_wait_for_confirmation', patched_wait)
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-always', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 持久化规则被调用一次（action=write_file, resource=file:/a/b.py, effect=allow）
+    assert len(persist_calls) == 1
+    assert persist_calls[0] == ('conv-always', 'write_file', 'file:/a/b.py', 'allow')
+    # 工具最终被执行（批准后执行）
+    assert len(execute_spy) == 1
+
+
+def test_reject_with_feedback_fed_back_to_model(agent_service, monkeypatch):
+    """6.1：用户拒绝并附 feedback → tool result error 含 feedback 文本，模型可见。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    tc = _make_tool_call('run_command', {'command': 'rm -rf /', 'cwd': '/a'}, 'call_reject_1')
+
+    async def reject_with_feedback(request_id):
+        await asyncio.sleep(0.05)
+        service.submit_confirmation(
+            request_id, False, feedback='禁止删除操作',
+        )
+
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+
+    conv = {
+        'id': 'conv-reject', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+
+    original_wait = service._wait_for_confirmation
+
+    async def patched_wait(request_id):
+        task = loop.create_task(reject_with_feedback(request_id))
+        result = await original_wait(request_id)
+        await task
+        return result
+
+    monkeypatch.setattr(service, '_wait_for_confirmation', patched_wait)
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-reject', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 工具未执行（被拒）
+    assert execute_spy == []
+    # tool_call_end 含 feedback
+    end_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'tool_call_end'
+    ]
+    assert len(end_events) == 1
+    assert end_events[0]['toolResult']['success'] is False
+    assert '禁止删除操作' in end_events[0]['toolResult']['error']
+
+
+def test_auto_approve_writes_does_not_leak_across_conversations(
+    agent_service, monkeypatch,
+):
+    """N2-M3：autoApproveWrites 规则每会话构建，会话 A 的自动批准不影响会话 B。
+
+    会话 A 设 autoApproveWrites=True，会话 B 不设。两个会话独立调用 process_message，
+    B 的 write_file 仍需确认（不被 A 的规则放行）。规则在内存中不跨 process_message 调用累积。
+    """
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    # 会话 A：autoApproveWrites=True，write_file 直接放行
+    tc_a = _make_tool_call('write_file', {'path': '/a/x.py', 'content': 'x'}, 'call_a_1')
+    call_count_a = [0]
+
+    async def stream_a(provider, messages, tools, **kwargs):
+        if call_count_a[0] == 0:
+            call_count_a[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc_a}
+
+    conv_a = {
+        'id': 'conv-a', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'autoApproveWrites': True},
+        'messages': [],
+    }
+    execute_spy_a = []
+    _stub_agent_env(service, monkeypatch, conv_a, stream_a, sandbox_execute_spy=execute_spy_a)
+
+    async def run_a():
+        events = []
+        async for event in service.process_message('conv-a', 'test'):
+            events.append(event)
+        return events
+
+    events_a = loop.run_until_complete(run_a())
+    # A：autoApproveWrites → allow，无需确认直接执行
+    assert len(execute_spy_a) == 1
+    assert not any('requires_confirmation' in ev for ev in events_a)
+
+    # 会话 B：不设 autoApproveWrites，write_file 应发起确认（ask）
+    tc_b = _make_tool_call('write_file', {'path': '/b/y.py', 'content': 'y'}, 'call_b_1')
+    call_count_b = [0]
+
+    async def stream_b(provider, messages, tools, **kwargs):
+        if call_count_b[0] == 0:
+            call_count_b[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc_b}
+
+    conv_b = {
+        'id': 'conv-b', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},  # 无 autoApproveWrites
+        'messages': [],
+    }
+    execute_spy_b = []
+
+    # B 的确认：超时返回 None（不批准），避免测试阻塞
+    async def wait_timeout(request_id):
+        return None
+
+    _stub_agent_env(service, monkeypatch, conv_b, stream_b, sandbox_execute_spy=execute_spy_b)
+    monkeypatch.setattr(service, '_wait_for_confirmation', wait_timeout)
+    # 缩短超时避免测试慢
+    monkeypatch.setattr(service, 'CONFIRMATION_TIMEOUT', 0.05)
+
+    async def run_b():
+        events = []
+        async for event in service.process_message('conv-b', 'test'):
+            events.append(event)
+        return events
+
+    events_b = loop.run_until_complete(run_b())
+    # B：write_file 走 ask → 发起确认 → 超时不执行
+    assert any('requires_confirmation' in ev for ev in events_b)
+    assert execute_spy_b == []  # 未批准，未执行
+

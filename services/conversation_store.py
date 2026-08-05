@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS messages (
     seq               INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS tool_approval_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT,                 -- NULL=全局，非 NULL=会话级（N2-M3：autoApproveWrites 不落此表）
+    action          TEXT NOT NULL,        -- 工具名，如 'run_command'
+    resource        TEXT NOT NULL,        -- 资源模式，如 'command:git status' / 'file:*'
+    effect          TEXT NOT NULL,        -- 'allow' | 'deny'
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_conv ON tool_approval_rules(conversation_id);
 """
 
 # 阶段二增量列（旧库 ALTER TABLE 补齐；新库已在 DDL 中声明）
@@ -289,6 +299,63 @@ class ConversationStore:
                 (conv_id,),
             )).fetchone()
             return row[0] if row else 0
+
+    # ── tool_approval_rules CRUD（阶段三 6.1） ─────────────────
+
+    async def list_approval_rules(self, conv_id: str) -> List[dict]:
+        """返回作用于该会话的审批规则：会话级 + 全局，按 id 升序（findLast 后声明优先）。
+
+        会话级规则（conversation_id=conv_id）与全局规则（conversation_id IS NULL）
+        都生效，会话级通常后插入故 id 更大、优先级更高。返回 dict 列表，
+        由 agent_service 转为 ApprovalRule。
+        """
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            rows = await db.execute_fetchall(
+                'SELECT id, conversation_id, action, resource, effect, created_at '
+                'FROM tool_approval_rules '
+                'WHERE conversation_id IS NULL OR conversation_id=? '
+                'ORDER BY id ASC',
+                (conv_id,),
+            )
+            return [
+                {
+                    'id': r['id'],
+                    'conversationId': r['conversation_id'],
+                    'action': r['action'],
+                    'resource': r['resource'],
+                    'effect': r['effect'],
+                    'createdAt': r['created_at'],
+                }
+                for r in rows
+            ]
+
+    async def add_approval_rule(
+        self, conv_id: Optional[str], action: str, resource: str, effect: str,
+    ) -> int:
+        """持久化一条审批规则。``conv_id=None`` 表示全局（N2-M3：autoApproveWrites
+        不走此路径，仅用户显式"始终允许"且选择全局时才传 None）。返回新行 id。"""
+        from datetime import datetime, timezone
+        created_at = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            cur = await db.execute(
+                'INSERT INTO tool_approval_rules'
+                '(conversation_id, action, resource, effect, created_at) '
+                'VALUES(?,?,?,?,?)',
+                (conv_id, action, resource, effect, created_at),
+            )
+            await db.commit()
+            return cur.lastrowid or 0
+
+    async def delete_approval_rules(self, conv_id: str) -> int:
+        """清除该会话的会话级规则（不动全局规则）。供"重置审批记忆"用。"""
+        async with self._connect() as db:
+            cur = await db.execute(
+                'DELETE FROM tool_approval_rules WHERE conversation_id=?',
+                (conv_id,),
+            )
+            await db.commit()
+            return cur.rowcount or 0
 
     # ── migration ─────────────────────────────────────────────
 

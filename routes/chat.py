@@ -803,21 +803,33 @@ async def agent_stop():
 
 @chat_bp.route('/conversations/<conv_id>/confirm-tool', methods=['POST'])
 async def confirm_tool(conv_id):
-    """用户对需要确认的工具调用进行批准/拒绝"""
+    """用户对需要确认的工具调用进行批准/拒绝（阶段三 6.1 三态确认）。
+
+    请求体：
+    - ``requestId``: 工具调用 request_id
+    - ``approved``: bool，是否批准
+    - ``scope``: 'once'（默认）| 'always'。always=批准时持久化为会话级 allow 规则
+    - ``feedback``: str，拒绝原因（approved=False 时回喂模型）
+    旧客户端只传 {requestId, approved} 仍兼容（scope=once, feedback=None）。
+    """
     body = await request.get_json(silent=True) or {}
     request_id = body.get('requestId')
     approved = body.get('approved')
+    scope = body.get('scope', 'once')
+    feedback = body.get('feedback')
 
     if not request_id:
         return jsonify({'ok': False, 'error': 'missing requestId'}), 400
     if not isinstance(approved, bool):
         return jsonify({'ok': False, 'error': 'approved must be boolean'}), 400
+    if scope not in ('once', 'always'):
+        return jsonify({'ok': False, 'error': "scope must be 'once' or 'always'"}), 400
 
     agent = active_agents.get(conv_id)
     if not agent:
         return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
 
-    ok = agent.submit_confirmation(request_id, approved)
+    ok = agent.submit_confirmation(request_id, approved, scope=scope, feedback=feedback)
     if not ok:
         # F17: request_id 既不在待确认集合中，也没有正在等待的 event（已过期/重复/伪造）
         return jsonify({

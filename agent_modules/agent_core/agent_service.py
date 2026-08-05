@@ -19,6 +19,13 @@ from services.tool_registry import ToolRegistry
 from services.tool_executor import ToolExecutor
 from services.skill_registry import SkillDefinition
 from services.context_service import ContextService
+from services.tool_approval import (
+    ApprovalRule, evaluate, derive_resource,
+    build_default_rules, build_auto_approve_writes_rules,
+)
+from services.agent_presets import (
+    preset_tools, preset_approval_rules, preset_system_suffix,
+)
 from agent_modules.agent_core.sandbox import SkillSandbox
 from agent_modules.agent_core.llm_stream import llm_stream, LLMError
 from zaowu_paths import get_project_root
@@ -79,7 +86,8 @@ class AgentService:
 
     LOOP_THRESHOLD = 3  # 同一工具+参数连续调用达到此次数时自动中断
     CONFIRMATION_TIMEOUT = 60  # F11: 用户确认等待超时（秒），从 300 缩短到 60
-    REQUIRES_APPROVAL_TOOLS = {'write_file', 'edit_file', 'run_command'}
+    # 阶段三 6.1：原 REQUIRES_APPROVAL_TOOLS 硬编码已删除，改由审批引擎
+    # build_default_rules 从 ToolDefinition.requires_approval 元数据生成默认 ask 规则。
 
     def __init__(self, tool_registry: ToolRegistry, project_path: str = None,
                  model_id: str = '', stop_event=None, limit_path: str = None,
@@ -95,11 +103,10 @@ class AgentService:
         self.stop_event = stop_event or asyncio.Event()
         # 用户确认状态：request_id -> asyncio.Event
         self._confirmation_events: Dict[str, asyncio.Event] = {}
-        self._confirmation_results: Dict[str, bool] = {}
+        # 阶段三 6.1：确认结果改为三态 dict {approved, scope, feedback}（原 bool）
+        self._confirmation_results: Dict[str, dict] = {}
         # F12: 跟踪已发出但尚未解决的确认 request_id，避免缓存过期 id / 处理 event 尚未创建的竞态
         self._pending_confirmation_ids: set = set()
-        # F04: 自动批准写入文件（由 process_message 读取 agentConfig.autoApproveWrites 设置）
-        self._auto_approve_writes = False
         # Skill 注册表，可选依赖；未提供时 AgentService 行为与之前一致
         if skill_registry is None:
             from services.skill_registry import SkillRegistry
@@ -134,9 +141,10 @@ class AgentService:
             ).get('id', '')
 
             messages = await self._build_messages(conv, content)
-            # F04: 读取自动批准写入配置（仅影响 write_file，run_command 仍需确认）
             agent_config = conv.get('agentConfig') or {}
-            self._auto_approve_writes = agent_config.get('autoApproveWrites', False)
+            # 阶段三 6.1：构建审批规则集（默认 + 持久化 always + autoApproveWrites + preset deny）。
+            # autoApproveWrites 转为会话级 allow 规则（N2-M3：仅本会话内存，不持久化、不跨会话）。
+            approval_rules = await self._build_approval_rules(conv_id, agent_config)
             sandbox = self._build_sandbox(conv)
             tool_specs = sandbox.build_openai_tools_spec()
 
@@ -258,29 +266,47 @@ class AgentService:
                     for tc in collected_tool_calls:
                         yield self._tool_call_start_event(assistant_msg_id, tc)
 
-                    # 2c: F04+F12+F13 串行执行工具（危险工具需用户确认），收集结果后批量注入
+                    # 2c: 阶段三 6.1 审批引擎求值 + F12 确认竞态处理 + F13 批量注入
+                    # 三态：allow=直接执行；deny=拒绝（plan 模式/preset 规则）；ask=发确认事件等待
                     tool_results = []
                     for tc in collected_tool_calls:
-                        if tc['name'] in self.REQUIRES_APPROVAL_TOOLS:
-                            # F04: run_command 永远需要确认，write_file 可被 autoApproveWrites 跳过
-                            if not (tc['name'] in ('write_file', 'edit_file') and self._auto_approve_writes):
-                                # F12: 先注册 pending id，处理用户批准早于 event 创建的竞态
-                                self._pending_confirmation_ids.add(tc['requestId'])
-                                yield self._requires_confirmation_event(assistant_msg_id, tc)
-                                approved = await self._wait_for_confirmation(tc['requestId'])
-                                if not approved:
-                                    result = {
-                                        'success': False,
-                                        'error': '用户已拒绝执行该操作',
-                                        'content': '',
-                                    }
-                                    yield self._tool_call_end_event(
-                                        assistant_msg_id, tc['requestId'], result
-                                    )
-                                    tool_results.append(result)
-                                    continue
+                        resource = derive_resource(tc['name'], tc['arguments'])
+                        decision = evaluate(tc['name'], resource, approval_rules)
 
-                        result = await sandbox.execute(tc['name'], tc['arguments'])
+                        if decision == 'allow':
+                            result = await sandbox.execute(tc['name'], tc['arguments'])
+                        elif decision == 'deny':
+                            # plan 模式或显式 deny 规则：拒绝并回喂模型
+                            result = {
+                                'success': False,
+                                'error': '当前模式/规则禁止执行此操作',
+                                'content': '',
+                            }
+                        else:  # 'ask'
+                            # F12: 先注册 pending id，处理用户批准早于 event 创建的竞态
+                            self._pending_confirmation_ids.add(tc['requestId'])
+                            yield self._requires_confirmation_event(assistant_msg_id, tc)
+                            confirmation = await self._wait_for_confirmation(tc['requestId'])
+                            if not confirmation or not confirmation.get('approved'):
+                                # 拒绝（可能含 feedback）或超时/停止：feedback 回喂模型
+                                feedback = confirmation.get('feedback') if confirmation else None
+                                err = (
+                                    f'用户拒绝：{feedback}' if feedback
+                                    else '用户已拒绝执行该操作'
+                                )
+                                result = {'success': False, 'error': err, 'content': ''}
+                            else:
+                                # 批准：scope='always' 时持久化为会话级 allow 规则
+                                if confirmation.get('scope') == 'always':
+                                    await self._persist_approval_rule(
+                                        conv_id, tc['name'], resource, 'allow',
+                                    )
+                                    # 追加到内存规则，本轮后续相同调用直接放行
+                                    approval_rules.append(
+                                        ApprovalRule(tc['name'], resource, 'allow')
+                                    )
+                                result = await sandbox.execute(tc['name'], tc['arguments'])
+
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
                         tool_results.append(result)
 
@@ -356,27 +382,41 @@ class AgentService:
 
     # ── 用户确认 ──────────────────────────────────────────────
 
-    def submit_confirmation(self, request_id: str, approved: bool) -> bool:
-        """F12: 由路由层调用，提交用户对指定 tool requestId 的确认结果
+    def submit_confirmation(
+        self, request_id: str, approved: bool,
+        scope: str = 'once', feedback: Optional[str] = None,
+    ) -> bool:
+        """F12 + 阶段三 6.1 三态确认：由路由层调用，提交用户确认结果。
 
-        只有真正待确认（在 _pending_confirmation_ids 中）或正在等待 event 的 request_id 才接受，
-        避免缓存过期 id 或处理伪造/重复确认。
+        三态语义：
+        - ``once``（默认）：本次放行/拒绝，不持久化。向后兼容旧客户端（只传 approved）。
+        - ``always``：批准时持久化为会话级 allow 规则（N2-M3：绑定 conv_id，不跨会话）。
+        - ``feedback`` 非空：拒绝原因，回喂模型（CorrectedError 语义）。
+
+        只有真正待确认（在 _pending_confirmation_ids 中）或正在等待 event 的
+        request_id 才接受，避免缓存过期 id 或处理伪造/重复确认。
         """
         if (request_id not in self._pending_confirmation_ids
                 and request_id not in self._confirmation_events):
             return False
 
         self._pending_confirmation_ids.discard(request_id)
-        self._confirmation_results[request_id] = approved
+        self._confirmation_results[request_id] = {
+            'approved': bool(approved),
+            'scope': scope or 'once',
+            'feedback': feedback,
+        }
 
         event = self._confirmation_events.get(request_id)
         if event:
             event.set()
         return True
 
-    async def _wait_for_confirmation(self, request_id: str) -> bool:
-        """F12: 阻塞等待用户确认，超时或停止时返回 False
+    async def _wait_for_confirmation(self, request_id: str) -> Optional[dict]:
+        """F12: 阻塞等待用户确认，超时或停止时返回 None。
 
+        返回三态 dict ``{approved, scope, feedback}``；超时/停止返回 None
+        （与"拒绝"区分：拒绝有 dict + feedback，超时无用户输入）。
         处理用户批准早于 event 创建的竞态：先检查预缓存结果。
         """
         # 先检查是否有预缓存的确认结果（用户点击比 event 创建更快）
@@ -396,16 +436,64 @@ class AgentService:
             for task in pending:
                 task.cancel()
             if not done:
-                # 超时
-                return False
+                # 超时：无用户输入
+                return None
             # 检查是确认事件还是停止事件先触发
             if event.is_set():
-                return self._confirmation_results.get(request_id, False)
-            return False
+                return self._confirmation_results.get(
+                    request_id, {'approved': False, 'scope': 'once', 'feedback': None}
+                )
+            return None  # 停止事件触发
         finally:
             self._pending_confirmation_ids.discard(request_id)
             self._confirmation_events.pop(request_id, None)
             self._confirmation_results.pop(request_id, None)
+
+    # ── 阶段三 6.1 审批规则构建 ────────────────────────────────
+
+    async def _build_approval_rules(
+        self, conv_id: str, agent_config: dict,
+    ) -> List[ApprovalRule]:
+        """组装本会话的审批规则集（findLast 后声明优先）。
+
+        优先级（低→高，按追加顺序）：
+        1. 默认规则：从 ``ToolDefinition.requires_approval`` 生成（ask/allow）。
+        2. 持久化 always 规则：用户此前选"始终允许"落库的会话级 + 全局规则。
+        3. ``autoApproveWrites`` 转 allow 规则（N2-M3：仅本会话内存，不持久化）。
+        4. preset deny 规则（plan 模式）：优先级最高，覆盖 autoApproveWrites。
+        """
+        rules: List[ApprovalRule] = list(build_default_rules(self.tool_registry))
+        rules.extend(await self._load_persisted_rules(conv_id))
+        if agent_config.get('autoApproveWrites'):
+            rules.extend(build_auto_approve_writes_rules())
+        preset = agent_config.get('preset', 'build')
+        rules.extend(preset_approval_rules(preset))
+        return rules
+
+    async def _load_persisted_rules(self, conv_id: str) -> List[ApprovalRule]:
+        """从 SQLite 加载会话级 + 全局 always 规则。失败时降级为空列表，不阻塞主流程。"""
+        try:
+            from server_quart import get_conversation_store
+            store = get_conversation_store()
+            rows = await store.list_approval_rules(conv_id)
+            return [
+                ApprovalRule(action=r['action'], resource=r['resource'], effect=r['effect'])
+                for r in rows
+            ]
+        except Exception:
+            logger.exception('failed to load approval rules for %s', conv_id)
+            return []
+
+    async def _persist_approval_rule(
+        self, conv_id: str, action: str, resource: str, effect: str,
+    ) -> None:
+        """持久化一条会话级审批规则（用户选"始终允许"时调用）。失败仅记日志。"""
+        try:
+            from server_quart import get_conversation_store
+            store = get_conversation_store()
+            await store.add_approval_rule(conv_id, action, resource, effect)
+        except Exception:
+            logger.exception('failed to persist approval rule for %s', conv_id)
 
     # ── 死循环检测 ────────────────────────────────────────────
 
@@ -509,6 +597,11 @@ class AgentService:
         合并规则：任一 enabled skill 的 ``allowed_tools`` 为空（= 不限制）→
         沙箱全放行；否则取所有 enabled skills 的 ``allowed_tools`` 并集。
         无启用技能时全放行，与原「无 selectedSkill」行为一致。
+
+        阶段三 6.2：preset 工具集（plan 模式只读）与 skill 白名单取交集。
+        skill 只能收窄 preset 集合，不能放开写工具；交集为空时以 preset 只读集
+        为下限（保证 LLM 至少有只读工具可用，且 empty=set() 在 SkillSandbox 语义
+        为"全放行"，故必须显式赋值避免误放行）。
         """
         skills = self._get_enabled_skills()
         allowed_tools: set[str] = set()
@@ -518,6 +611,17 @@ class AgentService:
         else:
             for s in skills:
                 allowed_tools |= set(s.allowed_tools)
+
+        # preset 工具集叠加（plan 模式只读）
+        preset = (conv.get('agentConfig') or {}).get('preset', 'build')
+        p_tools = preset_tools(preset)
+        if p_tools is not None:
+            if allowed_tools:  # skills 有限制 → 取交集
+                allowed_tools = allowed_tools & p_tools
+            else:  # skills 不限制 → 直接用 preset 集
+                allowed_tools = set(p_tools)
+            if not allowed_tools:  # 交集为空：以 preset 只读集为下限，避免误判全放行
+                allowed_tools = set(p_tools)
 
         if skills:
             logger.debug(
@@ -534,8 +638,12 @@ class AgentService:
         静态段为常量；动态段（项目结构/git 分支/项目路径）按 TTL 缓存；
         技能段按 SkillRegistry.version 失效。占位符替换作为最终后处理，
         对默认/自定义 prompt 统一生效（N2-I3）。
+
+        阶段三 6.2：末尾追加 preset 系统提示词后缀（plan 模式只读声明）。
         """
-        return await self._context.build(conv)
+        body = await self._context.build(conv)
+        preset = (conv.get('agentConfig') or {}).get('preset', 'build')
+        return body + preset_system_suffix(preset)
 
     # ── 逐轮持久化 ────────────────────────────────────────────
 
