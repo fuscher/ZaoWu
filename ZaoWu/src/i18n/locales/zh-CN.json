@@ -67,6 +67,7 @@
     "helloMessage": "你好！我是 ZaoWu Agent，有什么可以帮助你的？",
     "userMessage": "你能帮我创建一个新的 Vue 项目吗？",
     "assistantMessage": "当然！我很乐意帮你搭建 Vue 3 项目。我们可以使用 Vite 作为构建工具。需要我详细说明步骤吗？",
+    "copyMessage": "复制消息",
     "newConversation": "新建对话",
     "searchConversations": "搜索对话...",
     "deleteConversation": "删除对话",

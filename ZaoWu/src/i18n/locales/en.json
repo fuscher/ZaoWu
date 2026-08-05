@@ -67,6 +67,7 @@
     "helloMessage": "Hello! I'm ZaoWu Agent. How can I help you today?",
     "userMessage": "Can you help me set up a new Vue project?",
     "assistantMessage": "Sure! I'd be happy to help you set up a Vue 3 project. We can use Vite for the build tool. Would you like me to walk you through the steps?",
+    "copyMessage": "Copy message",
     "newConversation": "New conversation",
     "searchConversations": "Search conversations...",
     "deleteConversation": "Delete conversation",

@@ -328,6 +328,7 @@ textarea::placeholder {
   border-radius: 6px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
 }
 
 .preset-btn {
@@ -342,6 +343,8 @@ textarea::placeholder {
   font-size: 11.5px;
   cursor: pointer;
   transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .preset-btn:hover {

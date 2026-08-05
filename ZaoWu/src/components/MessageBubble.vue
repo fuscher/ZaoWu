@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, Bot } from '@lucide/vue'
+import { User, Bot, Copy, Check } from '@lucide/vue'
+import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
 import { useChatStore } from '@/stores/chat'
 import type { Message, ToolCall, ToolResult } from '@/types'
@@ -16,6 +17,32 @@ const props = defineProps<{
 
 const communityStore = useCommunityStore()
 const chatStore = useChatStore()
+const { t } = useI18n()
+
+/** 复制渲染后的纯文本（与拖选语义一致），pywebview 环境下作为整条复制的快捷入口 */
+const copied = ref(false)
+async function copyMessage() {
+  // 取 markdown 渲染后的纯文本（去 #、** 等标记），与拖选复制的内容保持一致
+  const html = renderedContent.value
+  const div = document.createElement('div')
+  div.innerHTML = html
+  const text = div.innerText || props.message.content || ''
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 非安全上下文（非 localhost）/WebView2 剪贴板 API 异常时的兜底
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  copied.value = true
+  setTimeout(() => (copied.value = false), 1500)
+}
 
 const md = new MarkdownIt({
   html: false,
@@ -117,6 +144,15 @@ const displayName = computed(() => {
       <div class="bubble-header">
         <span class="role-name">{{ displayName }}</span>
         <span class="time">{{ timeStr }}</span>
+        <button
+          v-if="message.content && !isStreaming"
+          class="copy-btn"
+          :title="t('chat.copyMessage')"
+          @click.stop="copyMessage"
+        >
+          <Check v-if="copied" :size="12" />
+          <Copy v-else :size="12" />
+        </button>
       </div>
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
@@ -215,6 +251,34 @@ const displayName = computed(() => {
   margin-bottom: 4px;
 }
 
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 2px 5px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.45;
+  transition: opacity var(--transition), background var(--transition), color var(--transition);
+  user-select: none;
+}
+
+.copy-btn:hover {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--bg-glass);
+}
+
+.user .copy-btn {
+  margin-left: 0;
+  margin-right: auto;
+}
+
 .user .bubble-header {
   flex-direction: row-reverse;
 }
@@ -236,6 +300,8 @@ const displayName = computed(() => {
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .content-md {
@@ -243,6 +309,8 @@ const displayName = computed(() => {
   line-height: 1.6;
   color: var(--text-primary);
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .content-md :deep(p) {
