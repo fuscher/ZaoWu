@@ -18,8 +18,9 @@ from typing import AsyncGenerator, Dict, List, Any, Optional
 from services.tool_registry import ToolRegistry
 from services.tool_executor import ToolExecutor
 from services.skill_registry import SkillDefinition
+from services.context_service import ContextService
 from agent_modules.agent_core.sandbox import SkillSandbox
-from agent_modules.agent_core.llm_stream import llm_stream
+from agent_modules.agent_core.llm_stream import llm_stream, LLMError
 from zaowu_paths import get_project_root
 
 logger = logging.getLogger('agent_modules.agent_core.agent_service')
@@ -104,6 +105,9 @@ class AgentService:
             from services.skill_registry import SkillRegistry
             skill_registry = SkillRegistry.get_instance()
         self.skill_registry = skill_registry
+        # N2-I1：ContextService 每会话实例，挂 AgentService（active_agents 已是每会话）。
+        # 不做全局单例——否则 project_structure/skill_config 缓存会串会话。
+        self._context = ContextService(self, AGENT_SYSTEM_PROMPT)
 
     @property
     def http_client(self) -> httpx.AsyncClient:
@@ -142,9 +146,21 @@ class AgentService:
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
             max_iterations = agent_config.get('maxIterations', 10)
+            max_tokens = conv.get('maxTokens', 4096)
 
             # full_text 在循环外初始化，跨迭代累加，保留中间推理过程
             full_text = ''
+
+            # 5.2 主动压缩（预算触发）：system+历史超 0.8*max_tokens 时摘要化早期对话。
+            # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
+            compacted_once = False
+            proactive_msgs, _ = await self._context.compact_if_needed(
+                conv, messages[0]['content'], max_tokens, provider,
+            )
+            if proactive_msgs is not None:
+                messages = proactive_msgs
+                compacted_once = True
+                yield self._text_event('[系统] 上下文较长，已自动压缩早期对话')
 
             for iteration in range(max_iterations):
                 # 检查停止事件
@@ -157,20 +173,41 @@ class AgentService:
                 collected_text = ''
 
                 # Step 1: 流式调用 LLM
-                async for event in self._stream_llm(
-                    provider, messages, tool_specs,
-                    temperature=conv.get('temperature', 0.7),
-                    max_tokens=conv.get('maxTokens', 4096),
-                    top_p=conv.get('topP', 1.0),
-                    stop_event=self.stop_event,
-                ):
-                    if event.get('type') == 'delta':
-                        collected_text += event.get('delta', '')
-                        yield self._delta_event(assistant_msg_id, event['delta'])
-                    elif event.get('type') == 'tool_call_part':
-                        collected_tool_calls = self._merge_tool_call(
-                            collected_tool_calls, event['tool_call']
-                        )
+                try:
+                    async for event in self._stream_llm(
+                        provider, messages, tool_specs,
+                        temperature=conv.get('temperature', 0.7),
+                        max_tokens=max_tokens,
+                        top_p=conv.get('topP', 1.0),
+                        stop_event=self.stop_event,
+                    ):
+                        if event.get('type') == 'delta':
+                            collected_text += event.get('delta', '')
+                            yield self._delta_event(assistant_msg_id, event['delta'])
+                        elif event.get('type') == 'tool_call_part':
+                            collected_tool_calls = self._merge_tool_call(
+                                collected_tool_calls, event['tool_call']
+                            )
+                except LLMError as e:
+                    # N2-I2：overflow→压缩→重试环路。_stream_llm 把 context_overflow
+                    # 重新抛出（不转 delta），由此处捕获，压缩后原地重走 _stream_llm。
+                    if e.kind == 'context_overflow' and not compacted_once:
+                        fresh_conv = await self._get_conversation(conv_id)
+                        if fresh_conv:
+                            retry_msgs, _ = await self._context.compact_if_needed(
+                                fresh_conv, messages[0]['content'], max_tokens, provider,
+                            )
+                            if retry_msgs is not None:
+                                messages = retry_msgs
+                                compacted_once = True
+                                yield self._text_event(
+                                    '[系统] 上下文过长，已自动压缩早期对话并重试'
+                                )
+                                continue  # 原地重走 _stream_llm
+                    # 非 overflow / 已压缩过 / 压缩无效 → 提示并结束，不崩溃
+                    yield self._text_event(f'\n\n[请求失败: {e.kind}]')
+                    yield self._done_event(assistant_msg_id, full_text or '(error)')
+                    return
 
                 # 累加本轮文本到 full_text，保留中间推理过程
                 if collected_text:
@@ -398,17 +435,32 @@ class AgentService:
             return None
 
     async def _build_messages(self, conv: dict, user_content: str) -> List[Dict[str, Any]]:
-        """构建消息列表：系统提示词 + 历史（含 tool_calls/tool 角色）"""
+        """构建消息列表：系统提示词 + （历史摘要）+ 历史（含 tool_calls/tool 角色）
+
+        M2 修复：历史摘要来自 conversations.compaction_summary，主动注入为第二条
+        system 消息（messages 表的 [compaction] 标记是 role=system 会被下方 skip）。
+        compactedUntilSeq：跳过已被压缩的早期消息，避免摘要与原文同时出现。
+        """
         messages = []
 
         # 系统提示词
         system_prompt = await self._build_system_prompt(conv)
         messages.append({'role': 'system', 'content': system_prompt})
 
+        # M2：注入历史摘要（最新一次压缩），位于主 system 之后、历史之前
+        compaction = conv.get('compactionSummary')
+        compacted_until = conv.get('compactedUntilSeq', -1)
+        if compaction:
+            messages.append({'role': 'system', 'content': f'历史摘要：\n{compaction}'})
+
         # 对话历史（保留 tool_calls 和 tool 角色）
         for msg in conv.get('messages', []):
             if msg.get('role') == 'system':
                 continue
+            # compactedUntilSeq=-1 表示无压缩；seq 缺失（如手构造消息）视为未压缩
+            seq = msg.get('seq')
+            if seq is not None and seq <= compacted_until:
+                continue  # 已被压缩，跳过
             entry = {'role': msg['role'], 'content': msg.get('content')}
             if msg.get('tool_calls'):
                 entry['tool_calls'] = msg['tool_calls']
@@ -477,41 +529,13 @@ class AgentService:
         return SkillSandbox(self.tool_registry, self.executor, allowed_tools)
 
     async def _build_system_prompt(self, conv: dict) -> str:
-        """构建系统提示词，注入运行时上下文与所有已启用技能。
+        """构建系统提示词（5.1：委托 ContextService，按源缓存）。
 
-        技能改为「全部启用即生效」：遍历所有 enabled skills，按 skill.name
-        字典序拼接其 system_prompt，每段以 "## 当前技能：{name}" 分隔；
-        随后注入合并后的技能配置 JSON。无启用技能时仅返回基础提示词。
+        静态段为常量；动态段（项目结构/git 分支/项目路径）按 TTL 缓存；
+        技能段按 SkillRegistry.version 失效。占位符替换作为最终后处理，
+        对默认/自定义 prompt 统一生效（N2-I3）。
         """
-        agent_config = conv.get('agentConfig') or {}
-        system_prompt = agent_config.get('systemPrompt') or AGENT_SYSTEM_PROMPT
-
-        project_structure = self._get_project_structure()
-        # git branch 查询走 subprocess（最多阻塞 5s），放到线程池避免阻塞 event loop
-        git_branch = await asyncio.to_thread(self._get_git_branch)
-
-        # <<PROJECT_PATH>> 填充真实白名单（self.executor.project_bases），
-        # 而非单一展示路径 self.project_path —— 与工具层路径校验保持一致，
-        # 让 LLM 准确知道可操作哪些项目根目录。
-        project_paths_lines = '\n'.join(f'- {p}' for p in self.executor.project_bases)
-        system_prompt = system_prompt.replace('<<PROJECT_PATH>>', project_paths_lines)
-        system_prompt = system_prompt.replace('<<PROJECT_STRUCTURE>>', project_structure)
-        system_prompt = system_prompt.replace('<<GIT_BRANCH>>', git_branch)
-
-        # 注入所有已启用技能的提示词（按 name 字典序拼接）
-        for skill in self._get_enabled_skills():
-            if skill.system_prompt:
-                system_prompt += f"\n\n## 当前技能：{skill.name}\n\n{skill.system_prompt}"
-
-        # 注入合并后的技能配置（所有 enabled skills 的 default_config + skillConfig）
-        skill_config = self._resolve_merged_skill_config(conv)
-        if skill_config:
-            system_prompt += (
-                f"\n\n## 技能配置\n\n"
-                f"```json\n{json.dumps(skill_config, ensure_ascii=False, indent=2)}\n```"
-            )
-
-        return system_prompt
+        return await self._context.build(conv)
 
     # ── 逐轮持久化 ────────────────────────────────────────────
 
@@ -631,6 +655,17 @@ class AgentService:
                 http_client=self.http_client,
             ):
                 yield event
+        except LLMError as e:
+            # N2-I2：context_overflow 重新抛出，交 process_message 触发压缩→重试环路。
+            # 其余 kind 仍转 delta 友好提示（保持 Agent 不崩溃的行为）。
+            if e.kind == 'context_overflow':
+                raise
+            elif e.kind == 'auth':
+                yield {'type': 'delta', 'delta': '\n\n[API 鉴权失败，请检查 provider 配置]'}
+            elif e.kind == 'rate_limit':
+                yield {'type': 'delta', 'delta': '\n\n[请求频率超限，稍后重试]'}
+            else:
+                yield {'type': 'delta', 'delta': f'\n\n[请求失败: {e.kind}]'}
         except httpx.TimeoutException:
             yield {'type': 'delta', 'delta': '\n\n[请求超时]'}
         except httpx.ConnectError:

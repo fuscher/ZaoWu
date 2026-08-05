@@ -36,7 +36,8 @@ class LLMNode(BaseNode):
         max_iterations = self.config.get('maxToolIterations', 10)
         loop_threshold = self.config.get('toolLoopThreshold', 3)
 
-        from agent_modules.agent_core.llm_stream import llm_stream
+        from agent_modules.agent_core.llm_stream import llm_stream, LLMError
+        from workflow_engine.sse_helpers import _sse_node_errored
 
         full_content = ''
         tool_call_parts: list[dict] = []
@@ -50,25 +51,36 @@ class LLMNode(BaseNode):
 
             tool_call_parts.clear()
 
-            async for part in llm_stream(
-                provider=provider,
-                model_id=model_id,
-                messages=messages,
-                tools=tools,
-                temperature=model_config.get('temperature') or 0.7,
-                max_tokens=self._clamp_max_tokens(model_config, model_id, provider),
-                tool_choice=tool_choice,
-                stop_event=stop_event,
-            ):
-                ptype = part['type']
-                if ptype == 'delta':
-                    full_content += part['delta']
-                    yield _sse_node_progress(ctx, ctx_node, part['delta'])
-                elif ptype == 'tool_call_part':
-                    tool_call_parts.append(part['tool_call'])
-                elif ptype == 'usage':
-                    ctx_node.tokens_in += part.get('tokens_in', 0)
-                    ctx_node.tokens_out += part.get('tokens_out', 0)
+            try:
+                async for part in llm_stream(
+                    provider=provider,
+                    model_id=model_id,
+                    messages=messages,
+                    tools=tools,
+                    temperature=model_config.get('temperature') or 0.7,
+                    max_tokens=self._clamp_max_tokens(model_config, model_id, provider),
+                    tool_choice=tool_choice,
+                    stop_event=stop_event,
+                ):
+                    ptype = part['type']
+                    if ptype == 'delta':
+                        full_content += part['delta']
+                        yield _sse_node_progress(ctx, ctx_node, part['delta'])
+                    elif ptype == 'tool_call_part':
+                        tool_call_parts.append(part['tool_call'])
+                    elif ptype == 'usage':
+                        ctx_node.tokens_in += part.get('tokens_in', 0)
+                        ctx_node.tokens_out += part.get('tokens_out', 0)
+            except LLMError as e:
+                # 捕获 LLMError 转 SSE 错误事件，不外抛给 executor（I1：避免与
+                # executor.py 节点级重试双重退避/重复请求）。llm_stream 内部已做
+                # 建连前短重试，此处仅兜底转错误。
+                msg = f'LLM 调用失败({e.kind}): {e}' if e.kind != 'context_overflow' \
+                    else '上下文过长，请减少输入或新开会话'
+                ctx_node.error = msg
+                ctx_node.elapsed_ms = (time.time() - start_time) * 1000
+                yield _sse_node_errored(ctx, ctx_node, msg, -1)
+                return
 
             # 无工具调用 → 结束循环
             if not tool_call_parts:

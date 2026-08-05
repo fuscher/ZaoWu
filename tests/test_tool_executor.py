@@ -198,3 +198,80 @@ def test_execute_edit_file_missing_required(real_executor):
     result = asyncio.run(real_executor.execute('edit_file', {'path': '/tmp/x.py'}))
     assert result['success'] is False
     assert 'missing required parameter' in result['error']
+
+
+# ── 4.2 类型/枚举校验 ──────────────────────────────────────────
+
+
+def test_check_type_integer_rejects_string(real_executor, tmp_path):
+    """read_file(limit='abc') 应在 handler 前拦截，而非让 handler 抛异常。"""
+    read_tool = real_executor.registry.get('read_file')
+    target = tmp_path / 'a.py'  # tmp_path 不在 real_executor 的 base 内，故用 base 内文件
+    # 用 base 内的真实文件避免路径校验先失败
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inside = os.path.join(base, 'README.md')
+    if not os.path.exists(inside):
+        inside = os.path.join(base, 'pyproject.toml')
+    error = real_executor.validate_arguments(
+        read_tool, {'path': inside, 'limit': 'abc'}
+    )
+    assert error is not None
+    assert 'expected integer' in error and 'got string' in error
+
+
+def test_check_type_integer_rejects_bool(real_executor):
+    """bool 是 int 子类，必须显式排除，否则 True 冒充 integer 通过。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inside = os.path.join(base, 'pyproject.toml')
+    read_tool = real_executor.registry.get('read_file')
+    error = real_executor.validate_arguments(
+        read_tool, {'path': inside, 'limit': True}
+    )
+    assert error is not None
+    assert 'expected integer' in error and 'got boolean' in error
+
+
+def test_check_type_number_rejects_bool():
+    """number 类型同样要排除 bool（True 通过 isinstance(_,(int,float))）。"""
+    err = ToolExecutor._check_type('x', True, {'type': 'number'})
+    assert err is not None
+    assert 'expected number' in err and 'got boolean' in err
+
+
+def test_check_type_number_accepts_int_and_float():
+    assert ToolExecutor._check_type('x', 3, {'type': 'number'}) is None
+    assert ToolExecutor._check_type('x', 3.14, {'type': 'number'}) is None
+
+
+def test_check_type_string_enum_violation():
+    """enum 校验对所有类型生效，string enum 也要触发（原方案锁死 integer 分支）。"""
+    spec = {'type': 'string', 'enum': ['asc', 'desc']}
+    assert ToolExecutor._check_type('order', 'sideways', spec) is not None
+    assert "not in" in ToolExecutor._check_type('order', 'sideways', spec)
+    assert ToolExecutor._check_type('order', 'asc', spec) is None
+
+
+def test_check_type_none_skipped():
+    """None 视为未提供，交由 handler 默认值处理（兼容 project_path=None 等）。"""
+    assert ToolExecutor._check_type('x', None, {'type': 'string'}) is None
+    assert ToolExecutor._check_type('x', None, {'type': 'integer'}) is None
+
+
+def test_check_type_valid_types_pass(real_executor):
+    """合法类型组合不应被新校验拦截。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inside = os.path.join(base, 'pyproject.toml')
+    read_tool = real_executor.registry.get('read_file')
+    error = real_executor.validate_arguments(
+        read_tool, {'path': inside, 'offset': 1, 'limit': 2000}
+    )
+    assert error is None
+
+
+def test_execute_type_mismatch_returns_structured_error(real_executor):
+    """类型错误经 execute 返回结构化失败结果，注入消息历史供模型自我修正。"""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    inside = os.path.join(base, 'pyproject.toml')
+    result = asyncio.run(real_executor.execute('read_file', {'path': inside, 'limit': 'abc'}))
+    assert result['success'] is False
+    assert 'expected integer' in result['error']

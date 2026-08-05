@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     system_prompt    TEXT NOT NULL DEFAULT '',
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL,
-    agent_config_json TEXT NOT NULL DEFAULT '{}'
+    agent_config_json TEXT NOT NULL DEFAULT '{}',
+    compaction_summary TEXT,
+    compacted_until_seq INTEGER NOT NULL DEFAULT -1
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -57,6 +59,14 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, seq);
 """
 
+# 阶段二增量列（旧库 ALTER TABLE 补齐；新库已在 DDL 中声明）
+_MIGRATION_COLUMNS = {
+    'conversations': [
+        ('compaction_summary', 'TEXT'),
+        ('compacted_until_seq', 'INTEGER NOT NULL DEFAULT -1'),
+    ],
+}
+
 
 class ConversationStore:
     """SQLite 对话存储，对外返回与 conversations.json 完全兼容的 dict 结构。"""
@@ -70,6 +80,18 @@ class ConversationStore:
         os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
         async with self._connect() as db:
             await db.executescript(DDL)
+            await self._migrate(db)
+
+    @staticmethod
+    async def _migrate(db: aiosqlite.Connection) -> None:
+        """旧库增量补列：检查 pragma table_info，缺失则 ALTER TABLE ADD COLUMN。"""
+        for table, cols in _MIGRATION_COLUMNS.items():
+            cur = await db.execute(f'PRAGMA table_info({table})')
+            existing = {row[1] for row in await cur.fetchall()}
+            for col, decl in cols:
+                if col not in existing:
+                    await db.execute(f'ALTER TABLE {table} ADD COLUMN {col} {decl}')
+        await db.commit()
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
@@ -86,7 +108,7 @@ class ConversationStore:
 
     @staticmethod
     def _row_to_conv(row: aiosqlite.Row) -> dict:
-        return {
+        conv = {
             'id': row['id'],
             'title': row['title'],
             'providerId': row['provider_id'],
@@ -97,6 +119,13 @@ class ConversationStore:
             'agentConfig': json.loads(row['agent_config_json']),
             'messages': [],
         }
+        # 阶段二压缩字段（旧库迁移后列存在；容错：列缺失时 keys() 不含）
+        keys = row.keys()
+        if 'compaction_summary' in keys:
+            conv['compactionSummary'] = row['compaction_summary']
+        if 'compacted_until_seq' in keys:
+            conv['compactedUntilSeq'] = row['compacted_until_seq']
+        return conv
 
     @staticmethod
     def _row_to_msg(row: aiosqlite.Row) -> dict:
@@ -106,6 +135,10 @@ class ConversationStore:
             'content': row['content'],
             'timestamp': row['timestamp'],
         }
+        # seq 用于 _build_messages 跳过已被压缩的早期消息
+        keys = row.keys()
+        if 'seq' in keys:
+            msg['seq'] = row['seq']
         if row['model']:
             msg['model'] = row['model']
         if row['tool_calls_json']:
@@ -182,6 +215,8 @@ class ConversationStore:
             'modelId': 'model_id',
             'systemPrompt': 'system_prompt',
             'updatedAt': 'updated_at',
+            'compactionSummary': 'compaction_summary',
+            'compactedUntilSeq': 'compacted_until_seq',
         }
         for key, col in field_map.items():
             if key in fields:

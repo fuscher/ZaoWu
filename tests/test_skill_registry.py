@@ -124,3 +124,48 @@ def test_register_overrides_existing():
 
     assert registry.get('same') is second
     assert registry.get('same').system_prompt == 'second prompt'
+
+
+# ── N2-M1：版本计数器 ────────────────────────────────────────
+
+
+def test_version_starts_at_zero():
+    assert SkillRegistry.get_instance().version == 0
+
+
+def test_version_bumps_on_every_mutation(sample_skill):
+    """register/unregister/enable/disable/clear 任一 mutation 都自增版本号。
+
+    ContextService 据此失效技能源缓存；不引入事件总线（如无必要勿增实体）。
+    """
+    registry = SkillRegistry.get_instance()
+    v0 = registry.version
+
+    registry.register(sample_skill)
+    assert registry.version == v0 + 1
+
+    registry.disable('code_review')
+    assert registry.version == v0 + 2
+
+    registry.enable('code_review')
+    assert registry.version == v0 + 3
+
+    registry.unregister('code_review')
+    assert registry.version == v0 + 4
+
+    registry.clear()
+    assert registry.version == v0 + 5
+
+
+def test_version_bump_triggers_context_cache_invalidation(sample_skill):
+    """模拟 ContextService 比对：技能变更后版本号不同 → 缓存应失效。"""
+    registry = SkillRegistry.get_instance()
+    cached_version = registry.version  # 假设缓存时记录的版本
+
+    # 技能变更
+    registry.register(sample_skill)
+    registry.disable('code_review')
+
+    # 缓存比对：版本不一致 → 失效
+    assert registry.version != cached_version
+    assert registry.version > cached_version

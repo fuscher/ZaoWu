@@ -60,6 +60,20 @@ class SkillRegistry:
         self._skills: Dict[str, SkillDefinition] = {}
         self._enabled: set[str] = set()
         self._lock = threading.Lock()
+        # N2-M1：单调版本计数器。任一 mutation（register/unregister/enable/
+        # disable/clear）自增，供 ContextService 比对失效技能源缓存。
+        # 不引入事件总线（如无必要勿增实体）：消费者主动比对版本号即可。
+        self._version = 0
+
+    @property
+    def version(self) -> int:
+        """技能集版本号，任一 mutation 后自增。"""
+        with self._lock:
+            return self._version
+
+    def _bump(self) -> None:
+        """在持锁的 mutation 末尾调用，自增版本号。"""
+        self._version += 1
 
     @classmethod
     def get_instance(cls) -> 'SkillRegistry':
@@ -88,26 +102,31 @@ class SkillRegistry:
                 self._enabled.add(skill.name)
             else:
                 self._enabled.discard(skill.name)
+            self._bump()
 
     def unregister(self, name: str) -> None:
         """Remove a skill from the registry (used by the settings panel)."""
         with self._lock:
             self._skills.pop(name, None)
             self._enabled.discard(name)
+            self._bump()
 
     def enable(self, name: str) -> bool:
         """Enable a skill.  Returns True if the skill exists."""
         with self._lock:
             if name in self._skills:
                 self._enabled.add(name)
+                self._bump()
                 return True
             return False
 
     def disable(self, name: str) -> bool:
         """Disable a skill.  Returns True if the skill exists."""
         with self._lock:
+            existed = name in self._skills
             self._enabled.discard(name)
-            return name in self._skills
+            self._bump()
+            return existed
 
     def is_enabled(self, name: str) -> bool:
         """Return True if the skill exists and is enabled."""
@@ -134,3 +153,4 @@ class SkillRegistry:
         with self._lock:
             self._skills.clear()
             self._enabled.clear()
+            self._bump()

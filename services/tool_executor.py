@@ -12,6 +12,13 @@ from typing import Dict, Any, Optional, List
 from services.tool_registry import ToolRegistry, ToolDefinition
 
 
+# Python 类型 → JSON Schema 类型名反向映射，用于错误信息与 expected 对称
+_PY_TO_JSON_TYPE = {
+    str: 'string', int: 'integer', float: 'number',
+    bool: 'boolean', list: 'array', dict: 'object',
+}
+
+
 class ToolExecutor:
     """工具执行器，负责参数验证、安全校验、结果格式化。
 
@@ -38,7 +45,12 @@ class ToolExecutor:
             return False
 
     def validate_arguments(self, tool: ToolDefinition, arguments: dict) -> Optional[str]:
-        """验证参数，返回错误信息或 None（通过）"""
+        """验证参数，返回错误信息或 None（通过）
+
+        校验顺序：必填 → 路径白名单 → 写路径确认 → 类型/枚举。
+        类型/枚举校验在 handler 前拦截，返回结构化错误帮模型自我修正，
+        而非让 handler 抛异常浪费往返。
+        """
         required = tool.parameters.get('required', [])
         for key in required:
             if key not in arguments:
@@ -55,6 +67,44 @@ class ToolExecutor:
             if not self.validate_path(arguments['path']):
                 return f'write path not in project: {arguments["path"]}'
 
+        # 类型与枚举校验：按 tool.parameters['properties'] 的 JSON Schema 校验
+        properties = tool.parameters.get('properties', {})
+        for pname, spec in properties.items():
+            if pname not in arguments:
+                continue
+            err = self._check_type(pname, arguments[pname], spec)
+            if err:
+                return err
+
+        return None
+
+    @staticmethod
+    def _check_type(name: str, val, spec: dict) -> Optional[str]:
+        """按 JSON Schema 片段校验单个参数的类型与枚举。
+
+        - bool 是 int 子类：isinstance(True, (int, float)) 为 True，
+          故 integer 与 number 都必须先排除 bool，否则 True 会通过 number 校验。
+        - enum 校验对所有类型生效（不只 integer），否则 string enum 永不触发。
+        - 实际类型名映射为 JSON Schema 名（str→string 等），与 expected 对称，便于模型理解。
+        """
+        expected = spec.get('type')
+        # None 视为"未提供"，交由 handler 的默认值处理，保持与既有行为兼容
+        # （如 search_code 的 project_path: str = None，模型传 null 不应被类型校验拦截）。
+        if val is None:
+            return None
+        type_map = {
+            'string': str, 'integer': int, 'number': (int, float),
+            'boolean': bool, 'array': list, 'object': dict,
+        }
+        if expected in ('integer', 'number') and isinstance(val, bool):
+            return f'parameter {name}: expected {expected}, got boolean'
+        py_type = type_map.get(expected)
+        if py_type and not isinstance(val, py_type):
+            # 反向映射 Python 类型 → JSON Schema 名，与 expected 对称
+            actual = _PY_TO_JSON_TYPE.get(type(val), type(val).__name__)
+            return f'parameter {name}: expected {expected}, got {actual}'
+        if 'enum' in spec and val not in spec['enum']:
+            return f'parameter {name}: {val!r} not in {spec["enum"]}'
         return None
 
     async def execute(self, tool_name: str, arguments: dict) -> dict:

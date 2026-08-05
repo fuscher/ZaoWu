@@ -674,3 +674,163 @@ def test_f04_auto_approve_writes_covers_edit_file(agent_service, monkeypatch):
     # sandbox.execute 应被调用 1 次（edit_file）
     assert len(execute_calls) == 1
     assert execute_calls[0][0] == 'edit_file'
+
+
+# ── 阶段二 N2-I2：overflow→压缩→重试环路 ──────────────────────
+
+
+def test_context_overflow_triggers_compaction_retry(agent_service, monkeypatch):
+    """N2-I2：_stream_llm 抛 context_overflow → process_message 压缩后原地重走。
+
+    验证：
+    - 主动压缩未触发（proactive 返回 None，compacted_once=False）
+    - 首轮 overflow → 被动压缩 → compacted_once=True → continue
+    - 次轮 _stream_llm 成功 → 正常结束
+    - 已压缩过再次 overflow 不再重试（防死循环）
+    """
+    from agent_modules.agent_core.llm_stream import LLMError
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    stream_calls = [0]
+    compact_calls = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        stream_calls[0] += 1
+        if stream_calls[0] == 1:
+            # 首轮：上下文超限
+            raise LLMError('context_overflow', 400, 'maximum context length exceeded',
+                           retryable=False)
+        # 次轮：压缩后成功
+        yield {'type': 'delta', 'delta': 'recovered'}
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'p', 'modelId': 'm',
+            'agentConfig': {'enabled': True, 'maxIterations': 5},
+            'messages': [{'role': 'user', 'content': 'x'}],
+        }
+
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider):
+        compact_calls[0] += 1
+        if compact_calls[0] == 1:
+            # 主动压缩：未超预算 → 不压缩
+            return None, None
+        # 被动压缩（overflow 触发）：返回压缩后的新消息
+        return [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'system', 'content': '历史摘要：\n摘要内容'},
+            {'role': 'user', 'content': 'x'},
+        ], '摘要内容'
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_build(self, conv):
+        return 'system prompt'
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_context', type('Ctx', (), {
+        'compact_if_needed': mock_compact,
+        'build': mock_build,
+    })())
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: type('S', (), {
+        'build_openai_tools_spec': lambda self: [],
+    })())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm'}],
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-overflow', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # _stream_llm 被调用 2 次（首轮 overflow + 次轮成功）
+    assert stream_calls[0] == 2
+    # compact_if_needed 被调用 2 次（主动 + 被动）
+    assert compact_calls[0] == 2
+
+    deltas = [
+        json.loads(ev[6:])['delta']
+        for ev in events
+        if json.loads(ev[6:]).get('type') == 'delta'
+    ]
+    # 被动压缩提示出现
+    assert any('已自动压缩早期对话并重试' in d for d in deltas)
+    # 压缩后重试的正文出现
+    assert any('recovered' in d for d in deltas)
+
+
+def test_context_overflow_twice_does_not_loop_forever(agent_service, monkeypatch):
+    """N2-I2：已压缩过仍 overflow → 不再重试，直接提示结束（compacted_once 防死循环）。"""
+    from agent_modules.agent_core.llm_stream import LLMError
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 每轮都 overflow
+        raise LLMError('context_overflow', 400, 'too long', retryable=False)
+        yield  # noqa: unreachable
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'p', 'modelId': 'm',
+            'agentConfig': {'enabled': True, 'maxIterations': 5},
+            'messages': [{'role': 'user', 'content': 'x'}],
+        }
+
+    compact_calls = [0]
+
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider):
+        compact_calls[0] += 1
+        if compact_calls[0] == 1:
+            return None, None  # 主动不压缩
+        return [{'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': 'x'}], '摘要'
+
+    async def mock_build(self, conv):
+        return 'system prompt'
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_context', type('Ctx', (), {
+        'compact_if_needed': mock_compact,
+        'build': mock_build,
+    })())
+    monkeypatch.setattr(service, '_append_message', lambda *a, **kw: _async_none())
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: type('S', (), {
+        'build_openai_tools_spec': lambda self: [],
+    })())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm'}],
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-overflow2', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 最多 2 次 _stream_llm（首轮 overflow→压缩→continue，次轮 overflow→直接结束）
+    # compact 最多 2 次（主动 + 被动各 1）
+    assert compact_calls[0] == 2
+    # 以 done 事件结束（不崩溃）
+    assert any(json.loads(ev[6:]).get('type') == 'done' for ev in events)
+
+
+async def _async_none():
+    return None
