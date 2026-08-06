@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill } from '@/types'
+import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill } from '@/types'
 import * as ai from '@/services/ai'
 
 export const useChatStore = defineStore('chat', () => {
@@ -424,9 +424,20 @@ export const useChatStore = defineStore('chat', () => {
           toolResultsByMessage.value.get(mid)?.set(result.requestId, result)
           pendingByMessage.value.get(mid)?.delete(result.requestId)
         },
-        onDone(messageId: string, fullContent: string) {
+        onDone(
+          messageId: string,
+          fullContent: string,
+          extra?: { quality?: MessageQuality; summary?: string }
+        ) {
           assistantMessage.content = fullContent
           assistantMessage.id = messageId
+          // 阶段 A4：落库的完成质量写入消息 metadata，驱动分级渲染
+          if (extra?.quality) {
+            assistantMessage.metadata = {
+              ...(assistantMessage.metadata || {}),
+              quality: extra.quality,
+            }
+          }
           // F02: 将工具调用数据关联到最终的持久化 messageId（流式临时 id 与持久化 id 不同）
           if (messageId !== mid) {
             const calls = toolCallsByMessage.value.get(mid)

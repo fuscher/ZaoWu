@@ -209,11 +209,16 @@ async def llm_stream(
                                     acc = accumulated_tool_calls[idx]
                                     if 'id' in tc and tc['id']:
                                         acc['id'] = tc['id']
-                                    func = tc.get('function', {})
-                                    if 'name' in func:
-                                        acc['function']['name'] += func['name']
-                                    if 'arguments' in func:
-                                        acc['function']['arguments'] += func['arguments']
+                                    func = tc.get('function', {}) or {}
+                                    # function 本身可能为 null / name、arguments 可能为 null
+                                    # （部分 Provider 分片 chunk 携带空值），必须判空拼接，
+                                    # 否则 str += None 抛 TypeError
+                                    name_part = func.get('name')
+                                    if name_part:
+                                        acc['function']['name'] += name_part
+                                    args_part = func.get('arguments')
+                                    if args_part:
+                                        acc['function']['arguments'] += args_part
                         except json.JSONDecodeError:
                             continue
                     break  # 消费完成，退出重试循环

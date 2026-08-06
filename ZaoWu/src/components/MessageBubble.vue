@@ -157,7 +157,9 @@ const displayName = computed(() => {
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
       <div v-else-if="message.role === 'tool'" class="content-text tool-result-text" />
-      <div v-else class="content-md" v-html="renderedContent" />
+      <!-- 仅当有正文才渲染 markdown 区：工具调用轮 assistant 消息 content 为 null
+           （OpenAI 标准格式），渲染空 div 会形成"空气泡"，直接跳过正文区 -->
+      <div v-else-if="renderedContent" class="content-md" v-html="renderedContent" />
       <!-- Stage 9: 实时工具调用卡片（仅当前正在流式生成的消息） -->
       <div
         v-if="!isUser && isStreaming && chatStore.streamingMessageId === message.id"

@@ -55,6 +55,7 @@ AGENT_SYSTEM_PROMPT = """你是一个专业的 AI 编程助手，运行在 ZaoWu
 - 不随意执行 git commit / git push：除非用户明确要求
 - 独立的工具调用（无依赖关系）可以在同一轮并行发起，节省往返时间
 - 引用代码位置时使用 `file:line` 格式（如 `src/main.py:42`）
+- **承诺即执行**：声明将执行工具操作（如"我先读取文件""我将检查"）时，必须在本轮立即调用对应工具；若本轮不调用任何工具，不要做"先做X"的承诺——直接基于已有信息输出结论、继续执行或询问用户
 
 ## 安全规则
 - 仅操作已加载项目目录内的文件（路径白名单由系统强制校验，越界读写会被拒绝）
@@ -127,12 +128,30 @@ class AgentService:
         try:
             conv = await self._get_conversation(conv_id)
             if not conv:
-                yield self._error_event('conversation not found')
+                # L131 偏差修复（阶段 B 补充）：早退路径也走结构化 error 事件
+                # （code=internal + recovery retry），与「错误 100% 走 type:error」DoD 对齐；
+                # 不再依赖 _error_event（type:"done" 旧通道）。
+                from agent_modules.agent_core.error_classifier import classify
+                payload = classify(RuntimeError('conversation not found'))
+                yield self._error_event_v2(
+                    'agent-error-early', code=payload['code'],
+                    message='对话不存在或已被删除',
+                    kind=payload.get('kind'), recovery=payload.get('recovery'),
+                    trace_id=f'agent-error-{_now_ts()}',
+                )
                 return
 
             provider = self._get_provider(conv)
             if not provider:
-                yield self._error_event('provider not configured')
+                # L136 偏差修复（阶段 B 补充）：同上的结构化 error 事件
+                from agent_modules.agent_core.error_classifier import classify
+                payload = classify(RuntimeError('provider not configured'))
+                yield self._error_event_v2(
+                    'agent-error-early', code=payload['code'],
+                    message='未配置 Provider，请先在设置中添加',
+                    kind=payload.get('kind'), recovery=payload.get('recovery'),
+                    trace_id=f'agent-error-{_now_ts()}',
+                )
                 return
 
             # 从 conversation 获取 modelId，回退到 provider 的第一个模型
@@ -160,6 +179,17 @@ class AgentService:
             full_text = ''
             # 跨迭代累计实际执行过的工具名（含各轮），供无正文时生成执行摘要
             executed_tool_names: List[str] = []
+            # 阶段 B2：完成质量判定器（每会话新建；重试计数在实例内，不跨会话/不跨进程）。
+            # build 模式空转兜底：模型整轮无正文无工具（异常空响应）时重试一次，
+            # 避免把"模型没干活"静默包装成空转终态误导用户；说而不做（有承诺无执行）
+            # 首次注入纠正消息重试，二次终态。原 retried_empty 简单逻辑由 IdleDetector 承接。
+            from agent_modules.agent_core.idle_detector import IdleDetector
+            idle_detector = IdleDetector()
+            # 本轮 phase 节点收集（A6 承诺补全：落 done.phase_history 与 metadata）
+            phase_nodes: List[str] = ['thinking']
+            # IdleDetector 终态 quality（None=全工具轮 for 耗尽，兜底 success）
+            terminal_quality = None
+            terminal_handoff = False  # constrained 交接标志（发 handoff 事件 + recovery CTA）
 
             # 5.2 主动压缩（预算触发）：system+历史超 0.8*max_tokens 时摘要化早期对话。
             # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
@@ -170,13 +200,31 @@ class AgentService:
             if proactive_msgs is not None:
                 messages = proactive_msgs
                 compacted_once = True
-                yield self._text_event('[系统] 上下文较长，已自动压缩早期对话')
+                yield self._notice_event(
+                    'info', 'compacted',
+                    '[系统] 上下文较长，已自动压缩早期对话',
+                )
+                yield self._phase_event(assistant_msg_id, 'compacting',
+                                        detail='预算触发主动压缩')
 
             for iteration in range(max_iterations):
                 # 检查停止事件
                 if self.stop_event.is_set():
-                    yield self._text_event('[系统] 生成已被用户终止')
-                    yield self._done_event(assistant_msg_id, full_text or '(stopped)')
+                    yield self._notice_event(
+                        'warn', 'user_stopped', '[系统] 生成已被用户终止', recoverable=True,
+                    )
+                    yield self._phase_event(assistant_msg_id, 'done')
+                    yield self._done_event(assistant_msg_id, full_text or '',
+                                           quality='stopped')
+                    # 落库收尾消息，避免对话以 content=NULL 的工具轮消息结尾
+                    await self._append_message(conv_id, {
+                        'id': assistant_msg_id,
+                        'role': 'assistant',
+                        'content': full_text or '生成已被用户终止',
+                        'timestamp': _now_ts(),
+                        'model': self._model_id,
+                        'metadata': {'quality': 'stopped'},
+                    })
                     return
 
                 collected_tool_calls = []
@@ -195,9 +243,27 @@ class AgentService:
                             collected_text += event.get('delta', '')
                             yield self._delta_event(assistant_msg_id, event['delta'])
                         elif event.get('type') == 'tool_call_part':
-                            collected_tool_calls = self._merge_tool_call(
-                                collected_tool_calls, event['tool_call']
+                            tc = event.get('tool_call')
+                            # 防御：异常 Provider/脏 chunk 可能产出 None 或缺 requestId 的
+                            # tool_call_part，直接跳过，避免 _merge_tool_call 内下标崩溃
+                            if not tc or not tc.get('requestId'):
+                                logger.warning(
+                                    'skip malformed tool_call_part: %r', tc,
+                                )
+                                continue
+                            is_new = not any(
+                                ex['requestId'] == tc['requestId']
+                                for ex in collected_tool_calls
                             )
+                            collected_tool_calls = self._merge_tool_call(
+                                collected_tool_calls, tc
+                            )
+                            # 阶段 B4：仅新 requestId 发 generating（去重，更新语义不重复发射）
+                            if is_new:
+                                yield self._tool_part_event(
+                                    assistant_msg_id, tc['requestId'], 'generating',
+                                )
+                                phase_nodes.append('tool')
                 except LLMError as e:
                     # N2-I2：overflow→压缩→重试环路。_stream_llm 把 context_overflow
                     # 重新抛出（不转 delta），由此处捕获，压缩后原地重走 _stream_llm。
@@ -210,13 +276,41 @@ class AgentService:
                             if retry_msgs is not None:
                                 messages = retry_msgs
                                 compacted_once = True
-                                yield self._text_event(
-                                    '[系统] 上下文过长，已自动压缩早期对话并重试'
+                                yield self._notice_event(
+                                    'info', 'compacted',
+                                    '[系统] 上下文过长，已自动压缩早期对话并重试',
+                                )
+                                yield self._phase_event(
+                                    assistant_msg_id, 'compacting',
+                                    detail='context overflow 触发压缩重试',
                                 )
                                 continue  # 原地重走 _stream_llm
-                    # 非 overflow / 已压缩过 / 压缩无效 → 提示并结束，不崩溃
-                    yield self._text_event(f'\n\n[请求失败: {e.kind}]')
-                    yield self._done_event(assistant_msg_id, full_text or '(error)')
+                    # 非 overflow / 已压缩过 / 压缩无效 → 结构化 error 事件，不再走 done。
+                    # classify 内部已把 context_overflow（压缩后仍失败）映射为 context_too_long。
+                    from agent_modules.agent_core.error_classifier import (
+                        classify, new_trace_id,
+                    )
+                    payload = classify(e)
+                    yield self._error_event_v2(
+                        assistant_msg_id,
+                        code=payload['code'],
+                        message=payload['message'],
+                        kind=payload.get('kind'),
+                        recovery=payload.get('recovery'),
+                        trace_id=new_trace_id(),
+                    )
+                    await self._append_message(conv_id, {
+                        'id': assistant_msg_id,
+                        'role': 'assistant',
+                        'content': full_text or payload['message'],
+                        'timestamp': _now_ts(),
+                        'model': self._model_id,
+                        'metadata': {
+                            'quality': 'error_fallback',
+                            'error_code': payload['code'],
+                            'error_message': payload['message'],
+                        },
+                    })
                     return
 
                 # 累加本轮文本到 full_text，保留中间推理过程
@@ -228,8 +322,20 @@ class AgentService:
                     # 流式期间用户点停止时，llm_stream 仍会 yield 已积累的 tool_call_part；
                     # 回到此处 collected_tool_calls 非空，但应立即终止，不再执行任何工具。
                     if self.stop_event.is_set():
-                        yield self._text_event('[系统] 生成已被用户终止')
-                        yield self._done_event(assistant_msg_id, full_text or '(stopped)')
+                        yield self._notice_event(
+                            'warn', 'user_stopped', '[系统] 生成已被用户终止', recoverable=True,
+                        )
+                        yield self._phase_event(assistant_msg_id, 'done')
+                        yield self._done_event(assistant_msg_id, full_text or '',
+                                               quality='stopped')
+                        await self._append_message(conv_id, {
+                            'id': assistant_msg_id,
+                            'role': 'assistant',
+                            'content': full_text or '生成已被用户终止',
+                            'timestamp': _now_ts(),
+                            'model': self._model_id,
+                            'metadata': {'quality': 'stopped'},
+                        })
                         return
                     # 2a: F05 连续死循环检测 — 检测尾部连续重复（跨迭代延续），而非全局累计计数
                     # 从 tool_call_history 尾部延续 streak，使跨迭代的单次重复调用也能被检测到，
@@ -254,12 +360,23 @@ class AgentService:
                             last_key = key
                             streak = 1
                         if streak >= self.LOOP_THRESHOLD:
-                            yield self._text_event(
+                            yield self._notice_event(
+                                'warn', 'loop_interrupted',
                                 f'[系统] 检测到连续重复调用 `{key[0]}` 已达 '
-                                f'{self.LOOP_THRESHOLD} 次，已自动中断循环'
+                                f'{self.LOOP_THRESHOLD} 次，已自动中断循环',
+                                recoverable=True,
                             )
-                            yield self._done_event(assistant_msg_id,
-                                                   full_text or '(loop detected, stopped)')
+                            yield self._phase_event(assistant_msg_id, 'done')
+                            yield self._done_event(assistant_msg_id, full_text or '',
+                                                   quality='stopped')
+                            await self._append_message(conv_id, {
+                                'id': assistant_msg_id,
+                                'role': 'assistant',
+                                'content': full_text or '检测到循环，已自动中断',
+                                'timestamp': _now_ts(),
+                                'model': self._model_id,
+                                'metadata': {'quality': 'stopped'},
+                            })
                             return
                     # 通过检测后插入到调用历史（用于后续轮的 streak 延续）
                     tool_call_history.extend(keys)
@@ -270,15 +387,27 @@ class AgentService:
 
                     # 2c: 阶段三 6.1 审批引擎求值 + F12 确认竞态处理 + F13 批量注入
                     # 三态：allow=直接执行；deny=拒绝（plan 模式/preset 规则）；ask=发确认事件等待
+                    # 阶段 B4：每工具发 tool_part 生命周期事件（generating 已在流式循环发射）
                     tool_results = []
                     for tc in collected_tool_calls:
                         resource = derive_resource(tc['name'], tc['arguments'])
                         decision = evaluate(tc['name'], resource, approval_rules)
 
                         if decision == 'allow':
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'], 'running',
+                            )
                             result = await sandbox.execute(tc['name'], tc['arguments'])
                         elif decision == 'deny':
-                            # plan 模式或显式 deny 规则：拒绝并回喂模型
+                            # plan 模式或显式 deny 规则：拒绝并回喂模型。
+                            # evaluate 只返回 'deny' 不提供来源 → 靠 preset 区分
+                            # plan 只读约束（信息性）vs 用户/预设配置拒绝。
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'], 'denied',
+                                reason=('plan_mode_readonly'
+                                        if (agent_config.get('preset') or 'build') == 'plan'
+                                        else 'preset_deny'),
+                            )
                             result = {
                                 'success': False,
                                 'error': '当前模式/规则禁止执行此操作',
@@ -287,11 +416,26 @@ class AgentService:
                         else:  # 'ask'
                             # F12: 先注册 pending id，处理用户批准早于 event 创建的竞态
                             self._pending_confirmation_ids.add(tc['requestId'])
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'], 'permission_pending',
+                            )
                             yield self._requires_confirmation_event(assistant_msg_id, tc)
                             confirmation = await self._wait_for_confirmation(tc['requestId'])
                             if not confirmation or not confirmation.get('approved'):
-                                # 拒绝（可能含 feedback）或超时/停止：feedback 回喂模型
+                                # 拒绝（可能含 feedback）或超时/停止：feedback 回喂模型。
+                                # reason 区分 user_rejected / user_stopped / timeout，
+                                # 避免 ToolCard 卡在 permission_pending。
                                 feedback = confirmation.get('feedback') if confirmation else None
+                                if feedback:
+                                    reason = 'user_rejected'
+                                elif self.stop_event.is_set():
+                                    reason = 'user_stopped'
+                                else:
+                                    reason = 'timeout'
+                                yield self._tool_part_event(
+                                    assistant_msg_id, tc['requestId'], 'denied',
+                                    reason=reason,
+                                )
                                 err = (
                                     f'用户拒绝：{feedback}' if feedback
                                     else '用户已拒绝执行该操作'
@@ -307,10 +451,21 @@ class AgentService:
                                     approval_rules.append(
                                         ApprovalRule(tc['name'], resource, 'allow')
                                     )
+                                yield self._tool_part_event(
+                                    assistant_msg_id, tc['requestId'], 'running',
+                                )
                                 result = await sandbox.execute(tc['name'], tc['arguments'])
 
+                        # success/failed：ToolExecutor 吞掉 handler 异常只留 str(e)（无类名），
+                        # failed reason 恒为 execute_error
+                        yield self._tool_part_event(
+                            assistant_msg_id, tc['requestId'],
+                            'success' if result.get('success') else 'failed',
+                            reason=None if result.get('success') else 'execute_error',
+                        )
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
                         tool_results.append(result)
+                        phase_nodes.append('tool')
                     executed_tool_names.extend(
                         tc['name'] for tc in collected_tool_calls
                     )
@@ -320,11 +475,59 @@ class AgentService:
                         messages, conv_id, collected_tool_calls, tool_results
                     )
                 else:
-                    # 无工具调用，退出循环
+                    # 无工具调用：IdleDetector 完成质量判定（阶段 B2，替换原 retried_empty
+                    # 简单逻辑）。决策流见 idle_detector.py / 设计文档 §3.3.2：
+                    # - retry_empty：build 空响应，重试一次（notice retrying_empty）
+                    # - inject_correction_retry：说而不做，纠正消息仅注入本轮内存
+                    #   messages（不落库），重试一次
+                    # - terminal/handoff：终态，记录 quality 后退出循环
+                    decision = idle_detector.detect(
+                        collected_text=collected_text,
+                        collected_tool_calls=collected_tool_calls,
+                        full_text=full_text,
+                        executed_tool_names=executed_tool_names,
+                        preset=agent_config.get('preset') or 'build',
+                    )
+                    if decision.action == 'retry_empty':
+                        yield self._notice_event(
+                            'info', 'retrying_empty',
+                            '[系统] 模型未生成有效响应，正在重试…', recoverable=True,
+                        )
+                        yield self._phase_event(assistant_msg_id, 'retrying')
+                        phase_nodes.append('retrying')
+                        # 不 reset：空响应重试是一次性机会（对齐原 retried_empty 语义），
+                        # 重试后仍空 → 终态 empty，避免无限重试到 for 耗尽。
+                        continue
+                    if decision.action == 'inject_correction_retry':
+                        # 纠正消息仅追加本轮内存 messages；不调用 _append_message 落库，
+                        # 下轮 _build_messages 从持久化历史重建自然不含（防污染机制）。
+                        # 不 reset：纠正已消耗一次机会，下一轮仍 idle 直接终态。
+                        messages.append({
+                            'role': 'system', 'content': decision.correction,
+                        })
+                        yield self._notice_event(
+                            'warn', 'intent_not_executed',
+                            '[系统] 模型声明了工具意图但未执行，已请求模型重新执行',
+                            recoverable=True,
+                        )
+                        yield self._phase_event(assistant_msg_id, 'retrying')
+                        phase_nodes.append('retrying')
+                        continue
+                    # terminal / handoff：终态
+                    terminal_quality = decision.quality
+                    terminal_handoff = (decision.action == 'handoff')
                     break
 
             # Step 3: 发送完成事件，持久化最终消息
-            # 无正文但执行过工具时，生成执行摘要替代无信息量的占位文本（历史/LLM 上下文更友好）
+            # 阶段 B2：quality 由 IdleDetector 输出驱动（terminal_quality）；
+            # 全工具轮 for 耗尽（无 else 判定）→ 兜底 success。
+            quality = terminal_quality or 'success'
+            # content 策略（与各终态文案/既有测试断言对齐）：
+            # - success + 无文本有工具 → 执行摘要（scenario1）
+            # - constrained → plan 只读解释文案（scenario3/4）
+            # - empty → 空响应提示（scenario8a，quality=empty）
+            # - idle → 保留 full_text（有正文时；scenario8b 的 '开始创建' 走此分支）
+            summary = None
             if not full_text and executed_tool_names:
                 from collections import Counter
                 counts = Counter(executed_tool_names)
@@ -332,21 +535,84 @@ class AgentService:
                     f'{name}×{cnt}' if cnt > 1 else name
                     for name, cnt in counts.items()
                 )
+                summary = final_content
+            elif quality == 'constrained' and not full_text:
+                final_content = (
+                    '当前为计划模式（只读），无法执行写操作。'
+                    '请切换到执行模式后重新发送指令。'
+                )
+                summary = '计划模式·只读约束'
+            elif quality == 'empty':
+                final_content = '模型未生成有效响应，请重试。'
+            elif quality == 'idle' and not full_text:
+                final_content = '未执行声明的工具操作'
             else:
-                final_content = full_text or '(completed)'
-            yield self._done_event(assistant_msg_id, final_content)
+                final_content = full_text or '模型未生成有效响应，请重试。'
+            # constrained 交接：发 handoff 事件 + notice + recovery CTA（§3.3.4）
+            recovery = None
+            if terminal_handoff:
+                yield self._phase_event(assistant_msg_id, 'handoff')
+                yield self._notice_event(
+                    'info', 'plan_ready_for_build',
+                    '方案已生成。当前为只读模式，切到执行模式后可落地该方案。',
+                    recoverable=True,
+                )
+                recovery = [
+                    {'label': '切换到执行模式并继续', 'action': 'switch_preset:build'},
+                    {'label': '查看生成的方案', 'action': 'scroll_to_plan'},
+                ]
+            phase_nodes.append('done')
+            yield self._phase_event(assistant_msg_id, 'done')
+            yield self._done_event(
+                assistant_msg_id, final_content, quality=quality,
+                summary=summary if summary else None,
+                phase_history=phase_nodes,
+                recovery=recovery,
+            )
+            metadata = {'quality': quality, 'phase_history': phase_nodes}
             await self._append_message(conv_id, {
                 'id': assistant_msg_id,
                 'role': 'assistant',
                 'content': final_content,
                 'timestamp': _now_ts(),
                 'model': self._model_id,
+                'metadata': metadata,
             })
         except Exception as e:
-            # F08: 捕获未处理异常，保证 SSE 流始终以 done 事件结束，前端 isStreaming 可正常重置
+            # 阶段 A3：未捕获异常走结构化 error 事件（ErrorClassifier 映射 + traceId），
+            # 前端据此渲染 ErrorCard + 恢复 CTA；不再把 (error: …) 当正文混流。
+            from agent_modules.agent_core.error_classifier import (
+                classify, new_trace_id,
+            )
             logger.exception('unhandled error in agent process_message')
-            yield self._text_event(f'[系统] 智能体运行异常: {str(e)}')
-            yield self._done_event(f'agent-error-{_now_ts()}-{uuid.uuid4().hex[:6]}', f'(error: {str(e)})')
+            payload = classify(e)
+            trace_id = new_trace_id()
+            err_id = f'agent-error-{_now_ts()}-{uuid.uuid4().hex[:6]}'
+            yield self._error_event_v2(
+                err_id,
+                code=payload['code'],
+                message=payload['message'],
+                kind=payload.get('kind'),
+                recovery=payload.get('recovery'),
+                trace_id=trace_id,
+            )
+            # 异常中断也落库收尾消息，避免对话停留在 content=NULL 的工具轮消息
+            try:
+                await self._append_message(conv_id, {
+                    'id': err_id,
+                    'role': 'assistant',
+                    'content': payload['message'],
+                    'timestamp': _now_ts(),
+                    'model': self._model_id,
+                    'metadata': {
+                        'quality': 'error_fallback',
+                        'error_code': payload['code'],
+                        'error_message': payload['message'],
+                        'error_trace_id': trace_id,
+                    },
+                })
+            except Exception:
+                logger.exception('failed to persist error message for %s', conv_id)
         finally:
             pass  # 统一由路由层的 finally await agent.close() 处理
 
@@ -668,11 +934,14 @@ class AgentService:
             from services.data_lock import conversation_lock as _chat_lock
             from server_quart import get_conversation_store
             with _chat_lock:
-                if 'timestamp' not in msg:
-                    msg['timestamp'] = _now_ts()
-                if 'updatedAt' not in msg:
-                    msg['updatedAt'] = datetime.now(timezone.utc).isoformat()
-                await get_conversation_store().append_message(conv_id, msg)
+                # 复制一份再补默认字段，避免原地修改污染调用方消息（如 _inject_tool_results_batch
+                # 传入的 messages 元素会被后续 LLM 请求复用）。
+                entry = dict(msg)
+                if 'timestamp' not in entry:
+                    entry['timestamp'] = _now_ts()
+                if 'updatedAt' not in entry:
+                    entry['updatedAt'] = datetime.now(timezone.utc).isoformat()
+                await get_conversation_store().append_message(conv_id, entry)
         except Exception:
             logger.exception('failed to append message to conversation %s', conv_id)
 
@@ -763,7 +1032,12 @@ class AgentService:
         top_p: float = 1.0,
         stop_event=None,
     ) -> AsyncGenerator[dict, None]:
-        """流式调用 LLM，委托共享 llm_stream；异常转 delta 以保持 Agent 行为。"""
+        """流式调用 LLM，委托共享 llm_stream；异常原样抛出。
+
+        阶段 A3：不再把错误转成 delta 文本混流——所有 LLM/网络异常统一抛出
+        LLMError，由 process_message 的 except LLMError 分支分类后发结构化
+        ``type:"error"`` 事件（ErrorClassifier 映射 code + recovery CTA）。
+        """
         try:
             async for event in llm_stream(
                 provider=provider,
@@ -779,22 +1053,15 @@ class AgentService:
             ):
                 yield event
         except LLMError as e:
-            # N2-I2：context_overflow 重新抛出，交 process_message 触发压缩→重试环路。
-            # 其余 kind 仍转 delta 友好提示（保持 Agent 不崩溃的行为）。
-            if e.kind == 'context_overflow':
-                raise
-            elif e.kind == 'auth':
-                yield {'type': 'delta', 'delta': '\n\n[API 鉴权失败，请检查 provider 配置]'}
-            elif e.kind == 'rate_limit':
-                yield {'type': 'delta', 'delta': '\n\n[请求频率超限，稍后重试]'}
-            else:
-                yield {'type': 'delta', 'delta': f'\n\n[请求失败: {e.kind}]'}
-        except httpx.TimeoutException:
-            yield {'type': 'delta', 'delta': '\n\n[请求超时]'}
-        except httpx.ConnectError:
-            yield {'type': 'delta', 'delta': '\n\n[无法连接到 API 服务器]'}
+            # 已压缩过仍 overflow 等场景：保留 LLMError 原样抛出（kind 不丢失）
+            raise
+        except httpx.TimeoutException as e:
+            raise LLMError('timeout', 0, f'{type(e).__name__}: {e}', retryable=False)
+        except httpx.ConnectError as e:
+            raise LLMError('connect_error', 0, f'{type(e).__name__}: {e}', retryable=False)
         except RuntimeError as e:
-            yield {'type': 'delta', 'delta': f'\n\n[{e}]'}
+            # 上游未知运行时错误（兼容原转 delta 的宽捕获）
+            raise LLMError('unknown', 0, f'{type(e).__name__}: {e}', retryable=False)
 
     @staticmethod
     def _merge_tool_call(existing: list, new: dict) -> list:
@@ -818,10 +1085,6 @@ class AgentService:
         return f'data: {json.dumps({"id": msg_id, "type": "delta", "delta": delta, "done": False}, ensure_ascii=False)}\n\n'
 
     @staticmethod
-    def _text_event(text: str) -> str:
-        return f'data: {json.dumps({"id": "system", "type": "delta", "delta": text, "done": False}, ensure_ascii=False)}\n\n'
-
-    @staticmethod
     def _tool_call_start_event(msg_id: str, tc: dict) -> str:
         return f'data: {json.dumps({"id": msg_id, "type": "tool_call_start", "toolCall": tc}, ensure_ascii=False)}\n\n'
 
@@ -834,12 +1097,83 @@ class AgentService:
         return f'data: {json.dumps({"id": msg_id, "type": "tool_call_end", "toolResult": {**result, "requestId": request_id}}, ensure_ascii=False)}\n\n'
 
     @staticmethod
-    def _done_event(msg_id: str, content: str) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "done", "content": content, "done": True}, ensure_ascii=False)}\n\n'
+    def _done_event(msg_id: str, content: str, quality: str = 'success',
+                    summary: Optional[str] = None,
+                    phase_history: Optional[List[str]] = None,
+                    recovery: Optional[List[dict]] = None) -> str:
+        """完成事件。quality 枚举见设计文档 §3.3.1/§5.5：
+        success | idle | constrained | empty | stopped | error_fallback。
+        recovery 为 [{label, action}] CTA 列表（constrained 交接等场景）。"""
+        payload = {
+            'id': msg_id, 'type': 'done', 'content': content,
+            'done': True, 'quality': quality,
+        }
+        if summary is not None:
+            payload['summary'] = summary
+        if phase_history:
+            payload['phase_history'] = phase_history
+        if recovery is not None:
+            payload['recovery'] = recovery
+        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
 
     @staticmethod
-    def _error_event(error: str) -> str:
-        return f'data: {json.dumps({"id": "error", "type": "done", "content": error, "done": True}, ensure_ascii=False)}\n\n'
+    def _phase_event(msg_id: str, phase: str, detail: Optional[str] = None) -> str:
+        """阶段事件（驱动前端 PhaseStrip）。phase 枚举：
+        thinking | tool | compacting | retrying | handoff | done。"""
+        payload = {
+            'id': msg_id, 'type': 'phase', 'phase': phase, 'ts': _now_ts(),
+        }
+        if detail is not None:
+            payload['detail'] = detail
+        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+
+    @staticmethod
+    def _tool_part_event(msg_id: str, request_id: str, part: str,
+                         reason: Optional[str] = None) -> str:
+        """工具调用生命周期事件（驱动 ToolCard 状态机）。part 枚举：
+        generating | permission_pending | running | success | denied | failed。
+        reason（denied/failed 时）：plan_mode_readonly | preset_deny |
+        user_rejected | user_stopped | timeout | execute_error | <异常类名>。"""
+        payload = {
+            'id': msg_id, 'type': 'tool_part', 'requestId': request_id,
+            'part': part, 'ts': _now_ts(),
+        }
+        if reason is not None:
+            payload['reason'] = reason
+        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+
+    @staticmethod
+    def _notice_event(level: str, code: str, message: str,
+                      recoverable: Optional[bool] = None) -> str:
+        """系统通知（压缩/重试/循环中断等）。level: info|warn|blocked；
+        code 枚举：intent_not_executed | loop_interrupted | compacted |
+        retrying_empty | plan_ready_for_build | user_stopped。"""
+        payload = {
+            'id': 'system', 'type': 'notice', 'level': level,
+            'code': code, 'message': message, 'ts': _now_ts(),
+        }
+        if recoverable is not None:
+            payload['recoverable'] = recoverable
+        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+
+    @staticmethod
+    def _error_event_v2(msg_id: str, code: str, message: str,
+                        kind: Optional[str] = None,
+                        recovery: Optional[List[dict]] = None,
+                        trace_id: Optional[str] = None) -> str:
+        """结构化错误事件（替代 done 通道承载语义错误）。code 见
+        error_classifier.classify；recovery 为 [{label, action}] CTA 列表。"""
+        payload = {
+            'id': msg_id, 'type': 'error', 'code': code,
+            'message': message, 'ts': _now_ts(),
+        }
+        if kind is not None:
+            payload['kind'] = kind
+        if recovery is not None:
+            payload['recovery'] = recovery
+        if trace_id is not None:
+            payload['traceId'] = trace_id
+        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
 
     async def close(self):
         if self._http_client:

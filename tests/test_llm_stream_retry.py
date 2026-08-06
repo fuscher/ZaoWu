@@ -360,3 +360,73 @@ async def test_null_delta_and_tool_calls_do_not_crash(fast_backoffs):
     assert deltas == ['ok']   # 正常正文不受影响
     assert usage is not None  # 后续 chunk 正常消费
     assert client.call_count == 1
+
+
+# ── apiBase 协议校验：工作流路径绕过路由层 validate_api_base 的兜底 ──
+
+@pytest.mark.parametrize('api_base', ['', '   ', '/relative/path', 'ftp://x', 'not-a-url'])
+async def test_invalid_api_base_raises_without_retry(fast_backoffs, api_base):
+    """空/相对/非 http(s) apiBase 直接抛不可重试 LLMError，不进入重试循环。
+
+    工作流路径（llm_node）直连 llm_stream，绕过路由层 validate_api_base。
+    旧逻辑：httpx.RequestError → 建连前 3 次指数退避重试（~7s 白等）才报错。
+    """
+    client = _ScriptedClient([_ok_response()])
+    provider = {'apiBase': api_base, 'apiKey': 'sk-secret-1234567890'}
+    deltas, usage, err = await _consume(llm_stream(
+        provider=provider, model_id='m', messages=[], http_client=client,
+    ))
+    assert err is not None
+    assert err.kind == 'unknown'
+    assert err.retryable is False
+    # 关键：从未发起请求，没有浪费重试
+    assert client.call_count == 0
+    assert deltas == []
+
+
+async def test_valid_http_api_base_passes_check(fast_backoffs):
+    """合法 http:// apiBase 通过协议校验，正常发起请求。"""
+    client = _ScriptedClient([_ok_response('hi')])
+    provider = {'apiBase': 'http://valid.local', 'apiKey': 'sk-secret-1234567890'}
+    deltas, usage, err = await _consume(llm_stream(
+        provider=provider, model_id='m', messages=[], http_client=client,
+    ))
+    assert err is None
+    assert deltas == ['hi']
+    assert client.call_count == 1
+
+
+async def test_null_function_name_and_arguments_do_not_crash(fast_backoffs):
+    """tool_calls 分片里 function.name/arguments 为 null（或 function 整体 null）不崩溃。
+
+    回归修复：llm_stream 累积 name/arguments 时 str += None 抛 TypeError——
+    部分 Provider（DeepSeek/自定义源）分片 chunk 的 function 携带空值。
+    """
+    chunk = lambda d: f'data: {json.dumps({"choices": [{"delta": d}]})}'
+    resp = _FakeResponse(status_code=200, sse_lines=[
+        chunk({'tool_calls': [{'index': 0, 'id': 'call_1',
+                               'function': {'name': None, 'arguments': None}}]}),
+        chunk({'tool_calls': [{'index': 0, 'function': None}]}),
+        chunk({'tool_calls': [{'index': 0,
+                               'function': {'name': 'write_file', 'arguments': '{"path":'}}]}),
+        chunk({'tool_calls': [{'index': 0, 'function': {'arguments': '"x"}'}}]}),
+        _sse_usage(),
+        _sse_done(),
+    ])
+    client = _ScriptedClient([resp])
+    events = []
+    err = None
+    try:
+        async for event in llm_stream(
+            provider=_PROVIDER, model_id='m', messages=[], http_client=client,
+        ):
+            events.append(event)
+    except LLMError as e:
+        err = e
+    assert err is None
+    # 空值 chunk 被跳过，正常分片累积出完整工具调用
+    tool_parts = [ev for ev in events if ev['type'] == 'tool_call_part']
+    assert len(tool_parts) == 1
+    tc = tool_parts[0]['tool_call']
+    assert tc['name'] == 'write_file'
+    assert tc['arguments'] == {'path': 'x'}

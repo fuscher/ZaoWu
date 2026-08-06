@@ -176,17 +176,17 @@ def test_agent_loop_detection_triggers_and_persists(agent_env):
     events = loop.run_until_complete(run())
     loop.close()
 
-    contents = []
-    for ev in events:
-        payload = json.loads(ev[6:])
-        if payload.get('type') == 'delta' and payload.get('id') == 'system':
-            contents.append(payload.get('delta', ''))
-
-    # F05: 消息文本改为"检测到连续重复调用"（含"连续"二字）
-    assert any('连续重复调用' in c for c in contents)
+    # 阶段 A5：循环中断文案迁移到 notice 事件（不再混流 delta）
+    notices = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'notice'
+    ]
+    assert any('连续重复调用' in n.get('message', '') for n in notices)
 
     done = json.loads(events[-1][6:])
     assert done['type'] == 'done'
+    # 阶段 A4：循环中断终态 quality=stopped
+    assert done['quality'] == 'stopped'
 
 
 def test_agent_write_file_requires_confirmation_and_executes_when_approved(agent_env, tmp_path, monkeypatch):

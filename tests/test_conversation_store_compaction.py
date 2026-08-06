@@ -94,3 +94,36 @@ async def test_migration_adds_columns_to_legacy_db(tmp_path):
     # 旧库迁移后压缩字段有默认值
     assert conv['compactionSummary'] is None
     assert conv['compactedUntilSeq'] == -1
+
+
+async def test_corrupt_tool_calls_json_does_not_break_get(store):
+    """损坏的 tool_calls_json 不应让整个对话构建失败。
+
+    旧代码 `json.loads(row['tool_calls_json'])` 无 try/except → JSONDecodeError
+    → store.get 抛出 → agent_service._get_conversation 吞掉返回 None
+    → 整个对话显示 not found。修复后丢弃该字段，其余消息正常返回。
+    """
+    import aiosqlite
+    db_path = store._db_path
+    # 直接写一条 tool_calls_json 损坏的 assistant 消息（模拟旧版本/手动改库/写入中断）
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO messages(id,conversation_id,role,content,timestamp,model,"
+            "tool_calls_json,tool_call_id,name,seq) "
+            "VALUES('bad','conv-1','assistant',NULL,1,'','{not valid json',NULL,NULL,0)"
+        )
+        await db.execute(
+            "INSERT INTO messages(id,conversation_id,role,content,timestamp,model,"
+            "tool_calls_json,tool_call_id,name,seq) "
+            "VALUES('good','conv-1','user','hi',2,'',NULL,NULL,NULL,1)"
+        )
+        await db.commit()
+
+    conv = await store.get('conv-1')
+    # 关键：没有抛 JSONDecodeError，对话仍可读出
+    assert conv is not None
+    by_id = {m['id']: m for m in conv['messages']}
+    # 损坏消息保留但 tool_calls 字段被丢弃
+    assert 'tool_calls' not in by_id['bad']
+    # 其余消息正常
+    assert by_id['good']['content'] == 'hi'

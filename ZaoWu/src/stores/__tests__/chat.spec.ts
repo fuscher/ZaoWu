@@ -17,6 +17,7 @@ vi.mock('@/services/ai', () => ({
   updateConversation: vi.fn().mockResolvedValue({ ok: true }),
   sendMessage: vi.fn(),
   sendAgentMessage: vi.fn(),
+  sendAgentMessageStream: vi.fn(),
   stopGeneration: vi.fn(),
   stopAgentGeneration: vi.fn(),
   loadProviders: vi.fn().mockResolvedValue({ ok: true, providers: [] }),
@@ -167,6 +168,53 @@ describe('F02: messageId 两级索引工具 Map', () => {
       await new Promise((r) => setTimeout(r, 0))
       // 失败回退：preset 回到 build
       expect(store.currentConversation?.agentConfig?.preset).toBe('build')
+    })
+  })
+
+  describe('阶段 A4: done quality 写入消息 metadata', () => {
+    it('onDone 携带 quality 时写入 message.metadata（驱动分级渲染）', async () => {
+      const ai = await import('@/services/ai')
+      // 让 sendAgentMessageStream 通过 mock 返回一个可被回调驱动的流
+      let capturedCallbacks: any = null
+      vi.mocked(ai.sendAgentMessageStream).mockImplementationOnce(
+        async (_cid: string, _content: string, callbacks: any) => {
+          capturedCallbacks = callbacks
+          return new AbortController()
+        }
+      )
+
+      const sendPromise = store.sendAgentMessage('检查一下')
+      await new Promise((r) => setTimeout(r, 0))
+
+      const mid = store.streamingMessageId
+      expect(mid).toBeTruthy()
+      capturedCallbacks.onDone('persisted-id', '模型未生成有效响应', { quality: 'empty' })
+      await sendPromise
+
+      const msg = store.currentConversation!.messages.find((m) => m.id === 'persisted-id')
+      expect(msg?.content).toBe('模型未生成有效响应')
+      expect(msg?.metadata?.quality).toBe('empty')
+      expect(store.isStreaming).toBe(false)
+    })
+
+    it('旧 done 无 quality 时不写 metadata（向后兼容）', async () => {
+      const ai = await import('@/services/ai')
+      let capturedCallbacks: any = null
+      vi.mocked(ai.sendAgentMessageStream).mockImplementationOnce(
+        async (_cid: string, _content: string, callbacks: any) => {
+          capturedCallbacks = callbacks
+          return new AbortController()
+        }
+      )
+
+      const sendPromise = store.sendAgentMessage('你好')
+      await new Promise((r) => setTimeout(r, 0))
+      capturedCallbacks.onDone('persisted-id-2', 'ok')
+      await sendPromise
+
+      const msg = store.currentConversation!.messages.find((m) => m.id === 'persisted-id-2')
+      expect(msg?.content).toBe('ok')
+      expect(msg?.metadata).toBeUndefined()
     })
   })
 })

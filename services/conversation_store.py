@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls_json   TEXT,
     tool_call_id      TEXT,
     name              TEXT,
-    seq               INTEGER NOT NULL DEFAULT 0
+    seq               INTEGER NOT NULL DEFAULT 0,
+    metadata_json     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, seq);
 
@@ -70,10 +71,15 @@ CREATE INDEX IF NOT EXISTS idx_approval_conv ON tool_approval_rules(conversation
 """
 
 # 阶段二增量列（旧库 ALTER TABLE 补齐；新库已在 DDL 中声明）
+# 阶段 A6：messages.metadata_json 存完成质量（quality/phase_history/error_code），
+# 旧库缺失时 ALTER 补齐，旧消息 metadata 为 NULL → 前端按 quality=success 渲染。
 _MIGRATION_COLUMNS = {
     'conversations': [
         ('compaction_summary', 'TEXT'),
         ('compacted_until_seq', 'INTEGER NOT NULL DEFAULT -1'),
+    ],
+    'messages': [
+        ('metadata_json', 'TEXT'),
     ],
 }
 
@@ -166,6 +172,16 @@ class ConversationStore:
             msg['tool_call_id'] = row['tool_call_id']
         if row['name']:
             msg['name'] = row['name']
+        # 阶段 A6：metadata（完成质量/phase_history/error_code）；历史消息无该列或为 NULL
+        # 时省略字段，前端按 quality=success 渲染（向后兼容）。
+        if 'metadata_json' in keys and row['metadata_json']:
+            try:
+                msg['metadata'] = json.loads(row['metadata_json'])
+            except json.JSONDecodeError:
+                logger.warning(
+                    'corrupt metadata_json for message %s; dropping field',
+                    row['id'],
+                )
         return msg
 
     async def list_all(self) -> List[dict]:
@@ -269,11 +285,14 @@ class ConversationStore:
     async def append_message(self, conv_id: str, msg: dict) -> None:
         next_seq = await self._next_seq(conv_id)
         msg_id = msg.get('id') or f'{next_seq}-{int(msg.get("timestamp", 0))}'
+        metadata_json = None
+        if msg.get('metadata'):
+            metadata_json = json.dumps(msg['metadata'], ensure_ascii=False)
         async with self._connect() as db:
             await db.execute(
                 'INSERT INTO messages(id,conversation_id,role,content,timestamp,model,'
-                'tool_calls_json,tool_call_id,name,seq) '
-                'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                'tool_calls_json,tool_call_id,name,seq,metadata_json) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 (
                     msg_id,
                     conv_id,
@@ -285,6 +304,7 @@ class ConversationStore:
                     msg.get('tool_call_id'),
                     msg.get('name'),
                     next_seq,
+                    metadata_json,
                 ),
             )
             if 'updatedAt' in msg:
@@ -402,14 +422,16 @@ class ConversationStore:
                 for i, msg in enumerate(conv.get('messages', [])):
                     await db.execute(
                         'INSERT INTO messages(id,conversation_id,role,content,timestamp,model,'
-                        'tool_calls_json,tool_call_id,name,seq) '
-                        'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                        'tool_calls_json,tool_call_id,name,seq,metadata_json) '
+                        'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                         (
                             msg.get('id', ''), cid,
                             msg.get('role', ''), msg.get('content'),
                             msg.get('timestamp', 0), msg.get('model', ''),
                             json.dumps(msg.get('tool_calls')) if msg.get('tool_calls') else None,
                             msg.get('tool_call_id'), msg.get('name'), i,
+                            json.dumps(msg.get('metadata'), ensure_ascii=False)
+                            if msg.get('metadata') else None,
                         ),
                     )
                 imported += 1

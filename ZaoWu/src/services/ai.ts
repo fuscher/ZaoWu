@@ -211,7 +211,12 @@ export async function sendAgentMessageStream(
           const event = JSON.parse(line.slice(6)) as SSEEvent
 
           if (event.type === 'done' && event.done) {
-            callbacks.onDone(event.id, event.content)
+            // 阶段 A4：done 携带 quality/summary（旧后端无这些字段 → 前端按 success 兜底）
+            callbacks.onDone(
+              event.id,
+              event.content,
+              { quality: event.quality, summary: event.summary }
+            )
           } else if (event.type === 'delta') {
             callbacks.onDelta(event.id, event.delta)
           } else if (event.type === 'tool_call_start' && event.toolCall) {
@@ -220,7 +225,11 @@ export async function sendAgentMessageStream(
             callbacks.onRequiresConfirmation(event.id, event.toolCall)
           } else if (event.type === 'tool_call_end' && event.toolResult) {
             callbacks.onToolCallEnd(event.id, event.toolResult)
+          } else if (event.type === 'error') {
+            // 阶段 A3：结构化错误事件 → onError 兜底渲染（错误卡片由 C 阶段接入）
+            callbacks.onError(event.message || `请求失败: ${event.code}`)
           }
+          // phase / tool_part / notice 等结构化事件：A 阶段静默忽略，C 阶段消费
         } catch {
           // skip malformed lines
         }

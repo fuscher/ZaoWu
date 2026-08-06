@@ -102,6 +102,8 @@ export interface Message {
   }>
   tool_call_id?: string
   name?: string
+  /** 智能体消息元数据（阶段 A6）：完成质量 / 错误码，驱动分级渲染 */
+  metadata?: MessageMetadata
 }
 
 export interface Conversation {
@@ -272,12 +274,36 @@ export interface ToolResult {
   tool: string
 }
 
+/** 完成质量（阶段 A4/B）：驱动气泡分级渲染。success=正常；idle=说而不做；
+ * constrained=模式约束致空；empty=真空响应；stopped=用户停止/循环中断；
+ * error_fallback=错误终态（挂 ErrorCard）。 */
+export type MessageQuality =
+  | 'success'
+  | 'idle'
+  | 'constrained'
+  | 'empty'
+  | 'stopped'
+  | 'error_fallback'
+
+/** 智能体消息元数据（阶段 A6，落库 messages.metadata_json） */
+export interface MessageMetadata {
+  quality?: MessageQuality
+  phase_history?: string[]
+  error_code?: string
+  error_message?: string
+  error_trace_id?: string
+}
+
 export interface AgentStreamCallbacks {
   onDelta: (messageId: string, delta: string) => void
   onToolCallStart: (messageId: string, toolCall: ToolCall) => void
   onRequiresConfirmation: (messageId: string, toolCall: ToolCall) => void
   onToolCallEnd: (messageId: string, result: ToolResult) => void
-  onDone: (messageId: string, fullContent: string) => void
+  onDone: (
+    messageId: string,
+    fullContent: string,
+    extra?: { quality?: MessageQuality; summary?: string }
+  ) => void
   onError: (error: string) => void
 }
 
@@ -310,4 +336,5 @@ export type SSEEvent =
   | { id: string; type: 'tool_call_start'; toolCall: ToolCall }
   | { id: string; type: 'requires_confirmation'; toolCall: ToolCall }
   | { id: string; type: 'tool_call_end'; toolResult: ToolResult }
-  | { id: string; type: 'done'; content: string; done: true }
+  | { id: string; type: 'done'; content: string; done: true; quality?: MessageQuality; summary?: string }
+  | { id: string; type: 'error'; code: string; message: string; kind?: string; traceId?: string; recovery?: Array<{ label: string; action: string }> }

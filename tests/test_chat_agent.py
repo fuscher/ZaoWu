@@ -239,3 +239,107 @@ async def test_f03_agent_busy_guard(chat_env, monkeypatch):
     finally:
         chat.active_agents.pop('conv-1', None)
         chat.agent_stop_events.pop('conv-1', None)
+
+
+# ── 输入类型校验：agentConfig / 字符串字段（防对话崩溃） ──────
+
+@pytest.mark.parametrize('bad_config', ['abc', 123, [1, 2], True])
+async def test_patch_rejects_non_dict_agent_config(chat_env, bad_config):
+    """非 dict 的 agentConfig 应返回 400，而非 PATCH 自身 .pop AttributeError → 500。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': bad_config},
+        )
+        assert resp.status_code == 400
+        data = await resp.get_json()
+        assert 'agentConfig' in data.get('error', '')
+
+
+@pytest.mark.parametrize('bad_value', [None, 123, {'x': 1}, [1, 2]])
+async def test_patch_rejects_non_string_title(chat_env, bad_value):
+    """非字符串 title（含 null）应返回 400，避免覆盖为 NULL。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'title': bad_value},
+        )
+        assert resp.status_code == 400
+        assert 'title' in (await resp.get_json()).get('error', '')
+
+
+async def test_patch_rejects_non_string_system_prompt(chat_env):
+    """非字符串 systemPrompt 应返回 400，避免后续 str 拼接 TypeError。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'systemPrompt': {'oops': 1}},
+        )
+        assert resp.status_code == 400
+        assert 'systemPrompt' in (await resp.get_json()).get('error', '')
+
+
+async def test_patch_rejects_non_string_agent_config_system_prompt(chat_env):
+    """agentConfig.systemPrompt 非字符串应返回 400（context_service body += str 会 TypeError）。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': {'systemPrompt': 123}},
+        )
+        assert resp.status_code == 400
+        assert 'systemPrompt' in (await resp.get_json()).get('error', '')
+
+
+async def test_patch_accepts_valid_agent_config(chat_env):
+    """合法 dict agentConfig 正常更新，不被误拒。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': {'enabled': True, 'maxIterations': 7}},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['agentConfig']['maxIterations'] == 7
+
+
+async def test_patch_accepts_null_agent_config_as_empty(chat_env):
+    """agentConfig: null 兼容历史 `or {}` 行为，存为空对象。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': None},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['agentConfig'] == {}
+
+
+@pytest.mark.parametrize('bad_config', ['abc', 123, [1, 2]])
+async def test_post_rejects_non_dict_agent_config(chat_env, bad_config):
+    """POST 创建对话时非 dict agentConfig 也应拒绝（否则存入后 agent_service 崩）。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'agentConfig': bad_config},
+        )
+        assert resp.status_code == 400
+        assert 'agentConfig' in (await resp.get_json()).get('error', '')
+
+
+async def test_post_rejects_non_string_title(chat_env):
+    """POST 创建对话时非字符串 title 应拒绝。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'title': None},
+        )
+        assert resp.status_code == 400
+        assert 'title' in (await resp.get_json()).get('error', '')

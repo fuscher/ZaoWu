@@ -90,6 +90,22 @@ def test_done_event_format():
     assert payload['content'] == 'final content'
 
 
+def test_get_provider_handles_null_providers_field(agent_service, tmp_path, monkeypatch):
+    """providers.json 里 providers 为 null 不应让 _get_provider 抛 TypeError。
+
+    旧代码 `data.get('providers', [])` 在 key 存在但值为 null 时返回 None（默认值
+    仅在 key 缺失时使用）→ `for p in None` 抛 TypeError，被外层 except 吞掉，
+    静默显示 'provider not configured'。修复后 `or []` 兜底，行为一致。
+    """
+    providers_file = tmp_path / 'providers.json'
+    providers_file.write_text('{"providers": null}', encoding='utf-8')
+    monkeypatch.setattr(
+        'agent_modules.agent_core.agent_service.PROVIDERS_FILE', str(providers_file)
+    )
+    # 不抛异常，返回 None（provider not configured）
+    assert agent_service._get_provider({'providerId': 'p1'}) is None
+
+
 def test_delta_event_preserves_chinese():
     event = AgentService._delta_event('msg-1', '中文')
     payload = json.loads(event[6:])
@@ -347,13 +363,20 @@ def test_f05_within_iteration_aaa_triggers(agent_service, monkeypatch):
         return events
 
     events = loop.run_until_complete(run())
-    contents = [
-        json.loads(ev[6:])['delta']
+    # 阶段 A5：循环中断文案迁移到 notice 事件（不再混流 delta）
+    notices = [
+        json.loads(ev[6:])
         for ev in events
-        if json.loads(ev[6:]).get('type') == 'delta'
-        and json.loads(ev[6:]).get('id') == 'system'
+        if json.loads(ev[6:]).get('type') == 'notice'
     ]
-    assert any('连续重复调用' in c for c in contents), 'A-A-A should trigger loop detection'
+    assert any('连续重复调用' in n.get('message', '') for n in notices), \
+        'A-A-A should trigger loop detection'
+    # 阶段 A4：以 quality=stopped 的 done 事件结束（字面量 (loop detected, stopped) 已根除）
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events and done_events[-1].get('quality') == 'stopped'
 
 
 def test_f05_alternating_ababa_no_false_positive(agent_service, monkeypatch):
@@ -775,14 +798,24 @@ def test_context_overflow_triggers_compaction_retry(agent_service, monkeypatch):
     # compact_if_needed 被调用 2 次（主动 + 被动）
     assert compact_calls[0] == 2
 
+    # 阶段 A5：压缩提示迁移到 notice(code=compacted) + phase(compacting) 结构化事件
+    notices = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'notice'
+    ]
+    assert any(n.get('code') == 'compacted' for n in notices), \
+        'compaction should emit notice(compacted)'
+    phases = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'phase'
+    ]
+    assert any(p.get('phase') == 'compacting' for p in phases), \
+        'compaction should emit phase(compacting)'
+    # 压缩后重试的正文出现（模型 delta 通道不变）
     deltas = [
-        json.loads(ev[6:])['delta']
-        for ev in events
+        json.loads(ev[6:])['delta'] for ev in events
         if json.loads(ev[6:]).get('type') == 'delta'
     ]
-    # 被动压缩提示出现
-    assert any('已自动压缩早期对话并重试' in d for d in deltas)
-    # 压缩后重试的正文出现
     assert any('recovered' in d for d in deltas)
 
 
@@ -844,8 +877,13 @@ def test_context_overflow_twice_does_not_loop_forever(agent_service, monkeypatch
     # 最多 2 次 _stream_llm（首轮 overflow→压缩→continue，次轮 overflow→直接结束）
     # compact 最多 2 次（主动 + 被动各 1）
     assert compact_calls[0] == 2
-    # 以 done 事件结束（不崩溃）
-    assert any(json.loads(ev[6:]).get('type') == 'done' for ev in events)
+    # 阶段 A3/A4：已压缩过再次 overflow → 结构化 error 事件收尾（不再兜底 done 通道）
+    error_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'error'
+    ]
+    assert error_events, 'overflow after compaction should emit error event'
+    assert error_events[-1].get('code') == 'context_too_long'
 
 
 async def _async_none():
@@ -1254,4 +1292,986 @@ def test_auto_approve_writes_does_not_leak_across_conversations(
     # B：write_file 走 ask → 发起确认 → 超时不执行
     assert any('requires_confirmation' in ev for ev in events_b)
     assert execute_spy_b == []  # 未批准，未执行
+
+
+# ── 阶段 A：结构化 SSE 事件协议（设计文档 §3.2.1 / §5） ──────────
+
+
+def test_phase_event_format():
+    """A1: phase 事件结构（thinking/compacting/retrying/handoff/done）。"""
+    event = AgentService._phase_event('msg-1', 'compacting', detail='预算触发主动压缩')
+    payload = json.loads(event[6:])
+    assert payload['type'] == 'phase'
+    assert payload['id'] == 'msg-1'
+    assert payload['phase'] == 'compacting'
+    assert payload['detail'] == '预算触发主动压缩'
+    assert 'ts' in payload
+    # ensure_ascii=False：中文不转义为 \uXXXX
+    assert r'\u' not in event
+
+
+def test_tool_part_event_format():
+    """A1: tool_part 事件结构（含 reason）。"""
+    event = AgentService._tool_part_event(
+        'msg-1', 'call_1', 'denied', reason='plan_mode_readonly',
+    )
+    payload = json.loads(event[6:])
+    assert payload['type'] == 'tool_part'
+    assert payload['requestId'] == 'call_1'
+    assert payload['part'] == 'denied'
+    assert payload['reason'] == 'plan_mode_readonly'
+    # 无 reason 时不带该字段
+    event2 = AgentService._tool_part_event('msg-1', 'call_2', 'running')
+    assert 'reason' not in json.loads(event2[6:])
+
+
+def test_notice_event_format():
+    """A1: notice 事件结构（level/code/message/recoverable）。"""
+    event = AgentService._notice_event(
+        'warn', 'intent_not_executed', '模型声明了工具意图但未执行', recoverable=True,
+    )
+    payload = json.loads(event[6:])
+    assert payload['type'] == 'notice'
+    assert payload['id'] == 'system'
+    assert payload['level'] == 'warn'
+    assert payload['code'] == 'intent_not_executed'
+    assert payload['recoverable'] is True
+    # 未传 recoverable 时不带该字段
+    event2 = AgentService._notice_event('info', 'compacted', '已压缩')
+    assert 'recoverable' not in json.loads(event2[6:])
+
+
+def test_error_event_v2_format():
+    """A1: error 事件结构（code/message/kind/recovery/traceId）。"""
+    recovery = [{'label': '重试', 'action': 'retry'}]
+    event = AgentService._error_event_v2(
+        'msg-1', 'llm_auth', 'API 鉴权失败', kind='auth',
+        recovery=recovery, trace_id='agent-error-a1b2',
+    )
+    payload = json.loads(event[6:])
+    assert payload['type'] == 'error'
+    assert payload['code'] == 'llm_auth'
+    assert payload['kind'] == 'auth'
+    assert payload['recovery'] == recovery
+    assert payload['traceId'] == 'agent-error-a1b2'
+    assert 'done' not in payload  # 与 done 通道彻底分离
+
+
+def test_done_event_quality_and_summary():
+    """A1: done 事件携带 quality/summary/phase_history。"""
+    event = AgentService._done_event(
+        'msg-1', 'final', quality='idle',
+        summary='未执行声明的工具操作', phase_history=['thinking', 'done'],
+    )
+    payload = json.loads(event[6:])
+    assert payload['type'] == 'done'
+    assert payload['quality'] == 'idle'
+    assert payload['summary'] == '未执行声明的工具操作'
+    assert payload['phase_history'] == ['thinking', 'done']
+    # 默认 quality=success（向后兼容旧 done）
+    event2 = AgentService._done_event('msg-2', 'ok')
+    assert json.loads(event2[6:])['quality'] == 'success'
+
+
+# ── 阶段 A2：ErrorClassifier 异常映射 ──────────────────────────
+
+
+def test_error_classifier_auth():
+    from agent_modules.agent_core.error_classifier import classify
+    from agent_modules.agent_core.llm_stream import LLMError
+    payload = classify(LLMError('auth', 401, 'unauthorized', retryable=False))
+    assert payload['code'] == 'llm_auth'
+    assert payload['kind'] == 'auth'
+    assert any(r['action'] == 'open:settings:providers' for r in payload['recovery'])
+
+
+def test_error_classifier_rate_limit():
+    from agent_modules.agent_core.error_classifier import classify
+    from agent_modules.agent_core.llm_stream import LLMError
+    payload = classify(LLMError('rate_limit', 429, 'slow down', retryable=True))
+    assert payload['code'] == 'llm_rate_limit'
+    assert any(r['action'] == 'retry' for r in payload['recovery'])
+
+
+def test_error_classifier_context_overflow():
+    from agent_modules.agent_core.error_classifier import classify
+    from agent_modules.agent_core.llm_stream import LLMError
+    payload = classify(LLMError('context_overflow', 400, 'too long', retryable=False))
+    assert payload['code'] == 'context_too_long'
+    actions = {r['action'] for r in payload['recovery']}
+    assert 'clear_messages' in actions
+    assert 'open:model_switcher' in actions
+
+
+def test_error_classifier_timeout_and_connect():
+    from agent_modules.agent_core.error_classifier import classify
+    import httpx
+    payload = classify(httpx.TimeoutException('timeout'))
+    assert payload['code'] == 'timeout'
+    payload2 = classify(httpx.ConnectError('refused'))
+    assert payload2['code'] == 'connect_failed'
+
+
+def test_error_classifier_internal_has_trace_id_support():
+    from agent_modules.agent_core.error_classifier import classify, new_trace_id
+    payload = classify(ValueError('boom'))
+    assert payload['code'] == 'internal'
+    assert payload['kind'] == 'ValueError'
+    assert any(r['action'] == 'retry' for r in payload['recovery'])
+    tid = new_trace_id()
+    assert tid.startswith('agent-error-')
+
+
+# ── 阶段 A3/A4：错误分流与 quality 端到端 ─────────────────────
+
+
+def test_llm_auth_error_emits_error_event(agent_service, monkeypatch):
+    """A3: LLMError(auth) → type:error code=llm_auth（非 done，非 delta 文本混流）。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        from agent_modules.agent_core.llm_stream import LLMError
+        raise LLMError('auth', 401, 'unauthorized', retryable=False)
+        yield  # noqa
+
+    conv = {
+        'id': 'conv-auth', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-auth', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    error_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'error'
+    ]
+    assert error_events, 'auth error should emit structured error event'
+    assert error_events[-1]['code'] == 'llm_auth'
+    # 不再以 done 通道出现
+    assert not any(json.loads(ev[6:]).get('type') == 'done' for ev in events)
+    # 不混流 delta 文本
+    assert not any('请求失败' in json.loads(ev[6:]).get('delta', '') for ev in events)
+
+
+def test_rate_limit_error_emits_error_event(agent_service, monkeypatch):
+    """A3: LLMError(rate_limit) → type:error code=llm_rate_limit。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        from agent_modules.agent_core.llm_stream import LLMError
+        raise LLMError('rate_limit', 429, 'slow down', retryable=False)
+        yield  # noqa
+
+    conv = {
+        'id': 'conv-rl', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-rl', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    error_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'error'
+    ]
+    assert error_events and error_events[-1]['code'] == 'llm_rate_limit'
+
+
+def test_timeout_connect_error_emits_error_event(agent_service, monkeypatch):
+    """A3: httpx 网络异常 → 结构化 error 事件（timeout/connect_failed）。"""
+    import httpx
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    for exc, code in [
+        (httpx.TimeoutException('slow'), 'timeout'),
+        (httpx.ConnectError('refused'), 'connect_failed'),
+    ]:
+        def make_stream(exc):
+            async def mock_stream_llm(provider, messages, tools, **kwargs):
+                raise exc
+                yield  # noqa
+            return mock_stream_llm
+
+        conv = {
+            'id': f'conv-net-{code}', 'providerId': 'p', 'modelId': 'm',
+            'agentConfig': {'enabled': True, 'maxIterations': 5},
+            'messages': [],
+        }
+        _stub_agent_env(service, monkeypatch, conv, make_stream(exc))
+
+        async def run():
+            events = []
+            async for event in service.process_message(f'conv-net-{code}', 'test'):
+                events.append(event)
+            return events
+
+        events = loop.run_until_complete(run())
+        error_events = [
+            json.loads(ev[6:]) for ev in events
+            if json.loads(ev[6:]).get('type') == 'error'
+        ]
+        assert error_events and error_events[-1]['code'] == code, code
+
+
+def test_unhandled_exception_emits_error_event(agent_service, monkeypatch):
+    """A3: 未捕获异常 → type:error code=internal + 落库 error_fallback metadata。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    persisted = []
+
+    async def mock_get_conversation(conv_id):
+        raise ValueError('boom in store')
+        return None  # noqa
+
+    async def mock_append_message(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-err', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    error_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'error'
+    ]
+    assert error_events
+    assert error_events[-1]['code'] == 'internal'
+    assert error_events[-1]['traceId'].startswith('agent-error-')
+    assert any(r['action'] == 'retry' for r in error_events[-1]['recovery'])
+    # 落库 metadata：quality=error_fallback + error_code
+    assert persisted, 'error message should be persisted'
+    meta = persisted[0].get('metadata', {})
+    assert meta.get('quality') == 'error_fallback'
+    assert meta.get('error_code') == 'internal'
+
+
+def test_no_completed_literal_in_output(agent_service, monkeypatch):
+    """A4: 空转终态不再产生 (completed) 字面量（SSE 与落库双通道）。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 模型两轮都完全空响应（无正文无工具）
+        return
+        yield  # noqa
+
+    conv = {
+        'id': 'conv-empty-lit', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-empty-lit', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    assert not any('(completed)' in ev for ev in events)
+    assert all('(completed)' not in (m.get('content') or '') for m in persisted)
+    # 落库摘要非空 + quality=empty
+    assert persisted, 'final message should be persisted'
+    final_msg = persisted[-1]
+    assert final_msg['content'] == '模型未生成有效响应，请重试。'
+    assert final_msg['metadata']['quality'] == 'empty'
+
+
+def test_metadata_quality_persisted_on_success(agent_service, monkeypatch):
+    """A6: 正常完成落库 metadata.quality=success，SSE done 携带 quality。
+
+    阶段 B2：mock 文本含结论性信号（结论词），否则 IdleDetector 会判 idle。
+    """
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'delta', 'delta': '已经完成。结果是成功。'}
+
+    conv = {
+        'id': 'conv-meta', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-meta', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events[-1]['quality'] == 'success'
+    assert persisted[-1]['metadata']['quality'] == 'success'
+
+
+def test_stop_emits_quality_stopped_and_notice(agent_service, monkeypatch):
+    """A4: 用户停止 → notice(user_stopped) + done quality=stopped + 落库 stopped。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        service.stop_event.set()  # 模拟流式开始后用户点停止
+        return
+        yield  # noqa
+
+    conv = {
+        'id': 'conv-stop2', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-stop2', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    notices = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'notice'
+    ]
+    assert any(n.get('code') == 'user_stopped' for n in notices)
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events and done_events[-1]['quality'] == 'stopped'
+    # 落库不含 (已停止) 字面量
+    assert all('(已停止)' not in (m.get('content') or '') for m in persisted)
+
+
+def test_plan_mode_empty_final_quality_constrained(agent_service, monkeypatch):
+    """A4: plan 模式无文本无工具 → quality=constrained（只读解释语义，不标 empty）。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        return
+        yield  # noqa
+
+    conv = {
+        'id': 'conv-plan-empty', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-plan-empty', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events and done_events[-1]['quality'] == 'constrained'
+    assert '计划模式' in done_events[-1]['content']
+
+
+# ── 阶段 B1：IntentMatcher + ConclusiveSignalMatcher ───────────
+
+
+def test_intent_matcher_hits_chinese_commitment():
+    from agent_modules.agent_core.intent_patterns import IntentMatcher
+    m = IntentMatcher()
+    for text in ['我先读取这个文件', '让我检查一下配置', '接下来调用 read_file',
+                 '我将修改 src/main.py', '我来读取测试文件', '我去查看日志']:
+        assert m.matches(text), text
+
+
+def test_intent_matcher_hits_english_commitment():
+    from agent_modules.agent_core.intent_patterns import IntentMatcher
+    m = IntentMatcher()
+    for text in ["I'll read the file", 'let me check the config', 'going to edit main.py',
+                 'I will modify this', 'let me look at the tests']:
+        assert m.matches(text), text
+
+
+def test_intent_matcher_excludes_advisory():
+    from agent_modules.agent_core.intent_patterns import IntentMatcher
+    m = IntentMatcher()
+    # 建议性弱信号 → 负例（"建议你手动删除 X" 是建议不是承诺）
+    assert not m.matches('建议你手动删除那个文件')
+    assert not m.matches('我建议你先重启服务')
+    assert not m.matches('你可以直接修改配置')
+    assert not m.matches('i suggest you delete it')
+    assert not m.matches('you could check the log')
+    # 承诺 + 建议混合 → 建议整段排除
+    assert not m.matches('我先读取文件，但我建议你手动删除')
+
+
+def test_intent_matcher_short_text_and_plain():
+    from agent_modules.agent_core.intent_patterns import IntentMatcher
+    m = IntentMatcher()
+    assert not m.matches('嗯')
+    assert not m.matches('好')
+    assert not m.matches('这个比较复杂')
+    assert not m.matches('我先了解一下')  # 无承诺执行语义
+
+
+def test_intent_matcher_locator_phrases_not_matched_as_intent():
+    """R3 防御回归："我先定位…"是承诺性但无结论信号 → 应判 idle（软警告）。
+
+    若 IntentMatcher 误把"定位"当结论词（或当承诺命中但后续被误判 success），
+    标注集样本会兜住；此处直接断言定位短语在意图与结论两通道均为 False。
+    """
+    from agent_modules.agent_core.intent_patterns import IntentMatcher, ConclusiveSignalMatcher
+    m = IntentMatcher()
+    c = ConclusiveSignalMatcher()
+    for text in ['我先定位这个 bug', '我先定位问题所在', '让我先定位一下']:
+        assert not m.matches(text), f'{text} 不应命中承诺意图'
+        assert not c.is_conclusive(text), f'{text} 不应命中结论信号'
+
+
+def test_conclusive_locator_zh_danger_variant():
+    """危险变体防御（2026-08-07）："我先定位到问题所在"承诺未兑现但含"到"，
+    (b) 结论词若保留"定位到"会误判 success。已改"已定位到"——完成语义保留、
+    承诺变体排除。断言两通道行为 + 完成语义负例不受影响。
+    """
+    from agent_modules.agent_core.intent_patterns import ConclusiveSignalMatcher
+    c = ConclusiveSignalMatcher()
+    # 承诺变体（含"到"）：不命中结论信号
+    assert not c.is_conclusive('我先定位到问题所在')
+    # 完成语义（"已定位到"）：命中结论信号
+    assert c.is_conclusive('已定位到问题所在')
+    # 裸"定位到"根因陈述：不再命中（非完成语义）
+    assert not c.is_conclusive('定位到内存泄漏在缓存层')
+
+
+def test_conclusive_signal_code_block():
+    from agent_modules.agent_core.intent_patterns import ConclusiveSignalMatcher
+    m = ConclusiveSignalMatcher()
+    assert m.is_conclusive('代码如下：```python\nx = 1\n```')
+    assert m.is_conclusive('函数签名是 `def foo()`')
+    assert not m.is_conclusive('这里什么都没有')
+
+
+def test_conclusive_signal_keywords():
+    from agent_modules.agent_core.intent_patterns import ConclusiveSignalMatcher
+    m = ConclusiveSignalMatcher()
+    for text in ['结论是这里存在内存泄漏', '综上所述，问题出在缓存',
+                 '已经完成全部修改', '修改了 main.py 第 42 行',
+                 '结果是测试全部通过', '原因是登录态过期',
+                 'the issue is the cache', "i've fixed the bug",
+                 'in conclusion, it works']:
+        assert m.is_conclusive(text), text
+    # 裸"建议/已经/result"不入选（弱信号）
+    assert not m.is_conclusive('已经')
+    assert not m.is_conclusive('result')
+    # 建议性前缀排除
+    assert not m.is_conclusive('建议你手动删除那个文件')
+
+
+def test_conclusive_signal_sentence_length():
+    from agent_modules.agent_core.intent_patterns import ConclusiveSignalMatcher
+    m = ConclusiveSignalMatcher()
+    # ≥40 字符 且 ≥2 句末标点 → 结论性
+    long_text = '这个问题需要从两个方面来看。第一是内存分配的策略问题。第二是对象生命周期管理的缺陷。'
+    assert len(long_text) >= 40
+    assert m.is_conclusive(long_text)
+    # 短文本无结论词 → 非结论性（"这个问题已经很复杂了"应为 idle）
+    assert not m.is_conclusive('这个问题已经很复杂了')
+    assert not m.is_conclusive('我先了解一下背景')
+
+
+# ── 阶段 B2：IdleDetector 决策图全分支 ────────────────────────
+
+
+def test_idle_detector_no_text_with_history_tools_success():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                   executed_tool_names=['read_file'], preset='build')
+    assert dec.quality == 'success'
+    assert dec.action == 'terminal'
+
+
+def test_idle_detector_no_text_plan_constrained():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                   executed_tool_names=[], preset='plan')
+    assert dec.quality == 'constrained'
+    assert dec.action == 'terminal'
+
+
+def test_idle_detector_empty_retries_once_then_terminal():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    # build + 无文本无工具：首次 empty+重试，二次 empty 终态
+    dec1 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec1.quality == 'empty'
+    assert dec1.action == 'retry_empty'
+    assert dec1.notice_code == 'retrying_empty'
+    dec2 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec2.quality == 'empty'
+    assert dec2.action == 'terminal'
+
+
+def test_idle_detector_intent_first_correction_then_terminal():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec1 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec1.quality == 'idle'
+    assert dec1.action == 'inject_correction_retry'
+    assert dec1.notice_code == 'intent_not_executed'
+    assert dec1.correction and '系统纠正' in dec1.correction
+    # 二次仍 idle → 终态
+    dec2 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec2.quality == 'idle'
+    assert dec2.action == 'terminal'
+
+
+def test_idle_detector_retry_counts_persist_without_reset():
+    """重试计数在实例内累积且两通道独立：空响应重试不消耗说而不做的纠正机会。"""
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    # 空响应重试后 empty_retry_count=1
+    d.detect(collected_text='', collected_tool_calls=[], full_text='',
+             executed_tool_names=[], preset='build')
+    assert d.empty_retry_count == 1
+    # 再次空响应 → 终态（不会无限重试）
+    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                   executed_tool_names=[], preset='build')
+    assert dec.action == 'terminal'
+    assert dec.quality == 'empty'
+
+
+def test_idle_detector_counts_independent_empty_then_intent():
+    """独立计数：空响应重试后，说而不做仍可获得一次纠正机会（master「idle 首次可纠正」）。
+
+    回归场景：首轮空响应 → retry_empty（empty_retry_count=1）→ 次轮"我先读取…"
+    承诺文本 → 仍应 inject_correction_retry（idle_retry_count 未被空响应消耗）。
+    """
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    # 首轮空响应 → retry_empty
+    dec1 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec1.action == 'retry_empty'
+    assert d.empty_retry_count == 1
+    # 次轮承诺文本 → 仍可纠正（idle 计数独立）
+    dec2 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec2.action == 'inject_correction_retry'
+    assert dec2.quality == 'idle'
+    assert d.idle_retry_count == 1
+    # 三仍承诺 → idle 终态（idle 计数已用尽）
+    dec3 = d.detect(collected_text='我先读取文件', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec3.action == 'terminal'
+    assert dec3.quality == 'idle'
+    # 四仍空响应 → 终态 empty（empty 计数也已用尽）
+    dec4 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+                    executed_tool_names=[], preset='build')
+    assert dec4.action == 'terminal'
+    assert dec4.quality == 'empty'
+
+
+def test_idle_detector_plan_write_intent_handoff():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec = d.detect(collected_text='我将修改 src/main.py', collected_tool_calls=[], full_text='',
+                   executed_tool_names=[], preset='plan')
+    assert dec.quality == 'constrained'
+    assert dec.action == 'handoff'
+    assert dec.notice_code == 'plan_ready_for_build'
+
+
+def test_idle_detector_conclusive_text_success():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec = d.detect(collected_text='结论是这里存在内存泄漏', collected_tool_calls=[], full_text='',
+                   executed_tool_names=[], preset='build')
+    assert dec.quality == 'success'
+    assert dec.action == 'terminal'
+
+
+def test_idle_detector_plain_text_idle_soft_warning():
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    d = IdleDetector()
+    dec = d.detect(collected_text='这个问题已经很复杂了', collected_tool_calls=[], full_text='',
+                   executed_tool_names=[], preset='build')
+    assert dec.quality == 'idle'
+    assert dec.action == 'terminal'  # 软警告，不重试
+
+
+# ── 阶段 B3：主循环接入 IdleDetector 端到端 ───────────────────
+
+
+def _run_process(service, monkeypatch, conv, stream_mock, loop=None):
+    """统一跑 process_message 收集事件。"""
+    _stub_agent_env(service, monkeypatch, conv, stream_mock)
+    if loop is None:
+        loop = asyncio.get_event_loop()
+
+    async def run():
+        events = []
+        async for event in service.process_message(conv['id'], 'test'):
+            events.append(event)
+        return events
+
+    return loop.run_until_complete(run())
+
+
+def _events_of(events, etype):
+    return [json.loads(ev[6:]) for ev in events if json.loads(ev[6:]).get('type') == etype]
+
+
+def test_text_only_turn_with_intent_detected_as_idle(agent_service, monkeypatch):
+    """§8.1: 文本含"我先读取"+无 tool_call → quality=idle + notice(intent_not_executed)。"""
+    service = agent_service
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 首轮：承诺文本无工具 → 纠正注入重试；次轮：仍承诺 → idle 终态
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'delta', 'delta': '我先读取这个文件看看'}
+        else:
+            yield {'type': 'delta', 'delta': '我先读取文件确认'}
+
+    conv = {
+        'id': 'conv-idle-intent', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    events = _run_process(service, monkeypatch, conv, mock_stream_llm)
+
+    notices = _events_of(events, 'notice')
+    assert any(n.get('code') == 'intent_not_executed' for n in notices)
+    done = _events_of(events, 'done')[-1]
+    assert done['quality'] == 'idle'
+
+
+def test_idle_first_retry_then_success(agent_service, monkeypatch):
+    """§8.1: 首次 idle 注入纠正后第二轮成功 → quality=success。"""
+    service = agent_service
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'delta', 'delta': '我先读取这个文件'}
+        elif call_count[0] == 1:
+            call_count[0] += 1
+            # 纠正后第二轮：直接调用工具（read_file）→ 正常执行
+            yield {'type': 'tool_call_part', 'tool_call': _make_tool_call(
+                'read_file', {'path': '/tmp/test.txt'}, 'call_rec_1')}
+        else:
+            # 第三轮：mock 耗尽空转（无文本无工具）→ 有历史工具 → success 终态
+            return
+            yield  # noqa
+
+    conv = {
+        'id': 'conv-idle-recover', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    events = _run_process(service, monkeypatch, conv, mock_stream_llm)
+    assert any(
+        json.loads(ev[6:]).get('code') == 'intent_not_executed'
+        for ev in events if json.loads(ev[6:]).get('type') == 'notice'
+    )
+    done = _events_of(events, 'done')[-1]
+    assert done['quality'] == 'success'
+
+
+def test_plan_mode_write_intent_constrained_handoff(agent_service, monkeypatch):
+    """§8.1: plan 模式+文本含写意图 → quality=constrained + phase:handoff + recovery CTA。"""
+    service = agent_service
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'delta', 'delta': '我将修改 services/auth.py 实现重构'}
+
+    conv = {
+        'id': 'conv-plan-intent', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    events = _run_process(service, monkeypatch, conv, mock_stream_llm)
+
+    phases = _events_of(events, 'phase')
+    assert any(p.get('phase') == 'handoff' for p in phases)
+    notices = _events_of(events, 'notice')
+    assert any(n.get('code') == 'plan_ready_for_build' for n in notices)
+    done = _events_of(events, 'done')[-1]
+    assert done['quality'] == 'constrained'
+    recovery = done.get('recovery') or []
+    actions = {r['action'] for r in recovery}
+    assert 'switch_preset:build' in actions
+    assert 'scroll_to_plan' in actions
+
+
+def test_done_phase_history_present(agent_service, monkeypatch):
+    """B3: done 携带 phase_history（thinking → retrying → done），metadata 同步落库。"""
+    service = agent_service
+    call_count = [0]
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'delta', 'delta': '我先读取这个文件'}
+        else:
+            yield {'type': 'delta', 'delta': '结论是问题已定位'}
+
+    conv = {
+        'id': 'conv-phase', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-phase', 'test'):
+            events.append(event)
+        return events
+
+    events = asyncio.get_event_loop().run_until_complete(run())
+    done = _events_of(events, 'done')[-1]
+    ph = done.get('phase_history') or []
+    assert ph and ph[0] == 'thinking'
+    assert ph[-1] == 'done'
+    assert 'retrying' in ph
+    assert persisted[-1].get('metadata', {}).get('phase_history') == ph
+
+
+def test_correction_message_not_persisted(agent_service, monkeypatch):
+    """B4/B3 防污染：纠正消息仅注入内存，不落库；下轮重建不含。"""
+    service = agent_service
+    call_count = [0]
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'delta', 'delta': '我先读取这个文件'}
+        else:
+            yield {'type': 'delta', 'delta': '结论是问题已定位'}
+
+    conv = {
+        'id': 'conv-nocorr', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-nocorr', 'test'):
+            events.append(event)
+        return events
+
+    asyncio.get_event_loop().run_until_complete(run())
+    assert all('系统纠正' not in (m.get('content') or '') for m in persisted)
+
+
+# ── 阶段 B4：ToolPart 六态发射 ────────────────────────────────
+
+
+def test_plan_mode_deny_emits_tool_part_denied(agent_service, monkeypatch):
+    """§8.1: plan 模式强行调用 write_file(模拟) → tool_part:denied reason=plan_mode_readonly。"""
+    service = agent_service
+    tc = _make_tool_call('write_file', {'path': '/a/b.py', 'content': 'x'}, 'call_tp_1')
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+        else:
+            yield {'type': 'delta', 'delta': '结论是已完成'}
+
+    conv = {
+        'id': 'conv-tp-deny', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5, 'preset': 'plan'},
+        'messages': [],
+    }
+    execute_spy = []
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm, sandbox_execute_spy=execute_spy)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-tp-deny', 'test'):
+            events.append(event)
+        return events
+
+    events = asyncio.get_event_loop().run_until_complete(run())
+    parts = _events_of(events, 'tool_part')
+    denied = [p for p in parts if p['part'] == 'denied']
+    assert denied, 'plan deny should emit tool_part denied'
+    assert denied[0]['reason'] == 'plan_mode_readonly'
+    # 生命周期序列：generating → denied（无 running，未执行）
+    assert parts[0]['part'] == 'generating'
+    assert all(p['part'] != 'running' for p in parts)
+    assert execute_spy == []
+
+
+def test_tool_part_allow_running_success_sequence(agent_service, monkeypatch):
+    """B4: allow 路径 generating → running → success 序列。"""
+    service = agent_service
+    tc = _make_tool_call('read_file', {'path': '/tmp/a.py'}, 'call_tp_2')
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+        else:
+            yield {'type': 'delta', 'delta': '结论是读取完成'}
+
+    conv = {
+        'id': 'conv-tp-allow', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    events = _run_process(service, monkeypatch, conv, mock_stream_llm)
+    parts = _events_of(events, 'tool_part')
+    seq = [p['part'] for p in parts]
+    assert seq == ['generating', 'running', 'success']
+
+
+def test_tool_part_ask_timeout_denied_reason(agent_service, monkeypatch):
+    """B4: ask 分支超时 → denied reason=timeout（ToolCard 不卡 permission_pending）。"""
+    service = agent_service
+    tc = _make_tool_call('write_file', {'path': '/a/b.py', 'content': 'x'}, 'call_tp_3')
+    call_count = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+        else:
+            yield {'type': 'delta', 'delta': '结论是未执行'}
+
+    conv = {
+        'id': 'conv-tp-ask', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def wait_timeout(request_id):
+        return None
+
+    monkeypatch.setattr(service, '_wait_for_confirmation', wait_timeout)
+    monkeypatch.setattr(service, 'CONFIRMATION_TIMEOUT', 0.05)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-tp-ask', 'test'):
+            events.append(event)
+        return events
+
+    events = asyncio.get_event_loop().run_until_complete(run())
+    parts = _events_of(events, 'tool_part')
+    seq = [p['part'] for p in parts]
+    assert 'permission_pending' in seq
+    denied = [p for p in parts if p['part'] == 'denied']
+    assert denied and denied[0]['reason'] == 'timeout'
+
+
+# ── 阶段 B5：标注集指标（§8.2） ───────────────────────────────
+
+
+def test_idle_annotation_set_metrics():
+    """§8.2 标注集：召回 ≥90%、精确 ≥90%、误报 ≤10%。
+
+    predicted_idle = quality in ('idle', 'constrained')（说而不做/被约束均为 idle 判定）。
+    """
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    from tests.agent_idle_annotation_set import ANNOTATION_SET
+
+    tp = fp = tn = fn = 0
+    for text, preset, expected_idle in ANNOTATION_SET:
+        detector = IdleDetector()  # 每样本新建（无跨样本重试污染）
+        dec = detector.detect(
+            collected_text=text, collected_tool_calls=[],
+            full_text='', executed_tool_names=[], preset=preset,
+        )
+        predicted_idle = dec.quality in ('idle', 'constrained')
+        if predicted_idle and expected_idle:
+            tp += 1
+        elif predicted_idle and not expected_idle:
+            fp += 1
+        elif not predicted_idle and not expected_idle:
+            tn += 1
+        else:
+            fn += 1
+
+    assert tp + fn > 0
+    recall = tp / (tp + fn)
+    precision = tp / (tp + fp) if (tp + fp) else 0
+    fpr = fp / (fp + tn) if (fp + tn) else 0
+    assert recall >= 0.90, f'recall={recall:.2f} < 0.90 (tp={tp}, fn={fn})'
+    assert precision >= 0.90, f'precision={precision:.2f} < 0.90 (tp={tp}, fp={fp})'
+    assert fpr <= 0.10, f'fpr={fpr:.2f} > 0.10 (fp={fp}, tn={tn})'
 
