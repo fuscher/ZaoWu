@@ -34,6 +34,13 @@ const noticeIcon = (n: NoticePayload) => {
   }
 }
 
+/** notice 文案：i18n 键优先（agent.notice.<code>），未命中回退后端 message（双语兜底） */
+function noticeText(n: NoticePayload): string {
+  const key = `agent.notice.${n.code}`
+  const localized = t(key)
+  return localized !== key ? localized : n.message
+}
+
 /** 折叠态：展示当前（最后一个）节点 */
 const current = computed(() => props.phases[props.phases.length - 1] as PhaseNode | undefined)
 
@@ -73,7 +80,7 @@ function fmtTime(ts: number): string {
         <div v-if="node.notices && node.notices.length" class="node-notices">
           <div v-for="(n, j) in node.notices" :key="j" class="node-notice" :class="n.level">
             <component :is="noticeIcon(n)" :size="11" />
-            <span>{{ n.message }}</span>
+            <span>{{ noticeText(n) }}</span>
           </div>
         </div>
       </div>

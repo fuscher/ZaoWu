@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload } from '@/types'
+import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload, RecoveryAction } from '@/types'
 import * as ai from '@/services/ai'
 
 export const useChatStore = defineStore('chat', () => {
@@ -342,7 +342,6 @@ export const useChatStore = defineStore('chat', () => {
       },
       params
     )
-
     loadConversations()
   }
 
@@ -472,15 +471,16 @@ export const useChatStore = defineStore('chat', () => {
         onDone(
           messageId: string,
           fullContent: string,
-          extra?: { quality?: MessageQuality; summary?: string }
+          extra?: { quality?: MessageQuality; summary?: string; phase_history?: string[]; recovery?: RecoveryAction[] }
         ) {
           assistantMessage.content = fullContent
           assistantMessage.id = messageId
-          // 阶段 A4：落库的完成质量写入消息 metadata，驱动分级渲染
-          if (extra?.quality) {
+          // 阶段 A4/D：落库的完成质量与 phase_history 写入消息 metadata，驱动分级渲染
+          if (extra?.quality || extra?.phase_history) {
             assistantMessage.metadata = {
               ...(assistantMessage.metadata || {}),
-              quality: extra.quality,
+              ...(extra.quality ? { quality: extra.quality } : {}),
+              ...(extra.phase_history ? { phase_history: extra.phase_history } : {}),
             }
           }
           // F02: 将工具调用数据关联到最终的持久化 messageId（流式临时 id 与持久化 id 不同）
@@ -506,7 +506,8 @@ export const useChatStore = defineStore('chat', () => {
           streamingMessageId.value = null
         },
         onError(err: string) {
-          assistantMessage.content += `\n\n⚠️ ${err}`
+          // 修复（D 阶段 code-review）：agent 流错误不再追加 ⚠️ 进正文——
+          // 错误由 onErrorPayload → ErrorCard 独立渲染；追加会双显示且污染落库 content。
           isStreaming.value = false
           streamingMessageId.value = null
           error.value = err

@@ -211,11 +211,17 @@ export async function sendAgentMessageStream(
           const event = JSON.parse(line.slice(6)) as SSEEvent
 
           if (event.type === 'done' && event.done) {
-            // 阶段 A4：done 携带 quality/summary（旧后端无这些字段 → 前端按 success 兜底）
+            // 阶段 A4/D：done 携带 quality/summary/phase_history/recovery
+            // （旧后端无这些字段 → 前端按 success 兜底）
             callbacks.onDone(
               event.id,
               event.content,
-              { quality: event.quality, summary: event.summary }
+              {
+                quality: event.quality,
+                summary: event.summary,
+                phase_history: event.phase_history,
+                recovery: event.recovery,
+              }
             )
           } else if (event.type === 'delta') {
             callbacks.onDelta(event.id, event.delta)
@@ -242,7 +248,6 @@ export async function sendAgentMessageStream(
             // 阶段 C2：tool_part 驱动 ToolCallCard 状态机
             callbacks.onToolPart?.(event.id, {
               requestId: event.requestId,
-              name: event.name,
               part: event.part,
               reason: event.reason,
               ts: event.ts ?? Date.now(),

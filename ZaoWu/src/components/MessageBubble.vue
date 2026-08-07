@@ -293,7 +293,10 @@ function handleRecoveryAction(action: string) {
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
       <div v-else-if="message.role === 'tool'" class="content-text tool-result-text" />
       <!-- 阶段 C7: error_fallback 挂 ErrorCard（替代正文）；无结构化 payload 的历史错误保留原文 -->
-      <div v-else-if="quality === 'error_fallback'" class="content-text error-fallback-text">
+      <div
+        v-else-if="quality === 'error_fallback' && !errorPayload"
+        class="content-text error-fallback-text"
+      >
         {{ message.content }}
       </div>
       <div v-else-if="quality === 'stopped'" class="content-text stopped-text">
@@ -566,7 +569,7 @@ function handleRecoveryAction(action: string) {
 }
 
 /* ── 阶段 C7: 完成态分级样式 ─────────────────────────────── */
-/* idle/empty: 黄色边 + 警告 CTA 条；constrained: 蓝色边；stopped: 灰 */
+/* idle/empty: 黄色边 + 警告 CTA 条；constrained: 蓝色边；error_fallback: 红色边 */
 
 .quality-idle .bubble-body,
 .quality-empty .bubble-body {
@@ -577,6 +580,12 @@ function handleRecoveryAction(action: string) {
 
 .quality-constrained .bubble-body {
   border: 1px solid var(--accent-muted);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.quality-error_fallback .bubble-body {
+  border: 1px solid var(--danger);
   border-radius: 12px;
   padding: 8px 12px;
 }

@@ -316,7 +316,6 @@ export interface PhaseNode {
 /** tool_part 生命周期节点（阶段 C2，对齐 master §5.2） */
 export interface ToolPartState {
   requestId: string
-  name?: string
   part:
     | 'generating'
     | 'permission_pending'
@@ -360,7 +359,7 @@ export interface AgentStreamCallbacks {
   onDone: (
     messageId: string,
     fullContent: string,
-    extra?: { quality?: MessageQuality; summary?: string }
+    extra?: DoneExtra
   ) => void
   onError: (error: string) => void
   // ── 阶段 C：结构化事件回调（对齐 master §5）──
@@ -395,14 +394,24 @@ export interface Skill {
   allowedTools?: string[]
 }
 
+/** done 事件附带字段（对齐 master §5.5：quality/summary/phase_history/recovery） */
+export interface DoneExtra {
+  quality?: MessageQuality
+  summary?: string
+  /** 本轮 phase 节点链（历史消息 PhaseStrip 恢复用） */
+  phase_history?: string[]
+  /** 恢复 CTA（constrained 交接等场景，由后端 _done_event 发送） */
+  recovery?: RecoveryAction[]
+}
+
 export type SSEEvent =
   | { id: string; type: 'delta'; delta: string; done: false }
   | { id: string; type: 'tool_call_start'; toolCall: ToolCall }
   | { id: string; type: 'requires_confirmation'; toolCall: ToolCall }
   | { id: string; type: 'tool_call_end'; toolResult: ToolResult }
-  | { id: string; type: 'done'; content: string; done: true; quality?: MessageQuality; summary?: string }
+  | { id: string; type: 'done'; content: string; done: true; quality?: MessageQuality; summary?: string; phase_history?: string[]; recovery?: RecoveryAction[] }
   | { id: string; type: 'error'; code: string; message: string; kind?: string; traceId?: string; recovery?: RecoveryAction[] }
   // ── 阶段 C：结构化事件（对齐 master §5）──
   | { id: string; type: 'phase'; phase: PhaseName; detail?: string; ts?: number }
-  | { id: string; type: 'tool_part'; requestId: string; part: ToolPartState['part']; name?: string; reason?: string; ts?: number }
+  | { id: string; type: 'tool_part'; requestId: string; part: ToolPartState['part']; reason?: string; ts?: number }
   | { id: string; type: 'notice'; level: NoticePayload['level']; code: string; message: string; recoverable?: boolean; ts?: number }

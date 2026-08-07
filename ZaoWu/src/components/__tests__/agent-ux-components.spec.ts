@@ -256,7 +256,7 @@ describe('阶段 C 组件测试', () => {
   })
 
   describe('PhaseStrip: phase 链渲染 + notice 子节点', () => {
-    it('渲染思考/工具链 + notice 子节点', async () => {
+    it('渲染思考/工具链 + notice 子节点（i18n 文案优先）', async () => {
       const wrapper = mount(PhaseStrip, {
         props: {
           phases: [
@@ -274,7 +274,9 @@ describe('阶段 C 组件测试', () => {
       await nextTick()
       expect(wrapper.text()).toContain('思考中')
       expect(wrapper.text()).toContain('工具调用')
-      expect(wrapper.text()).toContain('已压缩')
+      // notice 文案走 i18n 键（agent.notice.compacted），非后端原始 message
+      expect(wrapper.text()).toContain('上下文较长，已自动压缩早期对话')
+      expect(wrapper.text()).not.toContain('已压缩')
     })
   })
 })
