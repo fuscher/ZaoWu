@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { Theme, ViewType } from '@/types'
 import CustomTitleBar from './CustomTitleBar.vue'
 import ActivityBar from './ActivityBar.vue'
@@ -52,12 +52,28 @@ function handleShowPluginDetail(pluginName: string) {
   selectedPluginName.value = pluginName
 }
 
+// 阶段 C9: 恢复 CTA 的 open:settings:providers — 切换到设置面板并高亮 Provider 区
+function openSettingsFromEvent(e: Event) {
+  const detail = (e as CustomEvent<{ panel?: string }>).detail
+  selectView('settings')
+  if (detail?.panel === 'providers') highlightSection.value = 'providers'
+}
+
+// 阶段 C9: open:model_switcher — 打开模型切换（ChatInput 工具栏常驻，切回 chat 即可见）
+function openModelSwitcherEvent() {
+  selectView('chat')
+}
+
 // 监听插件 activity bar action handler 事件
 onMounted(() => {
   pluginEventBus.on('hello_world.click', () => {
     activeView.value = 'plugins'
     sideCollapsed.value = false
   })
+
+  // 阶段 C9: 恢复动作事件
+  window.addEventListener('zaowu:open-settings', openSettingsFromEvent)
+  window.addEventListener('zaowu:open-model-switcher', openModelSwitcherEvent)
 
   // Handle shared HTTP join links such as http://host/?join=ABCDEF
   const joinCode = (window as any).__JOIN_CODE__
@@ -70,6 +86,11 @@ onMounted(() => {
     activeView.value = 'community'
     sideCollapsed.value = false
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('zaowu:open-settings', openSettingsFromEvent)
+  window.removeEventListener('zaowu:open-model-switcher', openModelSwitcherEvent)
 })
 </script>
 

@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill } from '@/types'
+import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload } from '@/types'
 import * as ai from '@/services/ai'
 
 export const useChatStore = defineStore('chat', () => {
@@ -45,6 +45,13 @@ export const useChatStore = defineStore('chat', () => {
   const toolResultsByMessage = ref<Map<string, Map<string, ToolResult>>>(new Map())
   const pendingByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
 
+  // ── Agent UX (阶段 C) ───────────────────────────────────
+  // 结构化事件状态：phaseHistory 驱动 PhaseStrip；toolParts 驱动 ToolCallCard 状态机；
+  // lastError 驱动 ErrorCard（error 事件到达即存，onError 字符串兜底仍并存）。
+  const phaseHistoryByMessage = ref<Map<string, PhaseNode[]>>(new Map())
+  const toolPartsByMessage = ref<Map<string, Map<string, ToolPartState>>>(new Map())
+  const lastError = ref<ErrorPayload | null>(null)
+
   // ── Skill state ─────────────────────────────────────────
   // 技能改为「全部启用即生效」：不再有 selectedSkill 单选概念，
   // 设置模块启用的技能对所有对话默认生效，故移除 selectedSkill computed。
@@ -75,17 +82,33 @@ export const useChatStore = defineStore('chat', () => {
   const preset = computed<'build' | 'plan'>({
     get: () => currentConversation.value?.agentConfig?.preset ?? 'build',
     set: async (value) => {
-      const conv = currentConversation.value
-      if (!conv) return
-      const nextConfig = { ...(conv.agentConfig || {}), preset: value }
-      conv.agentConfig = nextConfig
-      try {
-        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
-      } catch {
-        conv.agentConfig = { ...conv.agentConfig, preset: value === 'build' ? 'plan' : 'build' }
-      }
+      await setPreset(value)
     },
   })
+
+  // 阶段 C10: 显式切模式 action（保留持久化语义，供交接 CTA 复用）
+  async function setPreset(value: 'build' | 'plan') {
+    const conv = currentConversation.value
+    if (!conv || (conv.agentConfig?.preset ?? 'build') === value) return
+    const nextConfig = { ...(conv.agentConfig || {}), preset: value }
+    conv.agentConfig = nextConfig
+    try {
+      await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+    } catch {
+      conv.agentConfig = { ...conv.agentConfig, preset: value === 'build' ? 'plan' : 'build' }
+    }
+  }
+
+  // 阶段 C10: plan→build 交接 — 切执行模式 + 合成执行指令重发
+  // （参考 opencode PlanExitTool 合成 build targeted message）
+  async function switchToBuildAndResend(promptText?: string) {
+    if (isStreaming.value) return
+    const wasPlan = preset.value === 'plan'
+    await setPreset('build')
+    if (wasPlan) {
+      sendAgentMessage(promptText || '请执行上述方案')
+    }
+  }
 
   // ── Computed ───────────────────────────────────────────
   const currentMessages = computed(() => currentConversation.value?.messages || [])
@@ -222,6 +245,7 @@ export const useChatStore = defineStore('chat', () => {
     // F02: 切换对话时清空工具调用 Map，避免长期会话内存无限增长。
     // message.id 不携带 convId 前缀，故直接 clear() 全部 Map（当前工具卡片只渲染当前对话消息，清空无影响）。
     clearToolMaps()
+    clearAgentUXMaps()
   }
 
   async function renameConversation(id: string, title: string) {
@@ -344,11 +368,24 @@ export const useChatStore = defineStore('chat', () => {
   function pendingFor(messageId: string): Map<string, ToolCall> {
     return pendingByMessage.value.get(messageId) || new Map()
   }
+  // ── Agent UX (阶段 C) accessors ─────────────────────────
+  function phaseHistoryFor(messageId: string): PhaseNode[] {
+    return phaseHistoryByMessage.value.get(messageId) || []
+  }
+  function toolPartsFor(messageId: string): Map<string, ToolPartState> {
+    return toolPartsByMessage.value.get(messageId) || new Map()
+  }
   // F02: 清空全部工具调用 Map（切换对话 / 停止生成时调用）。
   function clearToolMaps() {
     toolCallsByMessage.value.clear()
     toolResultsByMessage.value.clear()
     pendingByMessage.value.clear()
+  }
+  // 阶段 C：清空结构化事件状态（切换对话 / 停止生成时调用，与 clearToolMaps 同步）。
+  function clearAgentUXMaps() {
+    phaseHistoryByMessage.value.clear()
+    toolPartsByMessage.value.clear()
+    lastError.value = null
   }
 
   function stopStreaming() {
@@ -364,6 +401,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming.value = false
     streamingMessageId.value = null
     clearToolMaps()
+    clearAgentUXMaps()
   }
 
   // ── Agent message sending (Stage 8) ──────────────────────
@@ -406,6 +444,10 @@ export const useChatStore = defineStore('chat', () => {
     toolCallsByMessage.value.set(mid, new Map())
     toolResultsByMessage.value.set(mid, new Map())
     pendingByMessage.value.set(mid, new Map())
+    // 阶段 C：为当前消息创建结构化事件存储槽
+    phaseHistoryByMessage.value.set(mid, [])
+    toolPartsByMessage.value.set(mid, new Map())
+    lastError.value = null
 
     abortController = await ai.sendAgentMessageStream(
       conv.id,
@@ -449,6 +491,13 @@ export const useChatStore = defineStore('chat', () => {
             toolCallsByMessage.value.delete(mid)
             toolResultsByMessage.value.delete(mid)
             pendingByMessage.value.delete(mid)
+            // 阶段 C：结构化事件状态同样迁移到持久化 messageId
+            const phases = phaseHistoryByMessage.value.get(mid)
+            const parts = toolPartsByMessage.value.get(mid)
+            if (phases) phaseHistoryByMessage.value.set(messageId, phases)
+            if (parts) toolPartsByMessage.value.set(messageId, parts)
+            phaseHistoryByMessage.value.delete(mid)
+            toolPartsByMessage.value.delete(mid)
           }
           isStreaming.value = false
           streamingMessageId.value = null
@@ -458,6 +507,40 @@ export const useChatStore = defineStore('chat', () => {
           isStreaming.value = false
           streamingMessageId.value = null
           error.value = err
+        },
+        // ── 阶段 C：结构化事件回调 ──────────────────────────
+        onPhase(_messageId: string, phase, detail, ts) {
+          const arr = phaseHistoryByMessage.value.get(mid)
+          if (!arr) return
+          // 同一 phase 连续重复（如多轮 thinking）不重复追加；detail 不同则视为新节点
+          const last = arr[arr.length - 1]
+          if (last && last.phase === phase && last.detail === detail) return
+          arr.push({ phase, detail, ts: ts ?? Date.now() })
+        },
+        onToolPart(_messageId: string, part: ToolPartState) {
+          toolPartsByMessage.value.get(mid)?.set(part.requestId, part)
+        },
+        onNotice(_messageId: string, notice: NoticePayload) {
+          // notice 挂到当前 phase 节点下（PhaseStrip 子节点）；无节点则创建 thinking 兜底节点
+          const arr = phaseHistoryByMessage.value.get(mid)
+          if (!arr) return
+          const target = arr[arr.length - 1]
+          if (!target) {
+            const node: PhaseNode = { phase: 'thinking', ts: notice.ts, notices: [notice] }
+            arr.push(node)
+          } else {
+            target.notices = [...(target.notices || []), notice]
+          }
+        },
+        onErrorPayload(_messageId: string, payload: ErrorPayload) {
+          lastError.value = payload
+          // 终态错误也写入消息 metadata（历史加载时 ErrorCard 可恢复渲染）
+          assistantMessage.metadata = {
+            ...(assistantMessage.metadata || {}),
+            error_code: payload.code,
+            error_message: payload.message,
+            error_trace_id: payload.traceId,
+          }
         },
       },
       params
@@ -501,6 +584,8 @@ export const useChatStore = defineStore('chat', () => {
     agentMode,
     autoApproveWrites,
     preset,
+    setPreset,
+    switchToBuildAndResend,
     toolCallsByMessage,
     toolResultsByMessage,
     pendingByMessage,
@@ -508,6 +593,13 @@ export const useChatStore = defineStore('chat', () => {
     toolResultsFor,
     pendingFor,
     clearToolMaps,
+    // Agent UX (阶段 C)
+    phaseHistoryByMessage,
+    toolPartsByMessage,
+    lastError,
+    phaseHistoryFor,
+    toolPartsFor,
+    clearAgentUXMaps,
     sendAgentMessage,
     confirmTool,
     // Skills

@@ -448,7 +448,14 @@
     "requiresApproval": "需确认",
     "parameters": "参数",
     "result": "结果",
-    "error": "错误",
+    "error": {
+      "llm_auth": "API 鉴权失败，请检查 Provider 配置",
+      "llm_rate_limit": "请求频率受限，请稍后重试",
+      "context_too_long": "上下文过长，压缩后仍无法处理，建议清空早期对话或切换更大模型",
+      "timeout": "请求超时，请检查网络",
+      "connect_failed": "连接失败，请检查 apiBase 配置",
+      "internal": "智能体运行异常"
+    },
     "approve": "批准",
     "reject": "拒绝",
     "summary": {
@@ -469,6 +476,55 @@
       "stopped": "[系统] 生成已被用户终止",
       "approvalNeeded": "[系统] 检测到需要确认的操作：{tools}",
       "autoExecuted": "[系统] 已自动执行（后续版本将要求用户确认）"
+    },
+    "phase": {
+      "thinking": "思考中",
+      "tool": "工具调用",
+      "compacting": "压缩上下文",
+      "retrying": "重试",
+      "handoff": "交接",
+      "done": "完成"
+    },
+    "modeBadge": {
+      "plan": "计划模式 · 只读",
+      "build": "执行模式 · 全工具",
+      "planHint": "写操作被约束，产出方案后切执行模式",
+      "buildHint": "可读写文件、执行命令（需确认）"
+    },
+    "quality": {
+      "idle": "未执行声明的操作",
+      "constrained": "方案已生成 · 只读模式",
+      "empty": "未生成有效响应",
+      "stopped": "已停止"
+    },
+    "notice": {
+      "intent_not_executed": "模型声明了工具意图但未执行",
+      "loop_interrupted": "检测到连续重复调用，已自动中断循环",
+      "compacted": "上下文较长，已自动压缩早期对话",
+      "retrying_empty": "模型未生成有效响应，正在重试…",
+      "plan_ready_for_build": "方案已生成，切到执行模式落地",
+      "user_stopped": "生成已被用户终止"
+    },
+    "recovery": {
+      "retry": "重试",
+      "switchToBuild": "切换到执行模式并继续",
+      "openProviders": "前往 Provider 设置",
+      "openModelSwitcher": "切换更大上下文模型",
+      "clearMessages": "清空早期对话",
+      "viewPlan": "查看方案"
+    },
+    "toolPart": {
+      "generating": "生成中",
+      "permission_pending": "等待确认",
+      "running": "运行中",
+      "success": "成功",
+      "denied": {
+        "planMode": "当前模式禁止写操作",
+        "preset": "预设配置拒绝",
+        "rejected": "用户拒绝",
+        "timeout": "确认超时"
+      },
+      "failed": "失败"
     }
   },
   "workflow": {

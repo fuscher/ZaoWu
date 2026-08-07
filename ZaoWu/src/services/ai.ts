@@ -226,10 +226,38 @@ export async function sendAgentMessageStream(
           } else if (event.type === 'tool_call_end' && event.toolResult) {
             callbacks.onToolCallEnd(event.id, event.toolResult)
           } else if (event.type === 'error') {
-            // 阶段 A3：结构化错误事件 → onError 兜底渲染（错误卡片由 C 阶段接入）
+            // 阶段 A3/C：结构化错误事件 → onError 兜底渲染 + onErrorPayload 供 ErrorCard
             callbacks.onError(event.message || `请求失败: ${event.code}`)
+            callbacks.onErrorPayload?.(event.id, {
+              code: event.code,
+              message: event.message,
+              kind: event.kind,
+              traceId: event.traceId,
+              recovery: event.recovery,
+            })
+          } else if (event.type === 'phase') {
+            // 阶段 C2：phase 事件驱动 PhaseStrip
+            callbacks.onPhase?.(event.id, event.phase, event.detail, event.ts)
+          } else if (event.type === 'tool_part' && event.requestId) {
+            // 阶段 C2：tool_part 驱动 ToolCallCard 状态机
+            callbacks.onToolPart?.(event.id, {
+              requestId: event.requestId,
+              name: event.name,
+              part: event.part,
+              reason: event.reason,
+              ts: event.ts ?? Date.now(),
+            })
+          } else if (event.type === 'notice') {
+            // 阶段 C2：notice 挂到 PhaseStrip 对应节点
+            callbacks.onNotice?.(event.id, {
+              level: event.level,
+              code: event.code,
+              message: event.message,
+              recoverable: event.recoverable,
+              ts: event.ts ?? Date.now(),
+            })
           }
-          // phase / tool_part / notice 等结构化事件：A 阶段静默忽略，C 阶段消费
+          // 未知 type 静默忽略（升级期兼容）
         } catch {
           // skip malformed lines
         }

@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Loader, AlertCircle, Check, ChevronRight, X } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import { Loader, AlertCircle, Check, ChevronRight, X, Ban, Clock } from '@lucide/vue'
 import { useI18n } from '@/i18n'
-import type { ToolCall, ToolResult } from '@/types'
+import type { ToolCall, ToolResult, ToolPartState } from '@/types'
 
 const props = defineProps<{
   toolCall?: ToolCall
   toolResult?: ToolResult
   isLoading?: boolean
   requiresApproval?: boolean
+  /** 阶段 C6: 生命周期状态（消费 tool_part 事件） */
+  part?: ToolPartState
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +24,49 @@ const approved = ref(false)
 // 6.3.2: 三态确认 — reject 展开原因输入框
 const rejecting = ref(false)
 const rejectFeedback = ref('')
+
+/** 阶段 C6: 展示态 = part 状态机优先，回退到 props 推断（历史消息无 part） */
+const displayState = computed<{
+  key: 'loading' | 'permission' | 'success' | 'failed' | 'denied'
+  reason?: string
+}>(() => {
+  if (props.part) {
+    switch (props.part.part) {
+      case 'generating':
+      case 'running':
+        return { key: 'loading' }
+      case 'permission_pending':
+        return { key: 'permission' }
+      case 'success':
+        return { key: 'success' }
+      case 'denied':
+        return { key: 'denied', reason: props.part.reason }
+      case 'failed':
+        return { key: 'failed' }
+    }
+  }
+  // 历史消息回退：从 toolResult.success 推断
+  if (props.toolResult) {
+    return props.toolResult.success ? { key: 'success' } : { key: 'failed' }
+  }
+  return { key: 'loading' }
+})
+
+/** denied + plan_mode_readonly → 信息性"被约束"（黄），非错误 */
+const isPlanConstrained = computed(
+  () => displayState.value.key === 'denied' && displayState.value.reason === 'plan_mode_readonly'
+)
+
+function deniedReasonText(reason: string | undefined): string {
+  switch (reason) {
+    case 'plan_mode_readonly': return t('agent.toolPart.denied.planMode')
+    case 'preset_deny': return t('agent.toolPart.denied.preset')
+    case 'user_rejected': return t('agent.toolPart.denied.rejected')
+    case 'user_stopped':
+    case 'timeout': return t('agent.toolPart.denied.timeout')
+    default: return t('agent.toolPart.denied.rejected')
+  }
+}
 
 function toggle() {
   isExpanded.value = !isExpanded.value
@@ -120,7 +165,8 @@ function summaryForResult(result: ToolResult): string {
 <template>
   <div class="tool-call-card" :class="{
     expanded: isExpanded,
-    error: toolResult?.success === false,
+    error: displayState.key === 'failed',
+    constrained: isPlanConstrained,
     pending: requiresApproval && !approved,
   }">
     <div class="tool-call-header" @click="toggle">
@@ -129,17 +175,24 @@ function summaryForResult(result: ToolResult): string {
       <span v-if="toolResult && !isExpanded" class="tool-summary">
         {{ toolResult.success ? summaryForResult(toolResult) : toolResult.error }}
       </span>
+      <span v-else-if="isPlanConstrained && !isExpanded" class="tool-summary constrained-summary">
+        {{ deniedReasonText(displayState.reason) }}
+      </span>
       <span class="tool-status">
-        <template v-if="isLoading">
+        <template v-if="displayState.key === 'loading'">
           <Loader :size="14" class="spinning" />
         </template>
-        <template v-else-if="requiresApproval && !approved">
-          <span class="approval-badge">{{ t('agent.requiresApproval') }}</span>
+        <template v-else-if="displayState.key === 'permission'">
+          <Clock :size="14" class="text-warn" />
         </template>
-        <template v-else-if="toolResult?.success === false">
+        <template v-else-if="displayState.key === 'denied'">
+          <Ban v-if="!isPlanConstrained" :size="14" class="text-error" />
+          <AlertCircle v-else :size="14" class="text-warn" />
+        </template>
+        <template v-else-if="displayState.key === 'failed'">
           <AlertCircle :size="14" class="text-error" />
         </template>
-        <template v-else-if="toolResult?.success">
+        <template v-else-if="displayState.key === 'success'">
           <Check :size="14" class="text-success" />
         </template>
       </span>
@@ -147,6 +200,13 @@ function summaryForResult(result: ToolResult): string {
     </div>
 
     <div v-if="isExpanded" class="tool-call-body">
+      <!-- 阶段 C6: denied 原因（plan 只读 / preset 拒绝 / 用户拒绝 / 超时） -->
+      <div v-if="displayState.key === 'denied'" class="tool-section">
+        <div class="section-label">{{ t('agent.error') }}</div>
+        <div class="denied-reason" :class="{ constrained: isPlanConstrained }">
+          {{ deniedReasonText(displayState.reason) }}
+        </div>
+      </div>
       <div v-if="toolCall" class="tool-section">
         <div class="section-label">{{ t('agent.parameters') }}</div>
         <pre class="tool-json"><code>{{ JSON.stringify(toolCall.arguments, null, 2) }}</code></pre>
@@ -214,6 +274,36 @@ function summaryForResult(result: ToolResult): string {
 
 [data-theme='light'] .tool-call-card.error .tool-call-header {
   background: rgba(201, 42, 42, 0.06);
+}
+
+/* 阶段 C6: denied + plan_mode_readonly → 信息性"被约束"（黄色）而非错误 */
+.tool-call-card.constrained {
+  border-color: rgba(255, 149, 0, 0.45);
+}
+
+.tool-call-card.constrained .tool-call-header {
+  background: rgba(255, 149, 0, 0.05);
+}
+
+[data-theme='light'] .tool-call-card.constrained .tool-call-header {
+  background: rgba(255, 149, 0, 0.05);
+}
+
+.constrained-summary {
+  color: var(--warning);
+}
+
+.text-warn {
+  color: var(--warning);
+}
+
+.denied-reason {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.denied-reason.constrained {
+  color: var(--warning);
 }
 
 .tool-call-header {

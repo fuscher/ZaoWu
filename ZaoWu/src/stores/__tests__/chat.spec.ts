@@ -25,6 +25,7 @@ vi.mock('@/services/ai', () => ({
   getSkills: vi.fn().mockResolvedValue({ ok: true, skills: [] }),
 }))
 
+import * as ai from '@/services/ai'
 import { useChatStore } from '@/stores/chat'
 import type { ToolCall, ToolResult } from '@/types'
 
@@ -215,6 +216,178 @@ describe('F02: messageId 两级索引工具 Map', () => {
       const msg = store.currentConversation!.messages.find((m) => m.id === 'persisted-id-2')
       expect(msg?.content).toBe('ok')
       expect(msg?.metadata).toBeUndefined()
+    })
+  })
+
+  // ── 阶段 C: 结构化事件状态（对齐 master §8.3）──────────────
+  describe('阶段 C1: 结构化事件状态收集', () => {
+    let capturedCallbacks: any = null
+
+    beforeEach(() => {
+      vi.mocked(ai.sendAgentMessageStream).mockImplementationOnce(
+        async (_cid: string, _content: string, callbacks: any) => {
+          capturedCallbacks = callbacks
+          return new AbortController()
+        }
+      )
+    })
+
+    function phaseNodeCount() {
+      return store.phaseHistoryByMessage.get('persisted-c')?.length ?? 0
+    }
+
+    it('onPhase 追加 phaseHistory；onDone 后迁移到持久化 messageId', async () => {
+      const sendPromise = store.sendAgentMessage('分析一下')
+      await new Promise((r) => setTimeout(r, 0))
+      const mid = store.streamingMessageId!
+      capturedCallbacks.onPhase(mid, 'thinking', '第1轮', 1000)
+      capturedCallbacks.onPhase(mid, 'tool', undefined, 2000)
+      expect(store.phaseHistoryFor(mid).map((n) => n.phase)).toEqual(['thinking', 'tool'])
+      // 同一 phase 连续重复不追加
+      capturedCallbacks.onPhase(mid, 'tool', undefined, 3000)
+      expect(store.phaseHistoryFor(mid).length).toBe(2)
+
+      capturedCallbacks.onDone('persisted-c', 'done', { quality: 'success' })
+      await sendPromise
+      // 阶段 C: phaseHistory 迁移到持久化 id，临时 id 槽清除
+      expect(store.phaseHistoryFor('persisted-c').map((n) => n.phase)).toEqual(['thinking', 'tool'])
+      expect(store.phaseHistoryByMessage.has(mid)).toBe(false)
+    })
+
+    it('onToolPart 记录六态生命周期', async () => {
+      const sendPromise = store.sendAgentMessage('改文件')
+      await new Promise((r) => setTimeout(r, 0))
+      const mid = store.streamingMessageId!
+      capturedCallbacks.onToolPart(mid, { requestId: 'tc-1', name: 'write_file', part: 'generating', ts: 1 })
+      capturedCallbacks.onToolPart(mid, { requestId: 'tc-1', name: 'write_file', part: 'permission_pending', ts: 2 })
+      capturedCallbacks.onToolPart(mid, { requestId: 'tc-1', name: 'write_file', part: 'denied', reason: 'plan_mode_readonly', ts: 3 })
+      const parts = store.toolPartsFor(mid)
+      expect(parts.get('tc-1')?.part).toBe('denied')
+      expect(parts.get('tc-1')?.reason).toBe('plan_mode_readonly')
+      await sendPromise
+    })
+
+    it('onNotice 挂到最近 phase 节点', async () => {
+      const sendPromise = store.sendAgentMessage('检查')
+      await new Promise((r) => setTimeout(r, 0))
+      const mid = store.streamingMessageId!
+      capturedCallbacks.onPhase(mid, 'compacting', undefined, 1)
+      capturedCallbacks.onNotice(mid, { level: 'info', code: 'compacted', message: '已压缩', ts: 2 })
+      const node = store.phaseHistoryFor(mid)[0]
+      expect(node?.notices?.[0]?.code).toBe('compacted')
+      await sendPromise
+    })
+
+    it('onErrorPayload 写 lastError 与 metadata', async () => {
+      const sendPromise = store.sendAgentMessage('跑一下')
+      await new Promise((r) => setTimeout(r, 0))
+      const mid = store.streamingMessageId!
+      capturedCallbacks.onErrorPayload(mid, {
+        code: 'llm_auth',
+        message: '鉴权失败',
+        kind: 'auth',
+        traceId: 'trace-1',
+        recovery: [{ label: '重试', action: 'retry' }],
+      })
+      expect(store.lastError?.code).toBe('llm_auth')
+      expect(store.lastError?.traceId).toBe('trace-1')
+      // metadata 写入（onDone 之前）
+      const msg = store.currentConversation!.messages.find((m) => m.id === mid)
+      expect(msg?.metadata?.error_code).toBe('llm_auth')
+      await sendPromise
+    })
+
+    it('clearAgentUXMaps 清空结构化事件状态', async () => {
+      store.phaseHistoryByMessage.set('m1', [{ phase: 'thinking', ts: 1 }])
+      store.toolPartsByMessage.set('m1', new Map([['r1', { requestId: 'r1', part: 'running', ts: 2 } as any]]))
+      store.lastError = { code: 'timeout', message: '超时' }
+      store.clearAgentUXMaps()
+      expect(store.phaseHistoryByMessage.size).toBe(0)
+      expect(store.toolPartsByMessage.size).toBe(0)
+      expect(store.lastError).toBeNull()
+    })
+  })
+
+  // ── 阶段 C10: plan→build 交接（对齐 master §8.3 constrained_cta_switches_preset_and_resends）
+  describe('阶段 C10: switchToBuildAndResend', () => {
+    beforeEach(() => {
+      vi.mocked(ai.sendAgentMessageStream).mockImplementation(
+        async (_cid: string, _content: string, _callbacks: any) => new AbortController()
+      )
+    })
+
+    it('plan → 切 build + 重发执行指令', async () => {
+      store.currentConversation!.agentConfig!.preset = 'plan'
+      // 先加一条 user 消息作为最近用户输入
+      store.currentConversation!.messages.push({
+        id: 'user-1',
+        role: 'user',
+        content: '帮我重构 auth',
+        timestamp: Date.now(),
+      } as any)
+
+      await store.switchToBuildAndResend()
+      await new Promise((r) => setTimeout(r, 0))
+
+      expect(store.currentConversation?.agentConfig?.preset).toBe('build')
+      const sent = vi.mocked(ai.sendAgentMessageStream).mock.calls
+      const lastContent = sent[sent.length - 1]?.[1]
+      expect(lastContent).toBe('请执行上述方案')
+    })
+
+    it('已处于 build 时不重发', async () => {
+      const before = vi.mocked(ai.sendAgentMessageStream).mock.calls.length
+      store.currentConversation!.agentConfig!.preset = 'build'
+      await store.switchToBuildAndResend()
+      await new Promise((r) => setTimeout(r, 0))
+      // 无新 sendAgentMessage 调用（计数不增加）
+      expect(vi.mocked(ai.sendAgentMessageStream).mock.calls.length).toBe(before)
+    })
+  })
+
+  // ── 阶段 C9: 恢复动作注册表（对齐 master §3.5.2 / C9 验收）──
+  describe('阶段 C9: recoveryActions 注册表', () => {
+    it('retry 重发最近 user message', async () => {
+      vi.mocked(ai.sendAgentMessageStream).mockImplementation(
+        async (_cid: string, _content: string, _callbacks: any) => new AbortController()
+      )
+      const { runRecoveryActions } = await import('@/utils/recoveryActions')
+      store.currentConversation!.messages.push({
+        id: 'user-2',
+        role: 'user',
+        content: '上次的问题',
+        timestamp: Date.now(),
+      } as any)
+      runRecoveryActions([{ label: '重试', action: 'retry' }], {
+        lastUserMessage: '上次的问题',
+        retry: () => store.sendAgentMessage('上次的问题'),
+        switchToBuild: () => {},
+        openProviders: () => {},
+        openModelSwitcher: () => {},
+        clearMessages: () => {},
+        scrollToPlan: () => {},
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      const sent = vi.mocked(ai.sendAgentMessageStream).mock.calls
+      expect(sent[sent.length - 1]?.[1]).toBe('上次的问题')
+    })
+
+    it('未知 action 静默忽略（不抛异常）', async () => {
+      const { runRecoveryActions, isKnownRecoveryAction } = await import('@/utils/recoveryActions')
+      expect(isKnownRecoveryAction('bogus:action')).toBe(false)
+      const executed = runRecoveryActions(
+        [{ label: 'x', action: 'bogus:action' }],
+        {
+          lastUserMessage: '',
+          retry: () => {},
+          switchToBuild: () => {},
+          openProviders: () => {},
+          openModelSwitcher: () => {},
+          clearMessages: () => {},
+          scrollToPlan: () => {},
+        }
+      )
+      expect(executed).toBe(0)
     })
   })
 })

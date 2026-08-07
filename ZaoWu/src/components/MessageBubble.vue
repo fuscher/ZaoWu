@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, Bot, Copy, Check } from '@lucide/vue'
+import { User, Bot, Copy, Check, AlertTriangle } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
 import { useChatStore } from '@/stores/chat'
-import type { Message, ToolCall, ToolResult } from '@/types'
+import { runRecoveryActions } from '@/utils/recoveryActions'
+import type { Message, ToolCall, ToolResult, MessageQuality, ErrorPayload, PhaseNode, PhaseName } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
+import PhaseStrip from './PhaseStrip.vue'
+import ErrorCard from './ErrorCard.vue'
 
 const props = defineProps<{
   message: Message
@@ -125,6 +128,22 @@ const timeStr = computed(() => {
 })
 
 /** Display name for messages from other collaboration users */
+/** 历史消息 PhaseStrip 回退（阶段 A6 落库的 metadata.phase_history） */
+const legacyPhaseHistory = computed<PhaseNode[]>(() => {
+  const history = props.message.metadata?.phase_history
+  if (!history || history.length === 0) return []
+  return history.map((phase) => ({
+    phase: phase as PhaseName,
+    ts: props.message.timestamp,
+  }))
+})
+
+const phasesForStrip = computed<PhaseNode[]>(() => {
+  const live = chatStore.phaseHistoryFor(props.message.id)
+  if (live.length > 0) return live
+  return legacyPhaseHistory.value
+})
+
 const displayName = computed(() => {
   if (isUser.value && props.senderName) return props.senderName
   if (isUser.value && communityStore.isInRoom && props.message.role === 'user') {
@@ -132,10 +151,116 @@ const displayName = computed(() => {
   }
   return isUser.value ? 'You' : 'ZaoWu'
 })
+
+// ── 阶段 C7: 完成质量分级 ─────────────────────────────────
+// 优先读落库 metadata.quality；旧消息（无 quality）按正文内容回退推断，
+// 覆盖 A 阶段之前落库的"空气泡"字面量（对齐 master C7 存量回退清单）。
+function legacyQualityFromContent(content: string | null | undefined): MessageQuality | null {
+  if (!content) return null
+  if (content === '(completed)') return 'empty'
+  if (content === '(已停止)') return 'stopped'
+  if (content === '(检测到循环，已自动中断)') return 'stopped'
+  if (content.startsWith('[请求失败:') || content.startsWith('(error:')) return 'error_fallback'
+  if (content === '模型未生成有效响应，请重试。') return 'empty'
+  if (content.startsWith('当前为计划模式（只读）')) return 'constrained'
+  return null
+}
+
+/** 存量空气泡：字面量命中但该消息已不流式（历史消息），且无 metadata 时按 legacy 回退 */
+const isLegacyFallback = computed(() => {
+  const q = props.message.metadata?.quality
+  if (q) return false
+  return legacyQualityFromContent(props.message.content) !== null
+})
+
+const quality = computed<MessageQuality>(() => {
+  const q = props.message.metadata?.quality
+  if (q) return q
+  return legacyQualityFromContent(props.message.content) ?? 'success'
+})
+
+/** 流式中/终态错误 payload（实时流来自 store.lastError；历史来自 metadata） */
+const errorPayload = computed<ErrorPayload | null>(() => {
+  const m = props.message.metadata
+  if (m?.error_code || m?.error_message) {
+    return {
+      code: m.error_code || 'internal',
+      message: m.error_message || '',
+      traceId: m.error_trace_id,
+    }
+  }
+  if (props.isStreaming && chatStore.streamingMessageId === props.message.id) {
+    return chatStore.lastError
+  }
+  return null
+})
+
+/** 恢复 CTA（idle/empty → retry；constrained → 切执行模式 + 查看方案） */
+const recoveryActions = computed(() => {
+  switch (quality.value) {
+    case 'idle':
+    case 'empty':
+      return [{ label: t('agent.recovery.retry'), action: 'retry' }]
+    case 'constrained':
+      return [
+        { label: t('agent.recovery.switchToBuild'), action: 'switch_preset:build' },
+        { label: t('agent.recovery.viewPlan'), action: 'scroll_to_plan' },
+      ]
+    default:
+      return null
+  }
+})
+
+const qualityMeta = computed(() => {
+  switch (quality.value) {
+    case 'idle': return { cls: 'idle', text: t('agent.quality.idle') }
+    case 'constrained': return { cls: 'constrained', text: t('agent.quality.constrained') }
+    case 'empty': return { cls: 'empty', text: t('agent.quality.empty') }
+    case 'stopped': return { cls: 'stopped', text: t('agent.quality.stopped') }
+    default: return null
+  }
+})
+
+/** CTA 动作 → recoveryActions 注册表（Context 由 chatStore 提供） */
+function handleRecoveryAction(action: string) {
+  const conv = chatStore.currentConversation
+  const lastUserMessage = [...(conv?.messages || [])]
+    .reverse()
+    .find((m) => m.role === 'user')?.content ?? ''
+  runRecoveryActions([{ label: '', action }], {
+    lastUserMessage,
+    switchToBuild: async () => {
+      await chatStore.switchToBuildAndResend()
+    },
+    openProviders: () => {
+      window.dispatchEvent(new CustomEvent('zaowu:open-settings', { detail: { panel: 'providers' } }))
+    },
+    openModelSwitcher: () => {
+      window.dispatchEvent(new CustomEvent('zaowu:open-model-switcher'))
+    },
+    clearMessages: async () => {
+      await chatStore.clearMessages()
+      if (lastUserMessage) chatStore.sendAgentMessage(lastUserMessage)
+    },
+    scrollToPlan: () => {
+      // 滚动到方案气泡：回退为滚动到当前消息
+      props.message.id && document.getElementById(`msg-${props.message.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    },
+    retry: () => {
+      if (lastUserMessage) chatStore.sendAgentMessage(lastUserMessage)
+    },
+  })
+}
 </script>
 
 <template>
-  <div class="message-bubble" :class="{ user: isUser, assistant: !isUser }">
+  <div
+    class="message-bubble"
+    :class="[
+      { user: isUser, assistant: !isUser },
+      qualityMeta || isLegacyFallback ? `quality-${quality}` : '',
+    ]"
+  >
     <div class="avatar">
       <User v-if="isUser" :size="16" />
       <Bot v-else :size="16" />
@@ -154,9 +279,22 @@ const displayName = computed(() => {
           <Copy v-else :size="12" />
         </button>
       </div>
+      <!-- 阶段 C3: PhaseStrip 展示本轮 agent 阶段流转（实时事件 + 历史 metadata 回退） -->
+      <PhaseStrip
+        v-if="!isUser && phasesForStrip.length > 0"
+        :phases="phasesForStrip"
+        :is-streaming="isStreaming"
+      />
       <div v-if="isUser" class="content-text">{{ message.content }}</div>
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
       <div v-else-if="message.role === 'tool'" class="content-text tool-result-text" />
+      <!-- 阶段 C7: error_fallback 挂 ErrorCard（替代正文）；无结构化 payload 的历史错误保留原文 -->
+      <div v-else-if="quality === 'error_fallback'" class="content-text error-fallback-text">
+        {{ message.content }}
+      </div>
+      <div v-else-if="quality === 'stopped'" class="content-text stopped-text">
+        {{ t('agent.quality.stopped') }}
+      </div>
       <!-- 仅当有正文才渲染 markdown 区：工具调用轮 assistant 消息 content 为 null
            （OpenAI 标准格式），渲染空 div 会形成"空气泡"，直接跳过正文区 -->
       <div v-else-if="renderedContent" class="content-md" v-html="renderedContent" />
@@ -170,6 +308,7 @@ const displayName = computed(() => {
           :key="requestId"
           :tool-call="chatStore.toolCallsFor(message.id).get(requestId)"
           :tool-result="result"
+          :part="chatStore.toolPartsFor(message.id).get(requestId)"
           :requires-approval="chatStore.pendingFor(message.id).has(requestId)"
           @approve="(id, scope) => chatStore.confirmTool(id, true, scope)"
           @reject="(id, feedback) => chatStore.confirmTool(id, false, 'once', feedback)"
@@ -194,6 +333,30 @@ const displayName = computed(() => {
       </div>
       <div v-if="isStreaming && !isUser" class="streaming-indicator">
         <span class="dot" /><span class="dot" /><span class="dot" />
+      </div>
+      <!-- 阶段 C7: 完成态分级 — 错误挂 ErrorCard；idle/empty/constrained 挂 CTA 条 -->
+      <ErrorCard
+        v-if="errorPayload && !isUser"
+        :error="errorPayload"
+        @action="handleRecoveryAction"
+      />
+      <div
+        v-else-if="qualityMeta && !isStreaming && !isUser"
+        class="quality-bar"
+        :class="qualityMeta.cls"
+      >
+        <AlertTriangle :size="12" />
+        <span>{{ qualityMeta.text }}</span>
+        <template v-if="recoveryActions">
+          <button
+            v-for="(r, i) in recoveryActions"
+            :key="i"
+            class="quality-cta"
+            @click="handleRecoveryAction(r.action)"
+          >
+            {{ r.label }}
+          </button>
+        </template>
       </div>
     </div>
   </div>
@@ -396,6 +559,70 @@ const displayName = computed(() => {
   border-radius: 50%;
   background: var(--text-tertiary);
   animation: pulse 1.4s infinite;
+}
+
+/* ── 阶段 C7: 完成态分级样式 ─────────────────────────────── */
+/* idle/empty: 黄色边 + 警告 CTA 条；constrained: 蓝色边；stopped: 灰 */
+
+.quality-idle .bubble-body,
+.quality-empty .bubble-body {
+  border: 1px solid rgba(255, 149, 0, 0.4);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.quality-constrained .bubble-body {
+  border: 1px solid var(--accent-muted);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+
+.quality-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.quality-bar.idle,
+.quality-bar.empty {
+  color: var(--warning);
+  background: rgba(255, 149, 0, 0.08);
+}
+
+.quality-bar.constrained {
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.quality-cta {
+  margin-left: 2px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-glass);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.quality-cta:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.stopped-text {
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.error-fallback-text {
+  color: var(--danger);
 }
 
 .dot:nth-child(2) {

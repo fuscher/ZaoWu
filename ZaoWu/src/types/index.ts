@@ -294,6 +294,62 @@ export interface MessageMetadata {
   error_trace_id?: string
 }
 
+/** phase 阶段枚举（阶段 C2，对齐 master §5.1） */
+export type PhaseName =
+  | 'thinking'
+  | 'tool'
+  | 'compacting'
+  | 'retrying'
+  | 'handoff'
+  | 'done'
+
+/** PhaseStrip 节点：每轮/状态切换的 phase 事件（含挂载其下的 notice 子节点） */
+export interface PhaseNode {
+  phase: PhaseName
+  detail?: string
+  ts: number
+  notices?: NoticePayload[]
+}
+
+/** tool_part 生命周期节点（阶段 C2，对齐 master §5.2） */
+export interface ToolPartState {
+  requestId: string
+  name?: string
+  part:
+    | 'generating'
+    | 'permission_pending'
+    | 'running'
+    | 'success'
+    | 'denied'
+    | 'failed'
+  reason?: string
+  ts: number
+}
+
+/** notice 系统提示（阶段 C2，对齐 master §5.3） */
+export interface NoticePayload {
+  level: 'info' | 'warn' | 'blocked'
+  code: string
+  message: string
+  recoverable?: boolean
+  ts: number
+}
+
+/** 错误终态 payload（阶段 C2，对齐 master §5.4） */
+export interface ErrorPayload {
+  code: string
+  message: string
+  kind?: string
+  traceId?: string
+  recovery?: RecoveryAction[]
+}
+
+/** 恢复 CTA：label 前端展示，action 走 recoveryActions 注册表 */
+export interface RecoveryAction {
+  label: string
+  action: string
+}
+
 export interface AgentStreamCallbacks {
   onDelta: (messageId: string, delta: string) => void
   onToolCallStart: (messageId: string, toolCall: ToolCall) => void
@@ -305,6 +361,12 @@ export interface AgentStreamCallbacks {
     extra?: { quality?: MessageQuality; summary?: string }
   ) => void
   onError: (error: string) => void
+  // ── 阶段 C：结构化事件回调（对齐 master §5）──
+  onPhase?: (messageId: string, phase: PhaseName, detail?: string, ts?: number) => void
+  onToolPart?: (messageId: string, part: ToolPartState) => void
+  onNotice?: (messageId: string, notice: NoticePayload) => void
+  /** 结构化错误：与 onError(string) 共存，ErrorCard 消费 payload */
+  onErrorPayload?: (messageId: string, payload: ErrorPayload) => void
 }
 
 export interface AgentConfig {
@@ -337,4 +399,8 @@ export type SSEEvent =
   | { id: string; type: 'requires_confirmation'; toolCall: ToolCall }
   | { id: string; type: 'tool_call_end'; toolResult: ToolResult }
   | { id: string; type: 'done'; content: string; done: true; quality?: MessageQuality; summary?: string }
-  | { id: string; type: 'error'; code: string; message: string; kind?: string; traceId?: string; recovery?: Array<{ label: string; action: string }> }
+  | { id: string; type: 'error'; code: string; message: string; kind?: string; traceId?: string; recovery?: RecoveryAction[] }
+  // ── 阶段 C：结构化事件（对齐 master §5）──
+  | { id: string; type: 'phase'; phase: PhaseName; detail?: string; ts?: number }
+  | { id: string; type: 'tool_part'; requestId: string; part: ToolPartState['part']; name?: string; reason?: string; ts?: number }
+  | { id: string; type: 'notice'; level: NoticePayload['level']; code: string; message: string; recoverable?: boolean; ts?: number }

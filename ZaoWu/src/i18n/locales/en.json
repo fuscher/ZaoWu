@@ -448,7 +448,14 @@
     "requiresApproval": "Requires Approval",
     "parameters": "Parameters",
     "result": "Result",
-    "error": "Error",
+    "error": {
+      "llm_auth": "API auth failed; check Provider config",
+      "llm_rate_limit": "Rate limited; retry later",
+      "context_too_long": "Context too long even after compaction; clear early messages or switch to a larger model",
+      "timeout": "Request timed out; check network",
+      "connect_failed": "Connection failed; check apiBase config",
+      "internal": "Agent internal error"
+    },
     "approve": "Approve",
     "reject": "Reject",
     "summary": {
@@ -469,6 +476,55 @@
       "stopped": "[System] Generation stopped by user",
       "approvalNeeded": "[System] Operations requiring approval detected: {tools}",
       "autoExecuted": "[System] Auto-executed (future versions will require user confirmation)"
+    },
+    "phase": {
+      "thinking": "Thinking",
+      "tool": "Tool call",
+      "compacting": "Compacting context",
+      "retrying": "Retrying",
+      "handoff": "Handoff",
+      "done": "Done"
+    },
+    "modeBadge": {
+      "plan": "Plan · read-only",
+      "build": "Build · full tools",
+      "planHint": "Write operations restricted; switch to build after planning",
+      "buildHint": "Read/write files and run commands (with approval)"
+    },
+    "quality": {
+      "idle": "Declared action not executed",
+      "constrained": "Plan ready · read-only mode",
+      "empty": "No valid response generated",
+      "stopped": "Stopped"
+    },
+    "notice": {
+      "intent_not_executed": "Model declared tool intent but did not execute",
+      "loop_interrupted": "Repeated calls detected; loop auto-interrupted",
+      "compacted": "Context was long; earlier messages compacted",
+      "retrying_empty": "Model produced no valid response; retrying…",
+      "plan_ready_for_build": "Plan ready; switch to build mode to implement",
+      "user_stopped": "Generation stopped by user"
+    },
+    "recovery": {
+      "retry": "Retry",
+      "switchToBuild": "Switch to build & continue",
+      "openProviders": "Provider settings",
+      "openModelSwitcher": "Switch to a larger-context model",
+      "clearMessages": "Clear early messages",
+      "viewPlan": "View plan"
+    },
+    "toolPart": {
+      "generating": "Generating",
+      "permission_pending": "Awaiting approval",
+      "running": "Running",
+      "success": "Success",
+      "denied": {
+        "planMode": "Write blocked in current mode",
+        "preset": "Denied by preset config",
+        "rejected": "Rejected by user",
+        "timeout": "Approval timed out"
+      },
+      "failed": "Failed"
     }
   },
   "workflow": {
