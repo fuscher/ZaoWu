@@ -1323,6 +1323,11 @@ def test_tool_part_event_format():
     # 无 reason 时不带该字段
     event2 = AgentService._tool_part_event('msg-1', 'call_2', 'running')
     assert 'reason' not in json.loads(event2[6:])
+    # D3: ensure_ascii=False — 含中文 reason 不转义（tool_part 中文信号最强场景）
+    event3 = AgentService._tool_part_event(
+        'msg-1', 'call_3', 'denied', reason='plan_mode_readonly',
+    )
+    assert r'\u' not in event3
 
 
 def test_notice_event_format():
@@ -1336,6 +1341,9 @@ def test_notice_event_format():
     assert payload['level'] == 'warn'
     assert payload['code'] == 'intent_not_executed'
     assert payload['recoverable'] is True
+    # D3: ensure_ascii=False — message 中文不转义为 \uXXXX（含中文必现场景）
+    assert r'\u' not in event
+    assert payload['message'] == '模型声明了工具意图但未执行'
     # 未传 recoverable 时不带该字段
     event2 = AgentService._notice_event('info', 'compacted', '已压缩')
     assert 'recoverable' not in json.loads(event2[6:])
@@ -1355,6 +1363,10 @@ def test_error_event_v2_format():
     assert payload['recovery'] == recovery
     assert payload['traceId'] == 'agent-error-a1b2'
     assert 'done' not in payload  # 与 done 通道彻底分离
+    # D3: ensure_ascii=False — message 与 recovery label 中文不转义（含中文必现场景）
+    assert r'\u' not in event
+    assert payload['message'] == 'API 鉴权失败'
+    assert payload['recovery'][0]['label'] == '重试'
 
 
 def test_done_event_quality_and_summary():

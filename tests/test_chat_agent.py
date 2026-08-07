@@ -216,6 +216,45 @@ async def test_f07_agent_enabled_passes_guard(chat_env, monkeypatch):
         assert 'text/event-stream' in resp.content_type
 
 
+# ── D3: SSE 编码硬约束（charset=utf-8 + ensure_ascii=False，设计文档 §5 / 硬约束 21-22）──
+
+async def test_agent_sse_response_has_charset_utf8(chat_env, monkeypatch):
+    """D3: /agent-messages SSE 响应头必须含 charset=utf-8，且中文直传不转义。"""
+    app, store = chat_env
+    import routes.chat as chat
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            # 含中文的 notice 事件：同时验证头 charset 与体中文不转义
+            yield 'data: {"id":"system","type":"notice","code":"compacted","message":"已压缩早期对话"}\n\n'
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok","quality":"success"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something'},
+        )
+        assert resp.status_code == 200
+        # 硬约束：Content-Type 必须带 charset=utf-8（客户端依赖此解码中文）
+        assert 'text/event-stream' in resp.content_type
+        assert 'charset=utf-8' in resp.content_type
+        raw = await resp.get_data()
+        text = raw.decode('utf-8') if isinstance(raw, bytes) else str(raw)
+        # 中文直传（ensure_ascii=False）：正文含中文原文，且 \uXXXX 转义序列不出现
+        assert '已压缩早期对话' in text
+        assert r'\u5df2' not in text  # ensure_ascii=True 时的转义形式
+
+
 # ── F03: 并发防护（409 AGENT_BUSY） ──────────────────────────
 
 async def test_f03_agent_busy_guard(chat_env, monkeypatch):
