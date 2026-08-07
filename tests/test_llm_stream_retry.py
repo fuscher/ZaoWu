@@ -157,6 +157,13 @@ def test_classify_401_auth():
     assert err.retryable is False
 
 
+def test_classify_408_timeout():
+    """408 Request Timeout → kind='timeout'（对齐 timeout 恢复 CTA）。"""
+    err = ls._classify_http_error(408, b'timeout', httpx.Headers({}))
+    assert err.kind == 'timeout'
+    assert err.retryable is True
+
+
 def test_parse_retry_after_invalid():
     assert ls._parse_retry_after(None) is None
     assert ls._parse_retry_after('not-a-number') is None
@@ -249,6 +256,40 @@ async def test_no_retry_after_stream_started(fast_backoffs):
     assert deltas == ['partial']
 
 
+async def test_connect_error_kind_subdivided(fast_backoffs):
+    """建连前 ConnectError → LLMError(kind='connect_error')（重试耗尽后）。
+
+    回归：RequestError 统一 network 曾吞掉 ConnectError，导致 classify 走 internal
+    兜底、连接失败语义丢失。修复后按 isinstance 细分 kind。
+    """
+    client = _ScriptedClient([httpx.ConnectError('refused')] * 4)
+    deltas, usage, err = await _consume(llm_stream(
+        provider=_PROVIDER, model_id='m', messages=[],
+        http_client=client,
+    ))
+    assert err is not None
+    assert err.kind == 'connect_error'
+    assert client.call_count == 4  # 3 次重试后仍失败
+    assert deltas == []
+
+
+async def test_timeout_exception_kind_subdivided(fast_backoffs):
+    """建连前 TimeoutException → LLMError(kind='timeout')（重试耗尽后）。
+
+    回归：真实超时曾落入 network → internal 兜底，错误卡片显示"智能体运行异常"
+    而非"请求超时"。修复后细分 kind='timeout' → classify 映射 code=timeout。
+    """
+    client = _ScriptedClient([httpx.TimeoutException('timed out')] * 4)
+    deltas, usage, err = await _consume(llm_stream(
+        provider=_PROVIDER, model_id='m', messages=[],
+        http_client=client,
+    ))
+    assert err is not None
+    assert err.kind == 'timeout'
+    assert client.call_count == 4
+    assert deltas == []
+
+
 async def test_400_context_overflow_not_retried(fast_backoffs):
     """400 token 超限 → context_overflow，不可重试，仅调用一次。"""
     body = b'{"error": "context length exceeded"}'
@@ -291,8 +332,12 @@ async def test_network_error_before_stream_retries(fast_backoffs):
 
 
 async def test_network_error_exhausted_raises(fast_backoffs):
-    """建连前网络错误 → 重试耗尽 → 抛 LLMError(kind='network')。"""
-    client = _ScriptedClient([httpx.ConnectError('down')] * 4)
+    """建连前网络错误 → 重试耗尽 → 抛 LLMError(kind='network')。
+
+    ReadError 不是 Timeout/ConnectError 子类 → 保持 network kind。
+    （ConnectError 细分见 test_connect_error_kind_subdivided）
+    """
+    client = _ScriptedClient([httpx.ReadError('connection dropped')] * 4)
     deltas, usage, err = await _consume(llm_stream(
         provider=_PROVIDER, model_id='m', messages=[],
         http_client=client,

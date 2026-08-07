@@ -45,6 +45,9 @@ def _classify_http_error(status: int, body: bytes, headers: httpx.Headers) -> LL
     if status == 429:
         retry_after = _parse_retry_after(headers.get('retry-after'))
         return LLMError('rate_limit', status, hint, retryable=True, retry_after=retry_after)
+    if status == 408:
+        # Request Timeout：网关/服务端超时 → 按 timeout kind 分类（对齐 timeout 恢复 CTA）
+        return LLMError('timeout', status, hint, retryable=True)
     if status in (500, 502, 503, 504):
         return LLMError('server_error', status, hint, retryable=True)
     if status in (401, 403):
@@ -225,7 +228,15 @@ async def llm_stream(
                             continue
                     break  # 消费完成，退出重试循环
             except httpx.RequestError as e:
-                # 建连/传输错误：仅未开始流式时重试
+                # 建连/传输错误：仅未开始流式时重试。
+                # 按异常类型细分 kind——TimeoutException/ConnectError 都是 RequestError
+                # 子类，必须在此区分（否则真实超时/连接失败全部落入 network → internal 兜底，
+                # 错误分类语义丢失）。error_classifier 按 kind 映射 timeout/connect_failed。
+                kind = 'network'
+                if isinstance(e, httpx.TimeoutException):
+                    kind = 'timeout'
+                elif isinstance(e, httpx.ConnectError):
+                    kind = 'connect_error'
                 logger.warning(
                     'llm_stream network error key=%s attempt=%s: %s',
                     _mask_key(api_key), attempt, e,
@@ -234,7 +245,7 @@ async def llm_stream(
                     await asyncio.sleep(_backoff_delay(last_err, attempt))
                     attempt += 1
                     continue
-                raise LLMError('network', 0, f'{type(e).__name__}: {e}', retryable=False)
+                raise LLMError(kind, 0, f'{type(e).__name__}: {e}', retryable=False)
 
         if accumulated_tool_calls:
             for tc in sorted(accumulated_tool_calls.values(), key=lambda x: x.get('id', '')):

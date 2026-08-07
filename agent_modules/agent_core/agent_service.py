@@ -206,6 +206,8 @@ class AgentService:
                 )
                 yield self._phase_event(assistant_msg_id, 'compacting',
                                         detail='预算触发主动压缩')
+                # 事件发射与历史记录同步：历史 phase_history 需含 compacting
+                phase_nodes.append('compacting')
 
             for iteration in range(max_iterations):
                 # 检查停止事件
@@ -264,6 +266,10 @@ class AgentService:
                                 yield self._tool_part_event(
                                     assistant_msg_id, tc['requestId'], 'generating',
                                 )
+                                # 事件发射与历史记录同步：实时 PhaseStrip 需 phase:tool 节点
+                                # （否则只有 thinking→done，历史回退却有 tool——前后端不一致）
+                                if 'tool' not in phase_nodes:
+                                    yield self._phase_event(assistant_msg_id, 'tool')
                                 phase_nodes.append('tool')
                 except LLMError as e:
                     # N2-I2：overflow→压缩→重试环路。_stream_llm 把 context_overflow
@@ -285,6 +291,8 @@ class AgentService:
                                     assistant_msg_id, 'compacting',
                                     detail='context overflow 触发压缩重试',
                                 )
+                                # 事件发射与历史记录同步：历史 phase_history 需含 compacting
+                                phase_nodes.append('compacting')
                                 continue  # 原地重走 _stream_llm
                     # 非 overflow / 已压缩过 / 压缩无效 → 结构化 error 事件，不再走 done。
                     # classify 内部已把 context_overflow（压缩后仍失败）映射为 context_too_long。
@@ -468,6 +476,9 @@ class AgentService:
                         )
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
                         tool_results.append(result)
+                        # 事件发射与历史记录同步：工具执行结果轮也补 phase:tool（去重）
+                        if 'tool' not in phase_nodes:
+                            yield self._phase_event(assistant_msg_id, 'tool')
                         phase_nodes.append('tool')
                     executed_tool_names.extend(
                         tc['name'] for tc in collected_tool_calls

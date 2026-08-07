@@ -2235,6 +2235,52 @@ def test_tool_part_allow_running_success_sequence(agent_service, monkeypatch):
     assert seq == ['generating', 'running', 'success']
 
 
+def test_tool_phase_event_emitted_and_in_phase_history(agent_service, monkeypatch):
+    """第三轮修复：工具轮必须发 phase:tool 事件（实时 PhaseStrip），且 phase_history
+    同步含 tool（此前事件发射与历史记录两条路径脱节——实时只有 thinking→done，
+    历史回退却有 tool，前后端不一致）。"""
+    service = agent_service
+    tc = _make_tool_call('read_file', {'path': '/tmp/a.py'}, 'call_tp_phase')
+    call_count = [0]
+    persisted = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        if call_count[0] == 0:
+            call_count[0] += 1
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+        else:
+            yield {'type': 'delta', 'delta': '结论是读取完成'}
+
+    conv = {
+        'id': 'conv-tp-phase', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    _stub_agent_env(service, monkeypatch, conv, mock_stream_llm)
+
+    async def mock_append(conv_id, msg):
+        persisted.append(msg)
+
+    monkeypatch.setattr(service, '_append_message', mock_append)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-tp-phase', 'test'):
+            events.append(event)
+        return events
+
+    events = asyncio.get_event_loop().run_until_complete(run())
+    # 实时：必须出现 phase:tool 事件
+    phases = _events_of(events, 'phase')
+    assert any(p['phase'] == 'tool' for p in phases), \
+        '工具轮必须发射 phase:tool（实时 PhaseStrip 展示）'
+    # 历史：done.phase_history 与落库 metadata 均含 tool
+    done = _events_of(events, 'done')[-1]
+    ph = done.get('phase_history') or []
+    assert 'tool' in ph
+    assert persisted[-1].get('metadata', {}).get('phase_history') == ph
+
+
 def test_tool_part_ask_timeout_denied_reason(agent_service, monkeypatch):
     """B4: ask 分支超时 → denied reason=timeout（ToolCard 不卡 permission_pending）。"""
     service = agent_service

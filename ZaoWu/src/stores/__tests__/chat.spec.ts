@@ -312,6 +312,19 @@ describe('F02: messageId 两级索引工具 Map', () => {
       await sendPromise
     })
 
+    it('D 修复: onError 不再追加 ⚠️ 正文（错误由 ErrorCard 独立渲染）', async () => {
+      const sendPromise = store.sendAgentMessage('跑一下')
+      await new Promise((r) => setTimeout(r, 0))
+      const mid = store.streamingMessageId!
+      capturedCallbacks.onError('API 鉴权失败')
+      const msg = store.currentConversation!.messages.find((m) => m.id === mid)
+      // 正文不被 ⚠️ 污染（持久化 content 干净）
+      expect(msg?.content).not.toContain('⚠️')
+      expect(msg?.content).not.toContain('API 鉴权失败')
+      expect(store.error).toBe('API 鉴权失败')
+      await sendPromise
+    })
+
     it('clearAgentUXMaps 清空结构化事件状态', async () => {
       store.phaseHistoryByMessage.set('m1', [{ phase: 'thinking', ts: 1 }])
       store.toolPartsByMessage.set('m1', new Map([['r1', { requestId: 'r1', part: 'running', ts: 2 } as any]]))
