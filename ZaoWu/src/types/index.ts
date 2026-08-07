@@ -292,6 +292,8 @@ export interface MessageMetadata {
   error_code?: string
   error_message?: string
   error_trace_id?: string
+  /** 错误事件的 recovery CTA（阶段 D 修复：历史/终态错误 ErrorCard 需从 metadata 恢复） */
+  error_recovery?: RecoveryAction[]
 }
 
 /** phase 阶段枚举（阶段 C2，对齐 master §5.1） */

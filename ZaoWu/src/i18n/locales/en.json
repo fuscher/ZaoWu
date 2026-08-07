@@ -525,7 +525,8 @@
         "timeout": "Approval timed out"
       },
       "failed": "Failed"
-    }
+    },
+    "presetSwitchFailed": "Mode switch failed, please retry"
   },
   "workflow": {
     "run": "Run",

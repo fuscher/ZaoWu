@@ -27,7 +27,12 @@ function showToast(message: string, type: 'error' | 'warning' | 'info' = 'info')
 
 async function setPreset(next: 'build' | 'plan') {
   if (chatStore.preset === next) return
-  await chatStore.setPreset(next)
+  const ok = await chatStore.setPreset(next)
+  // 仅在持久化成功时提示（失败已回退，避免误导用户以为切换成功）
+  if (!ok) {
+    showToast(t('agent.presetSwitchFailed'), 'warning')
+    return
+  }
   showToast(
     next === 'plan' ? t('agent.modeBadge.planHint') : t('agent.modeBadge.buildHint'),
     'info'

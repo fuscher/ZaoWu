@@ -87,15 +87,18 @@ export const useChatStore = defineStore('chat', () => {
   })
 
   // 阶段 C10: 显式切模式 action（保留持久化语义，供交接 CTA 复用）
-  async function setPreset(value: 'build' | 'plan') {
+  // 返回是否持久化成功（失败已回退本地状态，调用方可据此提示）
+  async function setPreset(value: 'build' | 'plan'): Promise<boolean> {
     const conv = currentConversation.value
-    if (!conv || (conv.agentConfig?.preset ?? 'build') === value) return
+    if (!conv || (conv.agentConfig?.preset ?? 'build') === value) return true
     const nextConfig = { ...(conv.agentConfig || {}), preset: value }
     conv.agentConfig = nextConfig
     try {
       await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      return true
     } catch {
       conv.agentConfig = { ...conv.agentConfig, preset: value === 'build' ? 'plan' : 'build' }
+      return false
     }
   }
 
@@ -534,12 +537,15 @@ export const useChatStore = defineStore('chat', () => {
         },
         onErrorPayload(_messageId: string, payload: ErrorPayload) {
           lastError.value = payload
-          // 终态错误也写入消息 metadata（历史加载时 ErrorCard 可恢复渲染）
+          // 终态错误写入消息 metadata（历史加载时 ErrorCard 可恢复渲染）
+          // 必须保留 recovery：错误事件到达时流已结束（isStreaming=false），
+          // MessageBubble 的 lastError 分支不可达，ErrorCard 的 CTA 只能来自 metadata。
           assistantMessage.metadata = {
             ...(assistantMessage.metadata || {}),
             error_code: payload.code,
             error_message: payload.message,
             error_trace_id: payload.traceId,
+            error_recovery: payload.recovery,
           }
         },
       },

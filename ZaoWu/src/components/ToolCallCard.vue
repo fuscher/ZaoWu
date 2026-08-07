@@ -202,7 +202,7 @@ function summaryForResult(result: ToolResult): string {
     <div v-if="isExpanded" class="tool-call-body">
       <!-- 阶段 C6: denied 原因（plan 只读 / preset 拒绝 / 用户拒绝 / 超时） -->
       <div v-if="displayState.key === 'denied'" class="tool-section">
-        <div class="section-label">{{ t('agent.error') }}</div>
+        <div class="section-label">{{ t('agent.rejectReason') }}</div>
         <div class="denied-reason" :class="{ constrained: isPlanConstrained }">
           {{ deniedReasonText(displayState.reason) }}
         </div>
@@ -212,7 +212,7 @@ function summaryForResult(result: ToolResult): string {
         <pre class="tool-json"><code>{{ JSON.stringify(toolCall.arguments, null, 2) }}</code></pre>
       </div>
       <div v-if="toolResult" class="tool-section">
-        <div class="section-label">{{ toolResult.success ? t('agent.result') : t('agent.error') }}</div>
+        <div class="section-label">{{ toolResult.success ? t('agent.result') : t('agent.toolPart.failed') }}</div>
         <pre class="tool-content" :class="{ 'error-text': !toolResult.success }"><code>{{ toolResult.content || toolResult.error }}</code></pre>
       </div>
       <!-- 6.3.2: 三态确认 — 仅本次/始终允许/拒绝(带原因) -->

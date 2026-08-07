@@ -525,7 +525,8 @@
         "timeout": "确认超时"
       },
       "failed": "失败"
-    }
+    },
+    "presetSwitchFailed": "切换模式失败，请重试"
   },
   "workflow": {
     "run": "运行",

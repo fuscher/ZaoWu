@@ -179,7 +179,7 @@ const quality = computed<MessageQuality>(() => {
   return legacyQualityFromContent(props.message.content) ?? 'success'
 })
 
-/** 流式中/终态错误 payload（实时流来自 store.lastError；历史来自 metadata） */
+/** 流式中/终态错误 payload（实时流来自 store.lastError；历史来自 metadata，含 recovery） */
 const errorPayload = computed<ErrorPayload | null>(() => {
   const m = props.message.metadata
   if (m?.error_code || m?.error_message) {
@@ -187,6 +187,7 @@ const errorPayload = computed<ErrorPayload | null>(() => {
       code: m.error_code || 'internal',
       message: m.error_message || '',
       traceId: m.error_trace_id,
+      recovery: m.error_recovery,
     }
   }
   if (props.isStreaming && chatStore.streamingMessageId === props.message.id) {
@@ -239,8 +240,10 @@ function handleRecoveryAction(action: string) {
       window.dispatchEvent(new CustomEvent('zaowu:open-model-switcher'))
     },
     clearMessages: async () => {
+      // 无前置 user 消息时不清空（避免纯数据丢失且无重发）
+      if (!lastUserMessage) return
       await chatStore.clearMessages()
-      if (lastUserMessage) chatStore.sendAgentMessage(lastUserMessage)
+      chatStore.sendAgentMessage(lastUserMessage)
     },
     scrollToPlan: () => {
       // 滚动到方案气泡：回退为滚动到当前消息
@@ -256,6 +259,7 @@ function handleRecoveryAction(action: string) {
 <template>
   <div
     class="message-bubble"
+    :id="`msg-${message.id}`"
     :class="[
       { user: isUser, assistant: !isUser },
       qualityMeta || isLegacyFallback ? `quality-${quality}` : '',

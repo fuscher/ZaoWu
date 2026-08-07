@@ -61,6 +61,20 @@ describe('阶段 C 组件测试', () => {
       })
       expect(wrapper.classes()).toContain('error')
     })
+
+    it('D 修复: denied 区块标题不再渲染字面量 agent.error（i18n 对象化后）', async () => {
+      const wrapper = mount(ToolCallCard, {
+        props: {
+          toolCall: { requestId: 'tc-3', name: 'write_file', arguments: { path: 'a.py' } },
+          part: { requestId: 'tc-3', name: 'write_file', part: 'denied', reason: 'plan_mode_readonly', ts: 1 },
+        },
+      })
+      await wrapper.find('.tool-call-header').trigger('click')
+      await nextTick()
+      // 展开后 denied 原因区标题应为 i18n 文案而非原始 key
+      expect(wrapper.text()).not.toContain('agent.error')
+      expect(wrapper.text()).toContain('当前模式禁止写操作')
+    })
   })
 
   describe('ErrorCard: 错误卡片 + CTA', () => {
@@ -158,6 +172,35 @@ describe('阶段 C 组件测试', () => {
       expect(wrapper.classes()).not.toContain('quality-idle')
       expect(wrapper.classes()).not.toContain('quality-empty')
       expect(wrapper.classes()).not.toContain('quality-constrained')
+    })
+
+    it('D 修复: error_recovery 从 metadata 恢复 → ErrorCard 渲染 CTA（终态错误恢复）', () => {
+      // 不 stub ErrorCard，验证 recovery 从 metadata 传到卡片并渲染 CTA
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: {
+            id: 'm6',
+            role: 'assistant',
+            content: '',
+            timestamp: 1,
+            metadata: {
+              quality: 'error_fallback',
+              error_code: 'llm_auth',
+              error_message: 'API 鉴权失败',
+              error_recovery: [{ label: '重试', action: 'retry' }],
+            },
+          },
+          isStreaming: false,
+        },
+        global: { stubs: { PhaseStrip: true, ToolCallCard: true } },
+      })
+      expect(wrapper.find('.error-card').exists()).toBe(true)
+      expect(wrapper.find('.cta-btn').text()).toBe('重试')
+    })
+
+    it('D 修复: MessageBubble 根元素带 msg- 锚点（scroll_to_plan 可定位）', () => {
+      const wrapper = mountBubble({ id: 'm7', role: 'assistant', content: 'ok', timestamp: 1 })
+      expect(wrapper.attributes('id')).toBe('msg-m7')
     })
 
     it('点击重试 CTA → 重发最近 user message', async () => {

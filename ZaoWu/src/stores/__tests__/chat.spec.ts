@@ -170,6 +170,21 @@ describe('F02: messageId 两级索引工具 Map', () => {
       // 失败回退：preset 回到 build
       expect(store.currentConversation?.agentConfig?.preset).toBe('build')
     })
+
+    it('D 修复: setPreset 返回持久化结果（失败回退时返回 false）', async () => {
+      const ai = await import('@/services/ai')
+      store.currentConversation!.agentConfig!.preset = 'build'
+      vi.mocked(ai.updateConversation).mockRejectedValueOnce(new Error('network'))
+      const ok = await store.setPreset('plan')
+      await new Promise((r) => setTimeout(r, 0))
+      expect(ok).toBe(false)
+      expect(store.currentConversation?.agentConfig?.preset).toBe('build')
+      // 成功路径返回 true
+      vi.mocked(ai.updateConversation).mockResolvedValueOnce({ ok: true })
+      const ok2 = await store.setPreset('plan')
+      expect(ok2).toBe(true)
+      expect(store.currentConversation?.agentConfig?.preset).toBe('plan')
+    })
   })
 
   describe('阶段 A4: done quality 写入消息 metadata', () => {
