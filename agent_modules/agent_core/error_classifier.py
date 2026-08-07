@@ -31,8 +31,9 @@ def classify(exc: Exception) -> Dict[str, object]:
     - ``LLMError(kind='auth')`` → llm_auth
     - ``LLMError(kind='rate_limit')`` → llm_rate_limit
     - ``LLMError(kind='context_overflow')`` 且压缩后仍失败 → context_too_long
-    - ``httpx.TimeoutException`` → timeout
-    - ``httpx.ConnectError`` → connect_failed
+    - ``LLMError(kind='timeout')`` → timeout（_stream_llm 已把 httpx.TimeoutException 包装为此 kind）
+    - ``LLMError(kind='connect_error')`` → connect_failed（同上，httpx.ConnectError 包装）
+    - ``httpx.TimeoutException`` / ``httpx.ConnectError``（裸异常防御，当前主流程不可达）
     - 其他 Exception → internal（附 traceId 供排查）
     """
     if isinstance(exc, LLMError):
@@ -63,6 +64,27 @@ def classify(exc: Exception) -> Dict[str, object]:
                 'recovery': [
                     {'label': '清空早期对话', 'action': RECOVERY_CLEAR_MESSAGES},
                     {'label': '切换更大上下文模型', 'action': RECOVERY_OPEN_MODEL_SWITCHER},
+                ],
+            }
+        if exc.kind == 'timeout':
+            # _stream_llm 把 httpx.TimeoutException 包装为 LLMError('timeout')
+            return {
+                'code': 'timeout',
+                'kind': 'timeout',
+                'message': '请求超时，请检查网络后重试',
+                'recovery': [
+                    {'label': '重试', 'action': RECOVERY_RETRY},
+                    {'label': '检查网络', 'action': RECOVERY_OPEN_PROVIDERS},
+                ],
+            }
+        if exc.kind == 'connect_error':
+            # _stream_llm 把 httpx.ConnectError 包装为 LLMError('connect_error')
+            return {
+                'code': 'connect_failed',
+                'kind': 'connect_error',
+                'message': '无法连接到 API 服务器，请检查 apiBase 配置',
+                'recovery': [
+                    {'label': '检查 apiBase', 'action': RECOVERY_OPEN_PROVIDERS},
                 ],
             }
         # server_error / network / unknown 等 LLM 侧可恢复错误 → internal 级重试

@@ -1,7 +1,7 @@
 """完成质量检测（阶段 B2，设计文档 §3.3.1/§3.3.2/§6.3 B2）。
 
-``IdleDetector`` 是纯函数判定器：输入本轮 ``collected_text``/``collected_tool_calls``
-与跨轮 ``full_text``/``executed_tool_names``/``preset``，输出完成质量四态
+``IdleDetector`` 是纯函数判定器：输入本轮 ``collected_text`` 与跨轮
+``full_text``/``executed_tool_names``/``preset``，输出完成质量四态
 （success/idle/constrained/empty）+ 动作（终态/空响应重试/纠正注入重试/交接）。
 
 决策流严格对齐 §3.3.2 决策图：
@@ -91,11 +91,10 @@ class IdleDetector:
 
     def detect(self, *,
                collected_text: str,
-               collected_tool_calls: List[dict],
                full_text: str,
                executed_tool_names: List[str],
                preset: str) -> IdleDecision:
-        """无工具调用轮（``not collected_tool_calls``）的质量判定。"""
+        """无工具调用轮（调用方仅在本轮无 tool_call 时进入）的质量判定。"""
         has_text = bool(collected_text)
         has_history_tools = bool(executed_tool_names)
         is_plan = preset == 'plan'

@@ -16,6 +16,8 @@ class LLMError(RuntimeError):
     （agent_service.py:638）能接住，保持与原 raise RuntimeError 行为兼容。
 
     kind 取值：rate_limit | server_error | context_overflow | auth | network | unknown
+    | timeout | connect_error（后两者由 agent_service._stream_llm 包装 httpx 异常产生，
+    error_classifier 按此 kind 映射为 timeout / connect_failed 错误码）
     retryable=True 的错误在 llm_stream 内部建连前短重试（默认 3 次，上限 4s）；
     流式开始后（已向调用方 yield 过 delta）一律不重试，避免重复正文。
     """

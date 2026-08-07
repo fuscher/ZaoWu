@@ -1424,6 +1424,30 @@ def test_error_classifier_timeout_and_connect():
     assert payload2['code'] == 'connect_failed'
 
 
+def test_error_classifier_llm_timeout_kind_maps_to_timeout():
+    """主流程修复：_stream_llm 把 httpx.TimeoutException 包装为 LLMError('timeout')，
+    classify 必须识别该 kind → code=timeout（此前落入 internal 兜底，语义丢失）。"""
+    from agent_modules.agent_core.error_classifier import classify
+    from agent_modules.agent_core.llm_stream import LLMError
+    payload = classify(LLMError('timeout', 0, 'httpx.TimeoutException: timed out',
+                                retryable=False))
+    assert payload['code'] == 'timeout'
+    assert payload['kind'] == 'timeout'
+    assert any(r['action'] == 'retry' for r in payload['recovery'])
+
+
+def test_error_classifier_llm_connect_error_kind_maps_to_connect_failed():
+    """主流程修复：_stream_llm 把 httpx.ConnectError 包装为 LLMError('connect_error')，
+    classify 必须识别该 kind → code=connect_failed（此前落入 internal 兜底）。"""
+    from agent_modules.agent_core.error_classifier import classify
+    from agent_modules.agent_core.llm_stream import LLMError
+    payload = classify(LLMError('connect_error', 0, 'httpx.ConnectError: refused',
+                                retryable=False))
+    assert payload['code'] == 'connect_failed'
+    assert payload['kind'] == 'connect_error'
+    assert any(r['action'] == 'open:settings:providers' for r in payload['recovery'])
+
+
 def test_error_classifier_internal_has_trace_id_support():
     from agent_modules.agent_core.error_classifier import classify, new_trace_id
     payload = classify(ValueError('boom'))
@@ -1844,7 +1868,7 @@ def test_conclusive_signal_sentence_length():
 def test_idle_detector_no_text_with_history_tools_success():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='', full_text='',
                    executed_tool_names=['read_file'], preset='build')
     assert dec.quality == 'success'
     assert dec.action == 'terminal'
@@ -1853,7 +1877,7 @@ def test_idle_detector_no_text_with_history_tools_success():
 def test_idle_detector_no_text_plan_constrained():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='', full_text='',
                    executed_tool_names=[], preset='plan')
     assert dec.quality == 'constrained'
     assert dec.action == 'terminal'
@@ -1863,12 +1887,12 @@ def test_idle_detector_empty_retries_once_then_terminal():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
     # build + 无文本无工具：首次 empty+重试，二次 empty 终态
-    dec1 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec1 = d.detect(collected_text='', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec1.quality == 'empty'
     assert dec1.action == 'retry_empty'
     assert dec1.notice_code == 'retrying_empty'
-    dec2 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec2 = d.detect(collected_text='', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec2.quality == 'empty'
     assert dec2.action == 'terminal'
@@ -1877,14 +1901,14 @@ def test_idle_detector_empty_retries_once_then_terminal():
 def test_idle_detector_intent_first_correction_then_terminal():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec1 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+    dec1 = d.detect(collected_text='我先读取这个文件', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec1.quality == 'idle'
     assert dec1.action == 'inject_correction_retry'
     assert dec1.notice_code == 'intent_not_executed'
     assert dec1.correction and '系统纠正' in dec1.correction
     # 二次仍 idle → 终态
-    dec2 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+    dec2 = d.detect(collected_text='我先读取这个文件', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec2.quality == 'idle'
     assert dec2.action == 'terminal'
@@ -1895,11 +1919,11 @@ def test_idle_detector_retry_counts_persist_without_reset():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
     # 空响应重试后 empty_retry_count=1
-    d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    d.detect(collected_text='', full_text='',
              executed_tool_names=[], preset='build')
     assert d.empty_retry_count == 1
     # 再次空响应 → 终态（不会无限重试）
-    dec = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='', full_text='',
                    executed_tool_names=[], preset='build')
     assert dec.action == 'terminal'
     assert dec.quality == 'empty'
@@ -1914,23 +1938,23 @@ def test_idle_detector_counts_independent_empty_then_intent():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
     # 首轮空响应 → retry_empty
-    dec1 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec1 = d.detect(collected_text='', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec1.action == 'retry_empty'
     assert d.empty_retry_count == 1
     # 次轮承诺文本 → 仍可纠正（idle 计数独立）
-    dec2 = d.detect(collected_text='我先读取这个文件', collected_tool_calls=[], full_text='',
+    dec2 = d.detect(collected_text='我先读取这个文件', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec2.action == 'inject_correction_retry'
     assert dec2.quality == 'idle'
     assert d.idle_retry_count == 1
     # 三仍承诺 → idle 终态（idle 计数已用尽）
-    dec3 = d.detect(collected_text='我先读取文件', collected_tool_calls=[], full_text='',
+    dec3 = d.detect(collected_text='我先读取文件', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec3.action == 'terminal'
     assert dec3.quality == 'idle'
     # 四仍空响应 → 终态 empty（empty 计数也已用尽）
-    dec4 = d.detect(collected_text='', collected_tool_calls=[], full_text='',
+    dec4 = d.detect(collected_text='', full_text='',
                     executed_tool_names=[], preset='build')
     assert dec4.action == 'terminal'
     assert dec4.quality == 'empty'
@@ -1939,7 +1963,7 @@ def test_idle_detector_counts_independent_empty_then_intent():
 def test_idle_detector_plan_write_intent_handoff():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec = d.detect(collected_text='我将修改 src/main.py', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='我将修改 src/main.py', full_text='',
                    executed_tool_names=[], preset='plan')
     assert dec.quality == 'constrained'
     assert dec.action == 'handoff'
@@ -1949,7 +1973,7 @@ def test_idle_detector_plan_write_intent_handoff():
 def test_idle_detector_conclusive_text_success():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec = d.detect(collected_text='结论是这里存在内存泄漏', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='结论是这里存在内存泄漏', full_text='',
                    executed_tool_names=[], preset='build')
     assert dec.quality == 'success'
     assert dec.action == 'terminal'
@@ -1958,7 +1982,7 @@ def test_idle_detector_conclusive_text_success():
 def test_idle_detector_plain_text_idle_soft_warning():
     from agent_modules.agent_core.idle_detector import IdleDetector
     d = IdleDetector()
-    dec = d.detect(collected_text='这个问题已经很复杂了', collected_tool_calls=[], full_text='',
+    dec = d.detect(collected_text='这个问题已经很复杂了', full_text='',
                    executed_tool_names=[], preset='build')
     assert dec.quality == 'idle'
     assert dec.action == 'terminal'  # 软警告，不重试
@@ -2266,7 +2290,7 @@ def test_idle_annotation_set_metrics():
     for text, preset, expected_idle in ANNOTATION_SET:
         detector = IdleDetector()  # 每样本新建（无跨样本重试污染）
         dec = detector.detect(
-            collected_text=text, collected_tool_calls=[],
+            collected_text=text,
             full_text='', executed_tool_names=[], preset=preset,
         )
         predicted_idle = dec.quality in ('idle', 'constrained')

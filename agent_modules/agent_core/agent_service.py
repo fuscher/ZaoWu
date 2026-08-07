@@ -214,8 +214,9 @@ class AgentService:
                         'warn', 'user_stopped', '[系统] 生成已被用户终止', recoverable=True,
                     )
                     yield self._phase_event(assistant_msg_id, 'done')
+                    phase_nodes.append('done')
                     yield self._done_event(assistant_msg_id, full_text or '',
-                                           quality='stopped')
+                                           quality='stopped', phase_history=phase_nodes)
                     # 落库收尾消息，避免对话以 content=NULL 的工具轮消息结尾
                     await self._append_message(conv_id, {
                         'id': assistant_msg_id,
@@ -223,7 +224,7 @@ class AgentService:
                         'content': full_text or '生成已被用户终止',
                         'timestamp': _now_ts(),
                         'model': self._model_id,
-                        'metadata': {'quality': 'stopped'},
+                        'metadata': {'quality': 'stopped', 'phase_history': phase_nodes},
                     })
                     return
 
@@ -367,15 +368,17 @@ class AgentService:
                                 recoverable=True,
                             )
                             yield self._phase_event(assistant_msg_id, 'done')
+                            phase_nodes.append('done')
                             yield self._done_event(assistant_msg_id, full_text or '',
-                                                   quality='stopped')
+                                                   quality='stopped',
+                                                   phase_history=phase_nodes)
                             await self._append_message(conv_id, {
                                 'id': assistant_msg_id,
                                 'role': 'assistant',
                                 'content': full_text or '检测到循环，已自动中断',
                                 'timestamp': _now_ts(),
                                 'model': self._model_id,
-                                'metadata': {'quality': 'stopped'},
+                                'metadata': {'quality': 'stopped', 'phase_history': phase_nodes},
                             })
                             return
                     # 通过检测后插入到调用历史（用于后续轮的 streak 延续）
@@ -483,7 +486,6 @@ class AgentService:
                     # - terminal/handoff：终态，记录 quality 后退出循环
                     decision = idle_detector.detect(
                         collected_text=collected_text,
-                        collected_tool_calls=collected_tool_calls,
                         full_text=full_text,
                         executed_tool_names=executed_tool_names,
                         preset=agent_config.get('preset') or 'build',
