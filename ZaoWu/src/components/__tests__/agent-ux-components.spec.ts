@@ -3,7 +3,6 @@
  * - ToolCallCard denied + plan_mode_readonly → 黄色"被约束"（非错误）
  * - ErrorCard 渲染 + CTA 可点
  * - MessageBubble quality 分级渲染 + 存量空气泡回退 + 旧消息默认 success
- * - ModeBadge plan/build 两态
  * - PhaseStrip phase 链渲染
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -14,7 +13,6 @@ import { useSettingsStore } from '@/stores/settings'
 import ToolCallCard from '@/components/ToolCallCard.vue'
 import ErrorCard from '@/components/ErrorCard.vue'
 import MessageBubble from '@/components/MessageBubble.vue'
-import ModeBadge from '@/components/ModeBadge.vue'
 import PhaseStrip from '@/components/PhaseStrip.vue'
 import { useChatStore } from '@/stores/chat'
 
@@ -238,20 +236,6 @@ describe('阶段 C 组件测试', () => {
       await nextTick()
       const calls = vi.mocked(sendAgentMessageStream).mock.calls
       expect(calls[calls.length - 1]?.[1]).toBe('为什么失败了')
-    })
-  })
-
-  describe('ModeBadge: plan/build 两态', () => {
-    it('plan 渲染计划徽章', () => {
-      const wrapper = mount(ModeBadge, { props: { preset: 'plan' } })
-      expect(wrapper.classes()).toContain('plan')
-      expect(wrapper.text()).toContain('计划模式')
-    })
-
-    it('build 渲染执行徽章', () => {
-      const wrapper = mount(ModeBadge, { props: { preset: 'build' } })
-      expect(wrapper.classes()).toContain('build')
-      expect(wrapper.text()).toContain('执行模式')
     })
   })
 

@@ -92,7 +92,10 @@
     "apply": "Apply",
     "welcomeTitle": "Start chatting",
     "welcomeDesc": "Type a message to start a conversation with AI. Supports multi-turn chat, streaming output, and model switching.",
-    "setupHint": "Please configure an LLM Provider and API Key in settings first"
+    "setupHint": "Please configure an LLM Provider and API Key in settings first",
+    "maxTokensAuto": "Auto",
+    "maxTokensAutoLabel": "Auto-fetch from model context",
+    "maxTokensAutoHint": "Using model context length {suggested}"
   },
   "common": {
     "cancel": "Cancel",
@@ -231,7 +234,6 @@
     "disabled": "Disabled",
     "enable": "Enable",
     "disable": "Disable",
-    "delete": "Delete",
     "importSkill": "Import Skill",
     "importingSkill": "Importing...",
     "importSkillDesc": "Select a Markdown SKILL.md file to convert it into a recognized skill. Max file size 512 KB.",
@@ -360,7 +362,6 @@
     "currentBranch": "Branch: {name}",
     "history": "History",
     "commitCount": "{count} commits",
-
     "noProject": "Please select a project first",
     "noGitRepo": "No Git repository",
     "initGitPrompt": "Project \"{name}\" has no Git repository. Create one?",
@@ -369,7 +370,6 @@
     "gitNotInstalledDesc": "Please install Git and try again, or click the button below to download.",
     "downloadGit": "Download Git",
     "close": "Close",
-
     "changes": "Changes",
     "untrackedChanges": "Untracked Changes",
     "stagedChanges": "Staged Changes",
@@ -382,7 +382,6 @@
     "noChanges": "No changes",
     "confirmDiscardTitle": "Confirm Discard",
     "confirmDiscardDesc": "Are you sure you want to discard changes to {count} file(s)? This cannot be undone.",
-
     "commitMessage": "Commit Message",
     "commitPlaceholder": "Enter commit message...",
     "commit": "Commit",
@@ -393,33 +392,27 @@
     "pulling": "Pulling...",
     "commitSuccess": "Committed: {hash}",
     "commitFailed": "Commit failed",
-
     "localTip": "Local",
     "remoteTip": "Remote",
     "refresh": "Refresh",
-
     "selectProject": "Select Project",
     "noProjects": "No projects available",
     "selectBranch": "Select Branch",
     "searchBranch": "Search branches...",
     "noBranches": "No branches",
     "noMatchingBranches": "No matching branches",
-
     "terminal": "Terminal",
     "terminalPlaceholder": "Select a project directory first",
     "commandPlaceholder": "Enter command...",
-
     "conflicts": "Merge Conflicts",
     "conflictsDesc": "Pull succeeded with merge conflicts. Please resolve manually.",
     "conflictFiles": "Conflict Files",
-
     "undoCommit": "Undo Commit",
     "undoCommitConfirm": "Undo the last commit? Changes will be kept in the working tree.",
     "undoSuccess": "Undid commit: {hash}",
     "resetFile": "Discard Changes",
     "resetFileConfirm": "Discard changes to \"{file}\"? This cannot be undone.",
     "resetFileSuccess": "Discarded: {file}",
-
     "timeout": "Operation timed out",
     "retryExhausted": "Operation failed after 3 retries",
     "permissionDenied": "Permission denied",
@@ -429,7 +422,6 @@
   "agent": {
     "title": "Agent",
     "agentMode": "Agent Mode",
-    "agentModeActive": "Agent mode active",
     "agentModeDesc": "AI can read files, search code, execute commands",
     "agentThinking": "Agent thinking...",
     "skillsEnabledHint": "Enabled skills apply to all agent conversations",
@@ -486,8 +478,6 @@
       "done": "Done"
     },
     "modeBadge": {
-      "plan": "Plan · read-only",
-      "build": "Build · full tools",
       "planHint": "Write operations restricted; switch to build after planning",
       "buildHint": "Read/write files and run commands (with approval)"
     },

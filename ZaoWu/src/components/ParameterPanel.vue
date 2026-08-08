@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { Settings2, RotateCcw } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
@@ -10,6 +10,7 @@ const isOpen = ref(false)
 
 const temperature = ref(chatStore.config.temperature)
 const maxTokens = ref(chatStore.config.maxTokens)
+const maxTokensAuto = ref(chatStore.config.maxTokensAuto ?? true)
 const topP = ref(chatStore.config.topP)
 const systemPrompt = ref(chatStore.config.systemPrompt)
 
@@ -18,15 +19,42 @@ watch(
   (c) => {
     temperature.value = c.temperature
     maxTokens.value = c.maxTokens
+    maxTokensAuto.value = c.maxTokensAuto ?? true
     topP.value = c.topP
     systemPrompt.value = c.systemPrompt
   }
 )
 
+// 自动模式取值：当前会话模型声明的上下文长度；
+// 取不到（供应商不提供）时回退 128K——现代模型上下文普遍 ≥128K，
+// 避免小默认值导致长对话频繁触发压缩；超窗时仍有被动 overflow 兜底。
+const AUTO_FALLBACK = 131072
+const autoMaxTokens = computed(() => {
+  const conv = chatStore.currentConversation
+  if (!conv) return AUTO_FALLBACK
+  const provider = chatStore.providers.find((p) => p.id === conv.providerId)
+  const model = provider?.models?.find((m) => m.id === conv.modelId)
+  return model?.contextLength ?? AUTO_FALLBACK
+})
+
+function onMaxTokensInput(e: Event) {
+  if (maxTokensAuto.value) return
+  maxTokens.value = Number((e.target as HTMLInputElement).value)
+}
+
+function onAutoToggle(v: boolean) {
+  maxTokensAuto.value = v
+  if (!v) {
+    // 切到手动：以模型自动值为起点
+    maxTokens.value = autoMaxTokens.value
+  }
+}
+
 function apply() {
   chatStore.updateConfig({
     temperature: temperature.value,
     maxTokens: maxTokens.value,
+    maxTokensAuto: maxTokensAuto.value,
     topP: topP.value,
     systemPrompt: systemPrompt.value,
   })
@@ -36,6 +64,7 @@ function apply() {
 function reset() {
   temperature.value = 0.7
   maxTokens.value = 4096
+  maxTokensAuto.value = true
   topP.value = 1.0
   systemPrompt.value = 'You are a helpful assistant.'
   apply()
@@ -80,9 +109,26 @@ function reset() {
         <div class="param-group">
           <label class="param-label">
             {{ t('chat.maxTokens') }}
-            <span class="param-value">{{ maxTokens }}</span>
+            <span v-if="maxTokensAuto" class="auto-badge">{{ t('chat.maxTokensAuto') }}</span>
+            <span v-else class="param-value">{{ maxTokens }}</span>
           </label>
-          <input v-model.number="maxTokens" type="range" min="256" max="16384" step="256" class="param-slider" />
+          <label class="param-auto-row">
+            <input type="checkbox" :checked="maxTokensAuto" @change="onAutoToggle(($event.target as HTMLInputElement).checked)" />
+            <span class="param-auto-label">{{ t('chat.maxTokensAutoLabel') }}</span>
+          </label>
+          <input
+            :value="maxTokensAuto ? autoMaxTokens : maxTokens"
+            type="range"
+            min="256"
+            max="1000000"
+            step="256"
+            class="param-slider"
+            :disabled="maxTokensAuto"
+            @input="onMaxTokensInput"
+          />
+          <p v-if="maxTokensAuto" class="param-hint">
+            {{ t('chat.maxTokensAutoHint', { suggested: autoMaxTokens }) }}
+          </p>
         </div>
 
         <div class="param-group">
@@ -196,6 +242,39 @@ function reset() {
   font-family: 'Cascadia Code', 'Fira Code', monospace;
   color: var(--text-tertiary);
   font-size: 11px;
+}
+
+.auto-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.param-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.param-auto-label {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.param-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 6px 0 0;
+}
+
+.param-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .param-slider {

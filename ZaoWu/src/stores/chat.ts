@@ -13,6 +13,7 @@ export const useChatStore = defineStore('chat', () => {
     defaultModelId: '',
     temperature: 0.7,
     maxTokens: 4096,
+    maxTokensAuto: true,
     topP: 1.0,
     systemPrompt: 'You are a helpful assistant.',
   })
@@ -190,7 +191,7 @@ export const useChatStore = defineStore('chat', () => {
       const models = await ai.fetchModels(providerId)
       const provider = providers.value.find((p) => p.id === providerId)
       if (provider) {
-        provider.models = models as LLMProvider['models']
+        provider.models = models
       }
     } catch {
       // silent
@@ -218,6 +219,7 @@ export const useChatStore = defineStore('chat', () => {
     providerId?: string
     modelId?: string
     systemPrompt?: string
+    maxTokens?: number
   }): Promise<Conversation | null> {
     try {
       const conv = await ai.createConversation({
@@ -225,6 +227,7 @@ export const useChatStore = defineStore('chat', () => {
         providerId: params?.providerId || config.value.defaultProviderId,
         modelId: params?.modelId || config.value.defaultModelId,
         systemPrompt: params?.systemPrompt,
+        maxTokens: params?.maxTokens,
       })
       conversations.value.unshift(conv)
       currentConversation.value = conv

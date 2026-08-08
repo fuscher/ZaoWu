@@ -382,3 +382,208 @@ async def test_post_rejects_non_string_title(chat_env):
         )
         assert resp.status_code == 400
         assert 'title' in (await resp.get_json()).get('error', '')
+
+
+# ── maxTokens 链路：POST/PATCH 会话 + /agent-messages 落库 ──────
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_post_conversations_rejects_invalid_max_tokens(chat_env, bad):
+    """POST /conversations 非法 maxTokens（bool/越界/非 int）应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'maxTokens': bad},
+        )
+        assert resp.status_code == 400
+        assert 'maxTokens' in (await resp.get_json()).get('error', '')
+
+
+async def test_post_conversations_persists_max_tokens(chat_env):
+    """POST /conversations 携带 maxTokens → 响应与 store 均含该值。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'maxTokens': 8192},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['maxTokens'] == 8192
+        stored = await store.get(conv['id'])
+        assert stored['maxTokens'] == 8192
+
+
+async def test_post_conversations_defaults_max_tokens_to_global(chat_env):
+    """POST /conversations 不带 maxTokens → 回退全局 config 值（chat_env 预写）。"""
+    app, store = chat_env
+    import routes.chat as chat
+    chat._write_json(chat.CONFIG_FILE, {
+        'defaultProviderId': '', 'defaultModelId': '',
+        'temperature': 0.7, 'maxTokens': 6144, 'topP': 1.0,
+        'systemPrompt': '',
+    })
+    async with app.test_client() as client:
+        # 注：POST /conversations 空 dict {} 会被 `if not body` 判为 missing body（既有行为），
+        # 故带一个无关字段触发正常创建流程
+        resp = await client.post('/api/chat/conversations', json={'title': 'x'})
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['maxTokens'] == 6144
+
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_patch_conversations_rejects_invalid_max_tokens(chat_env, bad):
+    """PATCH /conversations 非法 maxTokens 应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'maxTokens': bad},
+        )
+        assert resp.status_code == 400
+        assert 'maxTokens' in (await resp.get_json()).get('error', '')
+
+
+async def test_patch_conversations_persists_max_tokens(chat_env):
+    """PATCH /conversations 携带 maxTokens → 200 且持久化。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'maxTokens': 1024},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['maxTokens'] == 1024
+        stored = await store.get('conv-1')
+        assert stored['maxTokens'] == 1024
+
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_agent_messages_rejects_invalid_max_tokens(chat_env, monkeypatch, bad):
+    """POST /agent-messages 非法 maxTokens 应返回 400（在进入 Agent 前拦截）。"""
+    app, store = chat_env
+    import routes.chat as chat
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something', 'maxTokens': bad},
+        )
+        assert resp.status_code == 400
+        assert 'maxTokens' in (await resp.get_json()).get('error', '')
+
+
+async def test_agent_messages_persists_max_tokens(chat_env, monkeypatch):
+    """POST /agent-messages 携带 maxTokens → 落库到会话（AgentService 重读时生效）。"""
+    app, store = chat_env
+    import routes.chat as chat
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something', 'maxTokens': 8192},
+        )
+        assert resp.status_code == 200
+        stored = await store.get('conv-1')
+        assert stored['maxTokens'] == 8192
+
+
+async def test_agent_messages_without_max_tokens_keeps_conv_value(chat_env, monkeypatch):
+    """POST /agent-messages 不带 maxTokens → 不覆盖会话既有值。"""
+    app, store = chat_env
+    import routes.chat as chat
+    await store.update('conv-1', {'maxTokens': 2048})
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something'},
+        )
+        assert resp.status_code == 200
+        stored = await store.get('conv-1')
+        assert stored['maxTokens'] == 2048
+
+
+# ── _pick_context_length 字段名兜底 + /config maxTokensAuto ──────
+
+def test_pick_context_length_common_field_names():
+    """不同 OpenAI 兼容服务的上下文窗口字段名应都能解析。"""
+    import routes.chat as chat
+    cases = [
+        ({'context_length': 131072}, 131072),
+        ({'contextLength': 128000}, 128000),
+        ({'context_window': 65536}, 65536),
+        ({'max_context_length': 32768}, 32768),
+        ({'max_model_len': 8192}, 8192),
+        # 字符串 "128K" / "131072" 也应解析
+        ({'context_length': '128K'}, 128000),
+        ({'context_length': '131072'}, 131072),
+    ]
+    for model, expected in cases:
+        assert chat._pick_context_length(model) == expected
+
+
+def test_pick_context_length_unknown_or_invalid():
+    """未知字段名 / 不可解析值 → None（自动获取优雅降级）。"""
+    import routes.chat as chat
+    assert chat._pick_context_length({}) is None
+    assert chat._pick_context_length({'context_length': 'very-long'}) is None
+    assert chat._pick_context_length({'context_length': True}) is None
+
+
+async def test_config_accepts_max_tokens_auto(chat_env):
+    """POST /config 接受 maxTokensAuto 布尔并持久化。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post('/api/chat/config', json={'maxTokensAuto': False})
+        assert resp.status_code == 200
+        cfg = (await resp.get_json()).get('config', {})
+        assert cfg['maxTokensAuto'] is False
+        # 非法值拒绝
+        resp2 = await client.post('/api/chat/config', json={'maxTokensAuto': 'yes'})
+        assert resp2.status_code == 400
+        assert 'maxTokensAuto' in (await resp2.get_json()).get('error', '')

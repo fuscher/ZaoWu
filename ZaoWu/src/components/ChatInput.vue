@@ -5,7 +5,6 @@ import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
 import ModelSwitcher from './ModelSwitcher.vue'
 import ParameterPanel from './ParameterPanel.vue'
-import ModeBadge from './ModeBadge.vue'
 import ErrorToast from './ErrorToast.vue'
 
 const chatStore = useChatStore()
@@ -164,8 +163,6 @@ function handleKeydown(e: KeyboardEvent) {
             {{ t('agent.presetModePlan') }}
           </button>
         </div>
-        <!-- 阶段 C8: 常驻模式徽章（preset + 约束摘要，hover 提示） -->
-        <ModeBadge v-if="chatStore.agentMode" :preset="chatStore.preset" />
         <!-- F04: 自动批准写入文件开关 — 仅 write_file 受影响，run_command 仍需确认 -->
         <!-- plan 模式下写工具被 deny，autoApproveWrites 无意义，禁用并提示 -->
         <label
@@ -183,14 +180,8 @@ function handleKeydown(e: KeyboardEvent) {
           <span class="toggle-label">{{ t('agent.autoApproveWrites') }}</span>
         </label>
       </div>
-      <span class="hint">
-        {{
-          chatStore.isStreaming
-            ? t('agent.agentThinking')
-            : chatStore.agentMode
-              ? t('agent.agentModeActive')
-              : t('chat.shortcutHint')
-        }}
+      <span v-if="chatStore.isStreaming || !chatStore.agentMode" class="hint">
+        {{ chatStore.isStreaming ? t('agent.agentThinking') : t('chat.shortcutHint') }}
       </span>
     </div>
     <!-- 阶段 C8: 模式切换 toast（固定定位已由 ErrorToast 自含） -->

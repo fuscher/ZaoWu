@@ -418,4 +418,49 @@ describe('F02: messageId 两级索引工具 Map', () => {
       expect(executed).toBe(0)
     })
   })
+
+  // ── maxTokens 链路：createNewConversation 透传 ─────────────
+  describe('maxTokens 链路', () => {
+    it('createNewConversation 携带 maxTokens 透传给后端', async () => {
+      const ai = await import('@/services/ai')
+      vi.mocked(ai.createConversation).mockClear()
+      vi.mocked(ai.createConversation).mockResolvedValueOnce({
+        id: 'new-1',
+        title: '新对话',
+        providerId: 'p1',
+        modelId: 'm1',
+        systemPrompt: '',
+        messages: [],
+        createdAt: '',
+        updatedAt: '',
+        maxTokens: 8192,
+      } as any)
+
+      const conv = await store.createNewConversation({ providerId: 'p1', modelId: 'm1', maxTokens: 8192 })
+      expect(conv?.id).toBe('new-1')
+      expect(ai.createConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ maxTokens: 8192 })
+      )
+    })
+
+    it('createNewConversation 不传 maxTokens 时该字段为 undefined', async () => {
+      const ai = await import('@/services/ai')
+      vi.mocked(ai.createConversation).mockClear()
+      vi.mocked(ai.createConversation).mockResolvedValueOnce({
+        id: 'new-2',
+        title: '新对话',
+        providerId: 'p1',
+        modelId: 'm1',
+        systemPrompt: '',
+        messages: [],
+        createdAt: '',
+        updatedAt: '',
+      } as any)
+
+      await store.createNewConversation({ providerId: 'p1', modelId: 'm1' })
+      const arg = vi.mocked(ai.createConversation).mock.calls[0][0] as Record<string, unknown>
+      // JSON.stringify 序列化时丢弃 undefined，后端收不到该字段
+      expect(arg.maxTokens).toBeUndefined()
+    })
+  })
 })

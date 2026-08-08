@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill } from '@/types'
+import type { LLMProvider, LLMModel, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill } from '@/types'
 import { apiPath } from '@/utils/api'
 
 const BASE = apiPath('/chat')
@@ -32,10 +32,8 @@ export async function saveProviders(providers: LLMProvider[]): Promise<void> {
   })
 }
 
-export async function fetchModels(providerId: string): Promise<{ id: string; name: string }[]> {
-  const data = await request<{ models: { id: string; name: string }[] }>(
-    `${BASE}/models/${providerId}`
-  )
+export async function fetchModels(providerId: string): Promise<LLMModel[]> {
+  const data = await request<{ models: LLMModel[] }>(`${BASE}/models/${providerId}`)
   return data.models
 }
 
@@ -51,6 +49,7 @@ export async function createConversation(params: {
   providerId?: string
   modelId?: string
   systemPrompt?: string
+  maxTokens?: number
 }): Promise<Conversation> {
   const data = await request<{ conversation: Conversation }>(`${BASE}/conversations`, {
     method: 'POST',
@@ -66,7 +65,7 @@ export async function getConversation(id: string): Promise<Conversation> {
 
 export async function updateConversation(
   id: string,
-  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt' | 'agentConfig'>>
+  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt' | 'agentConfig' | 'maxTokens'>>
 ): Promise<Conversation> {
   const data = await request<{ conversation: Conversation }>(`${BASE}/conversations/${id}`, {
     method: 'PATCH',

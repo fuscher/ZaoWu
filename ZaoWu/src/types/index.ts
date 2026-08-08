@@ -116,6 +116,7 @@ export interface Conversation {
   createdAt: string
   updatedAt: string
   messageCount?: number
+  maxTokens?: number
   agentConfig?: AgentConfig
 }
 
@@ -138,6 +139,8 @@ export interface LLMConfig {
   defaultModelId: string
   temperature: number
   maxTokens: number
+  /** true = 自动从模型 contextLength 取值（默认）；false = 手动使用 maxTokens */
+  maxTokensAuto?: boolean
   topP: number
   systemPrompt: string
 }

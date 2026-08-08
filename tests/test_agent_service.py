@@ -890,6 +890,151 @@ async def _async_none():
     return None
 
 
+# ── maxTokens 取值链：会话级 → 全局 config → 4096 ─────────────
+
+
+def _make_max_tokens_run(service, loop, conv_payload, global_config=None,
+                         monkeypatch=None, tmp_path=None):
+    """跑一轮 process_message 并捕获传给 _stream_llm 的 max_tokens。
+
+    返回 (events, max_tokens_list)。conv 无历史消息 → 主动压缩不触发，
+    一轮 delta 即收尾，_stream_llm 恰好调用一次。
+    """
+    captured = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        captured.append(kwargs.get('max_tokens'))
+        yield {'type': 'delta', 'delta': 'ok'}
+
+    _stub_agent_env(service, monkeypatch, conv_payload, mock_stream_llm)
+
+    if global_config is not None:
+        cfg_file = tmp_path / 'chat_config.json'
+        cfg_file.write_text(json.dumps(global_config), encoding='utf-8')
+        monkeypatch.setattr(
+            'agent_modules.agent_core.agent_service.CONFIG_FILE', str(cfg_file)
+        )
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-mt', 'test'):
+            events.append(event)
+        return events
+        return events
+
+    events = loop.run_until_complete(run())
+    return events, captured
+
+
+def test_agent_uses_conv_level_max_tokens(agent_service, monkeypatch, tmp_path):
+    """会话级 maxTokens 优先：conv.maxTokens=2000 → _stream_llm 收到 2000。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'maxTokens': 2000,
+        'messages': [],
+    }
+    # 即使全局配置存在也不应覆盖会话级值
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, global_config={'maxTokens': 3000},
+        monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [2000]
+    assert any('done' in ev for ev in events)
+
+
+def test_agent_falls_back_to_global_config_max_tokens(agent_service, monkeypatch, tmp_path):
+    """会话未设置 maxTokens（None）→ 回退全局 config 的 3000。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, global_config={'maxTokens': 3000},
+        monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [3000]
+
+
+def test_agent_defaults_to_4096_when_config_missing(agent_service, monkeypatch, tmp_path):
+    """全局 config 文件不存在 → 兜底 4096。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    # CONFIG_FILE 指向不存在的路径
+    monkeypatch.setattr(
+        'agent_modules.agent_core.agent_service.CONFIG_FILE',
+        str(tmp_path / 'does_not_exist.json'),
+    )
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [4096]
+
+
+def test_agent_defaults_to_4096_when_config_corrupt(agent_service, monkeypatch, tmp_path):
+    """全局 config 文件损坏 → 兜底 4096（不崩溃）。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [],
+    }
+    cfg_file = tmp_path / 'chat_config.json'
+    cfg_file.write_text('{not valid json', encoding='utf-8')
+    monkeypatch.setattr(
+        'agent_modules.agent_core.agent_service.CONFIG_FILE', str(cfg_file)
+    )
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [4096]
+
+
+def test_agent_ignores_conv_none_max_tokens(agent_service, monkeypatch, tmp_path):
+    """conv.maxTokens 显式 None（旧库迁移后）→ 回退全局，而非当 0/4096。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'maxTokens': None,
+        'messages': [],
+    }
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, global_config={'maxTokens': 3000},
+        monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [3000]
+
+
+def test_agent_clamps_generation_tokens(agent_service, monkeypatch, tmp_path):
+    """生成参数钳制：压缩预算 1M 时，发送给 LLM 的 max_tokens 钳制到 131072。"""
+    from agent_modules.agent_core.agent_service import MAX_GENERATION_TOKENS
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    conv = {
+        'id': 'conv-mt', 'providerId': 'p', 'modelId': 'm',
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'maxTokens': 1000000,
+        'messages': [],
+    }
+    events, captured = _make_max_tokens_run(
+        service, loop, conv, monkeypatch=monkeypatch, tmp_path=tmp_path,
+    )
+    assert captured == [MAX_GENERATION_TOKENS]
+
+
 # ── 阶段三 6.1/6.2：审批引擎 + plan 模式集成测试 ───────────────
 
 

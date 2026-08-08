@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at       TEXT NOT NULL,
     agent_config_json TEXT NOT NULL DEFAULT '{}',
     compaction_summary TEXT,
-    compacted_until_seq INTEGER NOT NULL DEFAULT -1
+    compacted_until_seq INTEGER NOT NULL DEFAULT -1,
+    max_tokens INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -71,12 +72,13 @@ CREATE INDEX IF NOT EXISTS idx_approval_conv ON tool_approval_rules(conversation
 """
 
 # 阶段二增量列（旧库 ALTER TABLE 补齐；新库已在 DDL 中声明）
-# 阶段 A6：messages.metadata_json 存完成质量（quality/phase_history/error_code），
-# 旧库缺失时 ALTER 补齐，旧消息 metadata 为 NULL → 前端按 quality=success 渲染。
+# max_tokens 必须 nullable、无 DEFAULT：NULL = "会话未显式设置，跟随全局 config"，
+# 若迁移回填默认值会使 AgentService 的全局兜底对旧对话永久失效。
 _MIGRATION_COLUMNS = {
     'conversations': [
         ('compaction_summary', 'TEXT'),
         ('compacted_until_seq', 'INTEGER NOT NULL DEFAULT -1'),
+        ('max_tokens', 'INTEGER'),
     ],
     'messages': [
         ('metadata_json', 'TEXT'),
@@ -141,6 +143,9 @@ class ConversationStore:
             conv['compactionSummary'] = row['compaction_summary']
         if 'compacted_until_seq' in keys:
             conv['compactedUntilSeq'] = row['compacted_until_seq']
+        if 'max_tokens' in keys:
+            # None = 会话未显式设置（跟随全局 config 兜底）
+            conv['maxTokens'] = row['max_tokens']
         return conv
 
     @staticmethod
@@ -229,14 +234,15 @@ class ConversationStore:
     async def create(self, conv: dict) -> None:
         async with self._connect() as db:
             await db.execute(
-                'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json) '
-                'VALUES(?,?,?,?,?,?,?,?)',
+                'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens) '
+                'VALUES(?,?,?,?,?,?,?,?,?)',
                 (
                     conv['id'], conv.get('title', ''),
                     conv.get('providerId', ''), conv.get('modelId', ''),
                     conv.get('systemPrompt', ''),
                     conv.get('createdAt', ''), conv.get('updatedAt', ''),
                     json.dumps(conv.get('agentConfig', {}), ensure_ascii=False),
+                    conv.get('maxTokens'),
                 ),
             )
             await db.commit()
@@ -252,6 +258,7 @@ class ConversationStore:
             'updatedAt': 'updated_at',
             'compactionSummary': 'compaction_summary',
             'compactedUntilSeq': 'compacted_until_seq',
+            'maxTokens': 'max_tokens',
         }
         for key, col in field_map.items():
             if key in fields:
@@ -409,14 +416,15 @@ class ConversationStore:
                 if not cid or await self._exists_in_db(db, cid):
                     continue
                 await db.execute(
-                    'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json) '
-                    'VALUES(?,?,?,?,?,?,?,?)',
+                    'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens) '
+                    'VALUES(?,?,?,?,?,?,?,?,?)',
                     (
                         cid, conv.get('title', ''),
                         conv.get('providerId', ''), conv.get('modelId', ''),
                         conv.get('systemPrompt', ''),
                         conv.get('createdAt', ''), conv.get('updatedAt', ''),
                         json.dumps(conv.get('agentConfig', {}), ensure_ascii=False),
+                        conv.get('maxTokens'),
                     ),
                 )
                 for i, msg in enumerate(conv.get('messages', [])):

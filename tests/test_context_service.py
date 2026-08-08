@@ -7,7 +7,9 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-from services.context_service import ContextService, estimate_tokens, PRUNE_MINIMUM
+from services.context_service import (
+    ContextService, estimate_tokens, estimate_message_tokens, PRUNE_MINIMUM,
+)
 from services.skill_registry import SkillDefinition, SkillRegistry
 
 
@@ -34,6 +36,56 @@ def test_estimate_tokens_mixed():
 def test_estimate_tokens_empty():
     assert estimate_tokens('') == 0
     assert estimate_tokens(None) == 0
+
+
+# ── estimate_message_tokens（tool_calls 计入预算）─────────────────
+
+
+def test_estimate_message_tokens_counts_tool_calls_arguments():
+    """工具轮 assistant 消息 content=None：arguments JSON 必须计入估算。
+
+    OpenAI 存储格式：tool_calls[].function.arguments 为 JSON 字符串。
+    不统计会让工具密集长对话被系统性低估，压缩触发过晚。
+    """
+    msg = {
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [
+            {
+                'id': 'call_1', 'type': 'function',
+                'function': {
+                    'name': 'run_command',
+                    'arguments': '{"command":"python build.py --all --verbose","cwd":"/a/b"}',
+                },
+            },
+        ],
+    }
+    # content=None 不贡献；name + arguments 均应计入
+    assert estimate_message_tokens(msg) > 0
+    assert estimate_message_tokens(msg) > estimate_tokens('run_command')
+
+
+def test_estimate_message_tokens_plain_message():
+    """纯 content 消息与旧 estimate_tokens 等价。"""
+    msg = {'role': 'user', 'content': '你好世界abcdefgh'}
+    assert estimate_message_tokens(msg) == estimate_tokens('你好世界abcdefgh')
+
+
+def test_estimate_message_tokens_memory_dict_arguments():
+    """内存 dict 形态的 arguments（未序列化）不崩溃、可计数。"""
+    msg = {
+        'role': 'assistant',
+        'content': None,
+        'tool_calls': [
+            {'id': 'c1', 'function': {'name': 'read_file', 'arguments': {'path': '/x/y'}}},
+        ],
+    }
+    assert estimate_message_tokens(msg) > 0
+
+
+def test_estimate_message_tokens_empty_message():
+    assert estimate_message_tokens({}) == 0
+    assert estimate_message_tokens({'role': 'assistant', 'content': None}) == 0
 
 
 # ── FakeAgent 辅助 ──────────────────────────────────────────

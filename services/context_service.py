@@ -40,6 +40,25 @@ def estimate_tokens(text: str) -> int:
     return cjk + ascii_chars // 4
 
 
+def estimate_message_tokens(msg: dict) -> int:
+    """估算单条消息 token：content + tool_calls 的 function name/arguments。
+
+    工具轮 assistant 消息 content 为 None，tool_calls 的 arguments 是主要 token 消耗，
+    若不统计会让工具密集长对话被系统性低估，压缩触发过晚。
+    （OpenAI 存储格式：arguments 落库时已是 JSON 字符串。）
+    """
+    parts = [msg.get('content') or '']
+    for tc in msg.get('tool_calls') or []:
+        fn = tc.get('function') or {}
+        args = fn.get('arguments')
+        if not isinstance(args, str):
+            # 防御：内存 dict 形态的调用方（未序列化）
+            args = json.dumps(args or {}, ensure_ascii=False)
+        parts.append(fn.get('name', ''))
+        parts.append(args)
+    return estimate_tokens('\n'.join(parts))
+
+
 class ContextService:
     """每会话上下文服务（N2-I1：每会话实例，挂 AgentService）。"""
 
@@ -169,7 +188,7 @@ class ContextService:
             return None, None
 
         total = estimate_tokens(system_prompt) + sum(
-            estimate_tokens(m.get('content') or '') for m in history
+            estimate_message_tokens(m) for m in history
         )
         if total <= int(max_tokens * 0.8):
             return None, None  # 未超预算

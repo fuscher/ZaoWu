@@ -41,6 +41,28 @@ def _read_json(filepath, default):
         return default
 
 
+# OpenAI 兼容服务上下文窗口字段名清单：不同服务字段名不一，
+# 取第一个可解析为 int 的字段值（如 131072 / "131072" / "128K"）。
+_CONTEXT_LENGTH_KEYS = (
+    'context_length', 'contextLength', 'context_window',
+    'max_context_length', 'max_model_len', 'max_length', 'context_size',
+)
+
+
+def _pick_context_length(model: dict):
+    for key in _CONTEXT_LENGTH_KEYS:
+        v = model.get(key)
+        if v is None:
+            continue
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            s = v.strip().upper().replace('K', '000')
+            if s.isdigit():
+                return int(s)
+    return None
+
+
 def _write_json(filepath, data):
     with _chat_lock:
         tmp = filepath + '.tmp'
@@ -58,6 +80,7 @@ def _init_data_files():
             'defaultModelId': '',
             'temperature': 0.7,
             'maxTokens': 4096,
+            'maxTokensAuto': True,
             'topP': 1.0,
             'systemPrompt': 'You are a helpful assistant.',
         })
@@ -219,11 +242,16 @@ def get_models(provider_id):
         if resp.status_code == 200:
             result = resp.json()
             models = []
-            for m in result.get('data', []):
+            # 结构容错：兼容 {data:[...]} 与裸数组两种响应形态
+            raw = result.get('data') if isinstance(result, dict) else result
+            for m in raw or []:
+                if not isinstance(m, dict):
+                    continue
                 models.append({
                     'id': m.get('id', ''),
                     'name': m.get('id', ''),
-                    'contextLength': m.get('context_length'),
+                    # 字段名兜底：不同 OpenAI 兼容服务上下文窗口字段名不一
+                    'contextLength': _pick_context_length(m),
                 })
             provider['models'] = models
             _write_json(PROVIDERS_FILE, data)
@@ -257,6 +285,13 @@ async def create_conversation():
     for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
         if key in body and not isinstance(body[key], str):
             return jsonify({'ok': False, 'error': f'{key} must be a string'}), 400
+    # maxTokens 类型/范围校验：与 POST /config 一致（int、拒绝 bool、1~1000000）
+    if 'maxTokens' in body:
+        v = body['maxTokens']
+        if not isinstance(v, int) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
+        if not (1 <= v <= 1000000):
+            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
     agent_config = body.get('agentConfig')
     if agent_config is not None and not isinstance(agent_config, dict):
         return jsonify({'ok': False, 'error': 'agentConfig must be an object'}), 400
@@ -271,6 +306,7 @@ async def create_conversation():
         'providerId': body.get('providerId', config.get('defaultProviderId', '')),
         'modelId': body.get('modelId', config.get('defaultModelId', '')),
         'systemPrompt': body.get('systemPrompt', config.get('systemPrompt', '')),
+        'maxTokens': body.get('maxTokens', config.get('maxTokens', 4096)),
         'messages': [],
         'createdAt': now,
         'updatedAt': now,
@@ -314,6 +350,15 @@ async def update_conversation(conv_id):
     for key in ('title', 'providerId', 'modelId', 'systemPrompt'):
         if key in body:
             conv[key] = body[key]
+
+    # maxTokens 类型/范围校验：与 POST /config 一致（int、拒绝 bool、1~1000000）
+    if 'maxTokens' in body:
+        v = body['maxTokens']
+        if not isinstance(v, int) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
+        if not (1 <= v <= 1000000):
+            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
+        conv['maxTokens'] = v
 
     # 支持更新 agentConfig
     if 'agentConfig' in body:
@@ -452,7 +497,9 @@ async def send_message(conv_id):
                 messages.append({'role': role, 'content': msg.get('content')})
 
             temperature = body.get('temperature', config.get('temperature', 0.7))
-            max_tokens = body.get('maxTokens', config.get('maxTokens', 4096))
+            # maxTokens 作为压缩预算可配置到 1M；作为 LLM 生成参数需钳制到 API 上限
+            # （实测 opencode 等 API 拒绝 >131072 的 max_tokens）
+            max_tokens = min(body.get('maxTokens', config.get('maxTokens', 4096)), 131072)
             top_p = body.get('topP', config.get('topP', 1.0))
 
             payload = {
@@ -603,9 +650,15 @@ async def save_config():
         v = body['maxTokens']
         if not isinstance(v, int) or isinstance(v, bool):
             return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
-        if not (1 <= v <= 128000):
-            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 128000'}), 400
+        if not (1 <= v <= 1000000):
+            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
         config['maxTokens'] = v
+
+    if 'maxTokensAuto' in body:
+        v = body['maxTokensAuto']
+        if not isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxTokensAuto must be a boolean'}), 400
+        config['maxTokensAuto'] = v
 
     if 'topP' in body:
         v = body['topP']
@@ -707,6 +760,16 @@ async def send_agent_message(conv_id):
     if not agent_config.get('enabled', False):
         return jsonify({'ok': False, 'error': 'agent mode not enabled for this conversation'}), 400
 
+    # maxTokens 类型/范围校验：与 POST /config 一致（int、拒绝 bool、1~1000000）。
+    # 请求体携带 = 显式会话级设置；不带则不覆盖会话既有值。
+    if 'maxTokens' in body:
+        v = body['maxTokens']
+        if not isinstance(v, int) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
+        if not (1 <= v <= 1000000):
+            return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
+        conv['maxTokens'] = v
+
     providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers') or []
     provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
 
@@ -727,10 +790,16 @@ async def send_agent_message(conv_id):
     }
     conv['messages'].append(user_msg)
 
+    update_fields = {'updatedAt': now}
     if len(conv['messages']) <= 2:
         title = body['content'][:50] + ('...' if len(body['content']) > 50 else '')
-        await store.update(conv_id, {'title': title, 'updatedAt': now})
+        update_fields['title'] = title
         conv['title'] = title
+    # maxTokens 随本次消息显式落库（AgentService 内部 _get_conversation 重读时生效）
+    if 'maxTokens' in body:
+        update_fields['maxTokens'] = conv['maxTokens']
+    if len(update_fields) > 1:
+        await store.update(conv_id, update_fields)
 
     conv['updatedAt'] = now
     await store.append_message(conv_id, user_msg)

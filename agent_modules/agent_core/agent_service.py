@@ -34,6 +34,12 @@ logger = logging.getLogger('agent_modules.agent_core.agent_service')
 
 BASE_DIR = get_project_root()
 PROVIDERS_FILE = os.path.join(BASE_DIR, 'providers.json')
+CONFIG_FILE = os.path.join(BASE_DIR, 'chat_config.json')
+
+# LLM 生成上限钳制值：maxTokens 同时用作「压缩预算」（可配置到 1M）与
+# LLM 生成参数 max_tokens。生成参数过大会被 API 拒绝（实测 opencode 上限 131072），
+# 故发送给 LLM 时钳制到该值；压缩预算不受影响（预算语义是上下文管理，非生成长度）。
+MAX_GENERATION_TOKENS = 131072
 
 # 默认系统提示词
 AGENT_SYSTEM_PROMPT = """你是一个专业的 AI 编程助手，运行在 ZaoWu IDE 中。
@@ -173,7 +179,13 @@ class AgentService:
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
             max_iterations = agent_config.get('maxIterations', 10)
-            max_tokens = conv.get('maxTokens', 4096)
+            # 取值链：会话级显式设置 → 全局 config（ParameterPanel 滑块）→ 4096 兜底。
+            # 会话级为 None（旧数据未迁移）时回退全局，保证滑块调整对 agent 模式生效。
+            max_tokens = (
+                conv.get('maxTokens')
+                or self._read_global_config().get('maxTokens')
+                or 4096
+            )
 
             # full_text 在循环外初始化，跨迭代累加，保留中间推理过程
             full_text = ''
@@ -238,7 +250,7 @@ class AgentService:
                     async for event in self._stream_llm(
                         provider, messages, tool_specs,
                         temperature=conv.get('temperature', 0.7),
-                        max_tokens=max_tokens,
+                        max_tokens=min(max_tokens, MAX_GENERATION_TOKENS),
                         top_p=conv.get('topP', 1.0),
                         stop_event=self.stop_event,
                     ):
@@ -815,6 +827,15 @@ class AgentService:
             return next((p for p in (data.get('providers') or []) if p['id'] == provider_id), None)
         except Exception:
             return None
+
+    def _read_global_config(self) -> dict:
+        """读取全局 chat_config.json；不存在/损坏/非 dict 一律回退 {}。"""
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     async def _build_messages(self, conv: dict, user_content: str) -> List[Dict[str, Any]]:
         """构建消息列表：系统提示词 + （历史摘要）+ 历史（含 tool_calls/tool 角色）

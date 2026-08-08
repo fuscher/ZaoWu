@@ -32,7 +32,25 @@ async function selectModel(providerId: string, modelId: string) {
     // 与 toggleAgentMode 行为一致：无当前对话时创建新对话
     await chatStore.createNewConversation({ providerId, modelId })
   }
+  // 自动获取模型最大上下文：若本地 models 已带 contextLength 直接用；
+  // 否则尝试调一次 /models 拉取（contextLength 未命中时补全）。
+  let ctxLen = findModelContextLength(providerId, modelId)
+  if (ctxLen == null) {
+    await chatStore.refreshModels(providerId)
+    ctxLen = findModelContextLength(providerId, modelId)
+  }
+  // 自动模式：取到模型上下文 → 写入 config；取不到（供应商不提供）→
+  // 写入 128K 回退值，保证自动模式的值真正落到后端生效。
+  if (chatStore.config.maxTokensAuto) {
+    await chatStore.updateConfig({ maxTokens: ctxLen ?? 131072 })
+  }
   isOpen.value = false
+}
+
+function findModelContextLength(providerId: string, modelId: string): number | undefined {
+  const provider = chatStore.providers.find((p) => p.id === providerId)
+  const model = provider?.models?.find((m) => m.id === modelId)
+  return model?.contextLength
 }
 
 async function refreshModels(providerId: string) {
