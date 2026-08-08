@@ -84,6 +84,7 @@ conversations.json
 providers.json
 settings.json
 workflows.json
+workflow_runs.json
 
 # Test cache
 tests/__pycache__/
