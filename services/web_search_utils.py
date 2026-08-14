@@ -28,14 +28,14 @@ from urllib.parse import quote, unquote
 
 import requests
 
+from zaowu_paths import get_project_root
+
 logger = logging.getLogger('services.web_search_utils')
 
 # ── 配置 ──────────────────────────────────────────────────────
 
-_SETTINGS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    'settings.json',
-)
+# 部署根目录定位（frozen 下 exe 同级向上搜索 marker，而非 _internal 内的副本）
+_SETTINGS_FILE = os.path.join(get_project_root(), 'settings.json')
 
 # 搜索引擎标识 → 实现函数的映射（初始化时填充）
 _ENGINE_REGISTRY: Dict[str, callable] = {}
