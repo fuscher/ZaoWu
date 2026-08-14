@@ -9,7 +9,7 @@ from quart import Blueprint, jsonify, request
 
 from services.skill_registry import SkillRegistry
 from services.skill_loader import (
-    DEFAULT_SKILLS_DIR,
+    USER_SKILLS_DIR,
     enable_skill_state,
     disable_skill_state,
     delete_skill_state,
@@ -17,7 +17,9 @@ from services.skill_loader import (
     import_skill_from_markdown,
 )
 
-SKILLS_DIR = DEFAULT_SKILLS_DIR
+# 用户技能工作区位于部署根（版本切换天然保留）；内置技能目录仅供发现，
+# 不在此写入用户数据。
+SKILLS_DIR = USER_SKILLS_DIR
 
 # Maximum allowed size for imported skill markdown content (512 KB).
 IMPORT_MAX_CONTENT_BYTES = 512 * 1024

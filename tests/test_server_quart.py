@@ -188,13 +188,15 @@ def test_startup_plugins_respects_disabled_state_for_overriding_skill(project_tr
 
     _write_skill(skills_dir, 'shared_skill')
     from services.skill_loader import discover_skills, save_skill_state
-    save_skill_state(str(skills_dir), {
+    # 状态文件现在位于部署根用户工作区（BASE_DIR/skills）
+    user_skills_dir = root / 'skills'
+    save_skill_state(str(user_skills_dir), {
         'version': 1,
         'enabled': [],
         'disabled': ['shared_skill'],
         'deleted': [],
     })
-    discover_skills(str(skills_dir))
+    discover_skills(str(skills_dir), state_dir=str(user_skills_dir))
 
     registry = SkillRegistry.get_instance()
     assert registry.is_enabled('shared_skill') is False
@@ -233,7 +235,8 @@ def test_startup_plugins_skips_deleted_plugin_skills(project_tree, tmp_path):
 
     _write_skill(skills_dir, 'builtin_skill')
     from services.skill_loader import discover_skills, save_skill_state
-    save_skill_state(str(skills_dir), {
+    # 状态文件现在位于部署根用户工作区（BASE_DIR/skills）
+    save_skill_state(str(root / 'skills'), {
         'version': 1,
         'enabled': [],
         'disabled': [],

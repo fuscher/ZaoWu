@@ -115,9 +115,14 @@ class PluginManager:
     Construction is cheap; the heavy work happens in :meth:`load_all`.
     """
 
-    def __init__(self, plugins_dir: str) -> None:
+    def __init__(self, plugins_dir: str, state_dir: str | None = None) -> None:
         self.plugins_dir = os.path.abspath(plugins_dir)
-        self._state_path = os.path.join(self.plugins_dir, STATE_FILENAME)
+        # 状态文件位于部署根（state_dir），与只读的版本资源目录分离，
+        # 版本切换时用户数据天然保留；缺省回退 plugins_dir 兼容独立使用。
+        self._state_path = os.path.join(
+            state_dir if state_dir is not None else self.plugins_dir,
+            STATE_FILENAME,
+        )
 
         self._records: Dict[str, PluginRecord] = {}    # name -> record (loaded)
         self._broken: Dict[str, BrokenPlugin] = {}     # name -> broken entry

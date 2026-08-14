@@ -26,7 +26,7 @@ API_VERSION = 'v1'
 # ── Plugin system bootstrap ────────────────────────────────────────
 from plugin_system import PluginManager, get_plugin_manager, set_plugin_manager
 
-_plugin_mgr = PluginManager(PLUGINS_DIR)
+_plugin_mgr = PluginManager(PLUGINS_DIR, state_dir=BASE_DIR)
 _plugin_mgr.attach_app(app)
 set_plugin_manager(_plugin_mgr)
 _logger = logging.getLogger('plugin_system')
@@ -521,9 +521,23 @@ async def _migrate_conversations():
         _logger.info('no conversations.json found; starting with empty SQLite store')
 
 
+@app.before_serving
+async def _migrate_userdata():
+    """一次性迁出用户数据（插件/技能状态、导入技能）至部署根。
+
+    必须注册在 _startup_skills / _startup_plugins 之前：二者读取的状态文件
+    依赖本次迁移先就位。失败不阻断启动，下次启动重试。
+    """
+    try:
+        from services.userdata_migration import run_migration_if_needed
+        await asyncio.to_thread(run_migration_if_needed, BASE_DIR)
+    except Exception:
+        _logger.exception('userdata migration hook failed; continuing')
+
+
 # ── Plugin system lifecycle ────────────────────────────────────────
 # before_serving / after_serving fire in registration order.
-# Startup order:  _startup_logging → _startup_ws_server → _mount_ws_middleware → _mount_api_version_prefix → _migrate_conversations → _startup_skills → _startup_plugins
+# Startup order:  _startup_logging → _startup_ws_server → _mount_ws_middleware → _mount_api_version_prefix → _migrate_conversations → _migrate_userdata → _startup_skills → _startup_plugins
 #   (plugins see running WS server, registered middleware, loaded skills and configured logging)
 # Shutdown order: _shutdown_ws_server → _shutdown_plugins
 #   (plugins must not touch the WS server during zaowu_app_shutdown)
@@ -548,18 +562,26 @@ def _is_safe_skills_dir(skills_dir: str) -> bool:
 
 @app.before_serving
 async def _startup_skills():
-    """Discover and register skills from agent_modules/skills/."""
-    if not _is_safe_skills_dir(DEFAULT_SKILLS_DIR):
-        _logger.error(
-            'skills directory %r is not under project root or is unreachable; '
-            'skipping skill discovery',
-            DEFAULT_SKILLS_DIR,
-        )
-        return
+    """Discover and register skills from the user workspace and bundled dir.
+
+    The user workspace is scanned first so bundled skills win name conflicts
+    on re-registration — stale copies migrated from an old version can never
+    shadow the current version's bundled skills.
+    """
     try:
         from services.skill_loader import discover_skills
-        loaded = await asyncio.to_thread(discover_skills, DEFAULT_SKILLS_DIR)
-        _logger.info('skills loaded: %s', loaded)
+        # 用户工作区（部署根 skills/）：从 BASE_DIR 派生（等价于 USER_SKILLS_DIR），
+        # 状态文件在其自身目录
+        user_skills_dir = os.path.join(BASE_DIR, 'skills')
+        if _is_safe_skills_dir(user_skills_dir):
+            user_loaded = await asyncio.to_thread(discover_skills, user_skills_dir)
+            _logger.info('user skills loaded: %s', user_loaded)
+        # 内置技能（版本资源目录）：启停状态读部署根用户工作区
+        if _is_safe_skills_dir(DEFAULT_SKILLS_DIR):
+            builtin_loaded = await asyncio.to_thread(
+                discover_skills, DEFAULT_SKILLS_DIR, None, user_skills_dir
+            )
+            _logger.info('skills loaded: %s', builtin_loaded)
     except Exception:
         _logger.exception('skill startup failed; continuing without skills')
 
@@ -598,7 +620,7 @@ async def _startup_plugins():
             from services.skill_registry import SkillRegistry
             from services.skill_loader import load_skill_state
             skill_registry = SkillRegistry.get_instance()
-            state = load_skill_state(DEFAULT_SKILLS_DIR)
+            state = load_skill_state(os.path.join(BASE_DIR, 'skills'))
             disabled = set(state.get('disabled') or [])
             deleted = set(state.get('deleted') or [])
             for skill in plugin_skills:

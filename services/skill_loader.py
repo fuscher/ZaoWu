@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from services.skill_registry import SkillDefinition, SkillRegistry
-from zaowu_paths import get_agent_modules_dir
+from zaowu_paths import get_agent_modules_dir, get_project_root
 
 
 MODULE_PREFIX = 'zaowu_skill_'
@@ -41,6 +41,10 @@ DEFAULT_SKILLS_DIR = os.path.join(
     get_agent_modules_dir(),
     'skills',
 )
+
+# 部署根用户技能工作区：用户导入的技能目录与 .skill_state.json 落在这里
+# （frozen 下位于部署根而非 _internal，版本切换时天然保留，不在替换范围内）。
+USER_SKILLS_DIR = os.path.join(get_project_root(), 'skills')
 
 logger = logging.getLogger('services.skill_loader')
 
@@ -193,8 +197,12 @@ def _load_skill_module(name: str, init_path: str):
 def discover_skills(
     skills_dir: str,
     registry: SkillRegistry | None = None,
+    state_dir: str | None = None,
 ) -> List[str]:
     """Scan ``skills_dir`` and register discovered skills.
+
+    ``state_dir``（缺省 = ``skills_dir``）指定 ``.skill_state.json`` 的读取目录：
+    内置技能目录扫描时指向部署根用户工作区，使启停/删除状态与用户目录共享。
 
     Returns the list of successfully loaded skill names.
 
@@ -213,7 +221,7 @@ def discover_skills(
         return loaded
 
     registry = registry or SkillRegistry.get_instance()
-    state = load_skill_state(skills_dir)
+    state = load_skill_state(state_dir if state_dir is not None else skills_dir)
     deleted: Set[str] = set(state.get('deleted') or [])
     disabled: Set[str] = set(state.get('disabled') or [])
 
@@ -297,7 +305,7 @@ def discover_skills(
     return loaded
 
 
-async def reload_skills(skills_dir: str) -> List[str]:
+async def reload_skills(skills_dir: str, state_dir: str | None = None) -> List[str]:
     """Hot-reload all skills.
 
     Preserves the enabled state for plugin-provided skills across reloads.
@@ -307,7 +315,7 @@ async def reload_skills(skills_dir: str) -> List[str]:
     saved_enabled = set(registry._enabled)
     registry.clear()
 
-    loaded = await asyncio.to_thread(discover_skills, skills_dir)
+    loaded = await asyncio.to_thread(discover_skills, skills_dir, None, state_dir)
 
     from plugin_system import get_plugin_manager
     plugin_mgr = get_plugin_manager()
