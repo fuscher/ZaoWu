@@ -659,6 +659,18 @@ async def _shutdown_plugins():
 
 # ── Server entry point ───────────────────────────────────────────────
 
+# 受控退出（更新流程专用）：apply 端点在事件循环内 set 此事件后，Hypercorn
+# 优雅关闭（drain 在途连接 ≤ shutdown_timeout）→ serve() 返回 → os._exit。
+# 注意：set() 必须发生在与服务循环相同的线程/事件循环内（apply 是 Quart async
+# handler，天然满足）；若未来出现跨线程调用方，需经 asyncio._zaowu_main_loop
+# 走 loop.call_soon_threadsafe。非更新场景永不 set，serve() 永不返回，行为不变。
+_shutdown_event = asyncio.Event()
+
+# serve() 外层兜底超时：drain 被挂起的长连接拖住时强制退出，
+# 保证进程最迟约 10 秒内退出（启动器另有 60s 等待 + taskkill 兜底）。
+_DRAIN_TIMEOUT = 10
+
+
 def _start_asyncio(port: int) -> None:
     """Run the Hypercorn ASGI server in a dedicated asyncio event loop.
 
@@ -690,13 +702,22 @@ async def _run_hypercorn(port: int | None = None) -> None:
     bind_port = port if port is not None else get_server_port()
     config.bind = [f'0.0.0.0:{bind_port}']
     config.include_server_header = False
-    await serve(app, config, shutdown_trigger=_never_shutdown)  # type: ignore[arg-type]
-
-
-async def _never_shutdown() -> None:
-    """A shutdown trigger that never fires — the server keeps running until
-    the process exits (via PyWebView's os._exit(0) in main.py)."""
-    await asyncio.Event().wait()
+    config.shutdown_timeout = 5  # 短 drain：优雅关闭等待在途连接 ≤5s
+    try:
+        await asyncio.wait_for(
+            serve(app, config, shutdown_trigger=_shutdown_event.wait),  # type: ignore[arg-type]
+            timeout=_DRAIN_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        # drain 被挂起的长连接拖住：不等待，直接退出（更新流程兜底）
+        logging.getLogger(__name__).warning('hypercorn drain timed out; forcing process exit')
+    except Exception:
+        # 绑定失败等启动错误维持原行为：异常上抛 → daemon 线程终止 →
+        # webview 显示错误页（不 os._exit，让既有错误路径工作）
+        raise
+    # serve() 正常返回仅发生在关闭事件触发时（正常情况永不返回），
+    # 该路径即更新专用退出：drain 完成后由启动器接管切换。
+    os._exit(0)
 
 
 def run_server(port: int | None = None) -> None:

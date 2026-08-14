@@ -295,3 +295,67 @@ def test_is_origin_allowed_rejects_public():
     ]
     for origin in rejected:
         assert _is_origin_allowed(origin) is False, origin
+
+
+# ── 受控退出机制（更新流程专用退出路径）──────────────────────────────
+
+
+class TestControlledShutdown:
+    """_run_hypercorn 三条路径：正常返回 / drain 超时 / 启动错误上抛。"""
+
+    def _patch_serve(self, monkeypatch, fake_serve):
+        import hypercorn.asyncio
+        monkeypatch.setattr(hypercorn.asyncio, 'serve', fake_serve)
+
+    def test_serve_return_triggers_process_exit(self, monkeypatch):
+        import server_quart
+
+        calls = []
+        monkeypatch.setattr(os, '_exit', lambda code: calls.append(code))
+
+        async def fake_serve(app, config, shutdown_trigger=None):
+            assert shutdown_trigger is not None
+            return None
+
+        self._patch_serve(monkeypatch, fake_serve)
+        asyncio.run(server_quart._run_hypercorn())
+        assert calls == [0]
+
+    def test_drain_timeout_forces_process_exit(self, monkeypatch):
+        import server_quart
+
+        calls = []
+        monkeypatch.setattr(os, '_exit', lambda code: calls.append(code))
+        monkeypatch.setattr(server_quart, '_DRAIN_TIMEOUT', 0.05)
+
+        async def fake_serve(app, config, shutdown_trigger=None):
+            await asyncio.Event().wait()  # 挂死，永不返回
+            return None
+
+        self._patch_serve(monkeypatch, fake_serve)
+        asyncio.run(server_quart._run_hypercorn())
+        assert calls == [0]
+
+    def test_serve_error_propagates_without_exit(self, monkeypatch):
+        import server_quart
+
+        monkeypatch.setattr(os, '_exit', lambda code: pytest.fail('os._exit must not be called'))
+
+        async def fake_serve(app, config, shutdown_trigger=None):
+            raise RuntimeError('bind failed')
+
+        self._patch_serve(monkeypatch, fake_serve)
+        with pytest.raises(RuntimeError):
+            asyncio.run(server_quart._run_hypercorn())
+
+    def test_shutdown_event_is_settable_from_same_loop(self):
+        import server_quart
+
+        async def scenario():
+            server_quart._shutdown_event.clear()
+            assert not server_quart._shutdown_event.is_set()
+            server_quart._shutdown_event.set()
+            # wait() 已可立即通过（事件置位）
+            await asyncio.wait_for(server_quart._shutdown_event.wait(), timeout=1)
+
+        asyncio.run(scenario())
