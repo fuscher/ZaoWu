@@ -84,6 +84,11 @@ if not exist "%BUILD_OUT%\ZaoWu.exe" (
     goto :fail
 )
 
+REM 剔除开发态状态文件（发布卫生：开发机运行时生成的用户状态不得随包分发；
+REM 文件由应用运行期生成，开发态树随时可能重新出现）
+if exist "%BUILD_OUT%\_internal\plugins\.plugin_state.json" del /q "%BUILD_OUT%\_internal\plugins\.plugin_state.json"
+if exist "%BUILD_OUT%\_internal\agent_modules\skills\.skill_state.json" del /q "%BUILD_OUT%\_internal\agent_modules\skills\.skill_state.json"
+
 REM ---- 3. 组装部署目录 ----
 echo [3/4] 组装部署目录 ...
 if exist "%DEST%" (
@@ -95,6 +100,10 @@ mkdir "%DEST%" 2>nul
 
 robocopy "%BUILD_OUT%" "%DEST%" /E /NJH /NJS /NFL /NDL
 if errorlevel 8 goto :fail
+
+REM 目标目录兜底剔除历史残留（防御旧版构建曾随包分发过状态文件）
+if exist "%DEST%\_internal\plugins\.plugin_state.json" del /q "%DEST%\_internal\plugins\.plugin_state.json"
+if exist "%DEST%\_internal\agent_modules\skills\.skill_state.json" del /q "%DEST%\_internal\agent_modules\skills\.skill_state.json"
 
 REM 预置 settings.json（唯一必须预置的 marker；其余 json 后端首次启动自动生成）
 if not exist "%DEST%\settings.json" (
