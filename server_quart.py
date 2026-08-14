@@ -12,6 +12,7 @@ from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp
 from routes.workflow import workflow_bp
 from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir, get_server_port
+from version import VERSION
 
 app = Quart(__name__)
 
@@ -128,6 +129,11 @@ async def assets(path):
 @app.route('/api/health')
 async def health():
     return jsonify({'status': 'ok'})
+
+
+@app.route('/api/version')
+async def api_version():
+    return jsonify({'version': VERSION})
 
 
 @app.route('/api/settings', methods=['GET', 'POST'])

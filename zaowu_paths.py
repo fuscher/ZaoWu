@@ -41,6 +41,8 @@ def get_project_root() -> str:
         'chat_config.json',
         'data',
         'logs',
+        # 版本化部署的部署根锚点（启动器预置）：settings.json 被误删时防止上溯越界
+        'versions.json',
     ]
     current = exe_dir
     while True:

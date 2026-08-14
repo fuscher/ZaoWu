@@ -6,7 +6,19 @@ import { PluginHost } from '@/plugin-system'
 
 const { t } = useI18n()
 const pluginsStore = usePluginsStore()
-const model = 'ZaoWu v0.2.0-dashu'
+const model = ref('ZaoWu')
+
+async function loadVersion() {
+  try {
+    const res = await fetch('/api/version')
+    if (res.ok) {
+      const data = await res.json()
+      if (data?.version) model.value = `ZaoWu v${data.version}`
+    }
+  } catch {
+    // 后端不可达时保持默认显示；健康轮询会继续重试连接
+  }
+}
 
 type ServerStatus = 'checking' | 'ready' | 'offline'
 
@@ -77,6 +89,7 @@ function onVisibilityChange() {
 }
 
 onMounted(() => {
+  loadVersion()
   start()
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
