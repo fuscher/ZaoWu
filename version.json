@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "notes": "",
+  "assets": {
+    "win64": {
+      "urls": [
+        "https://github.com/fuscher/ZaoWu/releases/download/v0.2.0/ZaoWu-0.2.0-win64.zip",
+        "https://gitee.com/fuscher/ZaoWu/releases/download/v0.2.0/ZaoWu-0.2.0-win64.zip"
+      ],
+      "size": 23162556,
+      "sha256": "03db36b51d3fa1890baf009777d405ccf3e3beda28c9c3003f7733712c4195ad"
+    }
+  }
+}
