@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
-import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle, Sparkles, Download } from '@lucide/vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle, Sparkles, Download, RefreshCw } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
 import { usePluginsStore } from '@/stores/plugins'
@@ -56,6 +56,153 @@ function showToast(message: string, type: 'error' | 'warning' | 'info' = 'info')
     toastMessage.value = message
     toastType.value = type
   })
+}
+
+// ── Update state (检查更新) ───────────────────────────────
+type UpdateState =
+  | 'idle' | 'unsupported' | 'checking' | 'latest'
+  | 'available' | 'downloading' | 'ready' | 'applying'
+const updateState = ref<UpdateState>('idle')
+const currentVersion = ref('')
+const latestVersion = ref('')
+const updateNotes = ref('')
+const updateProgress = ref(0)
+let statusPoll: ReturnType<typeof setInterval> | null = null
+
+function stopStatusPoll() {
+  if (statusPoll !== null) {
+    clearInterval(statusPoll)
+    statusPoll = null
+  }
+}
+
+async function loadVersion() {
+  try {
+    const res = await fetch('/api/version')
+    if (res.ok) {
+      const data = await res.json()
+      if (data?.version) currentVersion.value = data.version
+    }
+  } catch {
+    // 后端不可达时保持默认显示
+  }
+}
+
+async function consumeUpdateResult() {
+  // 挂载时静默消费 last_result：不发外部请求，一次性提示上次更新结果
+  try {
+    const res = await fetch('/api/update/check?consume_only=1')
+    if (!res.ok) return
+    const data = await res.json()
+    if (!data.supported) {
+      updateState.value = 'unsupported'
+      return
+    }
+    if (data.lastResult === 'ok') {
+      showToast(t('settings.updateSuccess'), 'info')
+    } else if (data.lastResult === 'rolled_back') {
+      showToast(t('settings.updateFailed'), 'warning')
+    }
+  } catch {
+    // 静默：后端不可达不打扰
+  }
+}
+
+async function checkForUpdates() {
+  updateState.value = 'checking'
+  try {
+    const res = await fetch('/api/update/check')
+    if (!res.ok) throw new Error('check failed')
+    const data = await res.json()
+    if (!data.supported) {
+      updateState.value = 'unsupported'
+      return
+    }
+    if (data.error) {
+      showToast(t('settings.checkFailed'), 'error')
+      updateState.value = 'idle'
+      return
+    }
+    if (data.hasUpdate) {
+      latestVersion.value = data.latest ?? ''
+      updateNotes.value = data.notes ?? ''
+      updateState.value = 'available'
+    } else {
+      showToast(t('settings.updateUnavailable'), 'info')
+      updateState.value = 'latest'
+      // 按钮短暂冷却后回到可再查状态
+      setTimeout(() => {
+        if (updateState.value === 'latest') updateState.value = 'idle'
+      }, 3000)
+    }
+  } catch {
+    showToast(t('settings.checkFailed'), 'error')
+    updateState.value = 'idle'
+  }
+}
+
+function pollDownloadStatus() {
+  stopStatusPoll()
+  statusPoll = setInterval(async () => {
+    try {
+      const res = await fetch('/api/update/status')
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.state === 'downloading') {
+        updateProgress.value = data.progress ?? 0
+      } else if (data.state === 'ready') {
+        stopStatusPoll()
+        updateProgress.value = 100
+        updateState.value = 'ready'
+      } else if (data.state === 'idle' && data.error) {
+        stopStatusPoll()
+        showToast(t('settings.downloadFailed'), 'error')
+        updateState.value = 'available'
+      }
+    } catch {
+      // 轮询失败忽略，下个周期继续
+    }
+  }, 1000)
+}
+
+async function startDownload() {
+  updateState.value = 'downloading'
+  updateProgress.value = 0
+  try {
+    const res = await fetch('/api/update/download')
+    const data = await res.json().catch(() => null)
+    if (res.ok && data?.ok) {
+      pollDownloadStatus()
+      return
+    }
+    if (data?.error === 'download_in_progress') {
+      pollDownloadStatus()  // 已在下载：转入轮询
+      return
+    }
+    showToast(t('settings.downloadFailed'), 'error')
+    updateState.value = 'available'
+  } catch {
+    showToast(t('settings.downloadFailed'), 'error')
+    updateState.value = 'available'
+  }
+}
+
+async function applyUpdate() {
+  updateState.value = 'applying'
+  try {
+    const res = await fetch('/api/update/apply', { method: 'POST' })
+    const data = await res.json().catch(() => null)
+    if (res.ok && data?.ok) {
+      // 应用即将受控退出并由启动器完成切换；无需再调 shutdown。
+      // 保持 applying 状态显示「正在重启…」。
+      return
+    }
+    throw new Error('apply failed')
+  } catch {
+    // 网络异常/响应超时：状态未知（应用可能已进入退出流程）
+    showToast(t('settings.applyUnknown'), 'warning')
+    updateState.value = 'ready'
+  }
 }
 
 function openAddProvider() {
@@ -189,6 +336,12 @@ async function removeSkill(name: string) {
 onMounted(() => {
   chatStore.loadProviders()
   chatStore.loadSkills()
+  loadVersion()
+  consumeUpdateResult()
+})
+
+onUnmounted(() => {
+  stopStatusPoll()
 })
 </script>
 
@@ -620,6 +773,78 @@ onMounted(() => {
               <span v-else class="skill-plugin-hint">{{ t('settings.pluginProvided') }}</span>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- ── Update Section ──────────────────────────────── -->
+      <section class="settings-section" id="sec-update">
+        <div class="section-header">
+          <RefreshCw :size="16" />
+          <h2 class="section-title">{{ t('settings.update') }}</h2>
+        </div>
+
+        <div class="setting-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.currentVersion') }}</span>
+              <span class="setting-desc">{{ currentVersion || '—' }}</span>
+            </div>
+            <span v-if="updateState === 'unsupported'" class="update-hint">
+              {{ t('settings.devModeUnsupported') }}
+            </span>
+            <button
+              v-else
+              class="btn-sm accent"
+              :disabled="updateState === 'checking' || updateState === 'downloading' || updateState === 'applying'"
+              @click="checkForUpdates"
+            >
+              <span v-if="updateState === 'checking'" class="import-spinner" />
+              {{ updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkForUpdates') }}
+            </button>
+          </div>
+
+          <template v-if="['available', 'downloading', 'ready', 'applying'].includes(updateState)">
+            <div class="setting-divider" />
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">{{ t('settings.latestVersion') }}</span>
+                <span class="setting-desc">{{ latestVersion }}</span>
+                <span v-if="updateNotes" class="update-notes">{{ updateNotes }}</span>
+              </div>
+            </div>
+
+            <div class="setting-divider" />
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">{{ t('settings.downloadingUpdate') }}</span>
+                <span class="setting-desc">{{ updateProgress }}%</span>
+              </div>
+              <span v-if="updateState === 'applying'" class="update-hint">
+                {{ t('settings.restarting') }}
+              </span>
+              <button
+                v-else-if="updateState === 'ready'"
+                class="btn-sm accent"
+                @click="applyUpdate"
+              >
+                {{ t('settings.restartNow') }}
+              </button>
+              <button
+                v-else-if="updateState === 'available'"
+                class="btn-sm accent"
+                @click="startDownload"
+              >
+                <Download :size="14" />
+                {{ t('settings.downloadUpdate') }}
+              </button>
+            </div>
+
+            <div class="update-progress">
+              <div class="update-progress-fill" :style="{ width: updateProgress + '%' }" />
+            </div>
+          </template>
         </div>
       </section>
 
@@ -1271,5 +1496,40 @@ onMounted(() => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* ── 检查更新区块 ────────────────────────────────────────── */
+
+.update-progress {
+  height: 6px;
+  margin: 4px 0 2px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.update-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.update-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: normal;
+  max-width: 60%;
+  text-align: right;
+}
+
+.update-notes {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

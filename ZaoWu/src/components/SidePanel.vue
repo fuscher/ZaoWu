@@ -417,6 +417,15 @@ watch(
             <div class="list-desc">{{ t('settings.skillsBannerDesc') }}</div>
           </div>
         </div>
+        <div class="list-item" @click="handleBannerClick('update')">
+          <div class="list-icon">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M11 5a4 4 0 00-8 .5M3 9a4 4 0 008-.5M11 5v3H8M3 9V6h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div class="list-text">
+            <div class="list-title">{{ t('settings.updateBannerTitle') }}</div>
+            <div class="list-desc">{{ t('settings.updateBannerDesc') }}</div>
+          </div>
+        </div>
       </template>
     </div>
   </div>
