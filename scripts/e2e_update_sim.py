@@ -287,15 +287,18 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
 
         assert wait_health(port, 60), '新版本启动失败（启动器切换后）'
         cfg = read_json(os.path.join(workdir, 'versions.json'))
-        check('切换：current=v1.2.0 + last_good=v1.1.0 + pending=null',
-              cfg.get('current') == 'v1.2.0' and cfg.get('last_good') == 'v1.1.0' and cfg.get('pending') is None)
+        # 目录名取自远端 version 字段（无 v 前缀）；last_good 为旧 current（v 前缀）
+        check('切换：current=1.2.0 + last_good=v1.1.0 + pending=null',
+              cfg.get('current') == '1.2.0' and cfg.get('last_good') == 'v1.1.0' and cfg.get('pending') is None)
         check('切换：last_result=ok', cfg.get('last_result') == 'ok')
         boot = last_boot_line(workdir) or ''
-        check('新版本在跑（资源根指向 v1.2.0）',
-              'versions' + os.sep + 'v1.2.0' + os.sep + '_internal' in boot)
-        check('zip 解压正确（版本标记 1.2.0）',
-              open(os.path.join(workdir, 'versions', 'v1.2.0', '_internal', 'version_marker.txt'),
-                   encoding='utf-8').read() == '1.2.0')
+        check('新版本在跑（资源根指向 1.2.0）',
+              'versions' + os.sep + '1.2.0' + os.sep + '_internal' in boot)
+        src_marker = open(os.path.join(workdir, 'versions', 'v1.2.0', '_internal', 'version_marker.txt'),
+                          encoding='utf-8').read()
+        extracted_marker = open(os.path.join(workdir, 'versions', '1.2.0', '_internal', 'version_marker.txt'),
+                                encoding='utf-8').read()
+        check('zip 解压正确（解压内容与发布源一致）', extracted_marker == src_marker)
 
         check('运行期数据保留', open(os.path.join(workdir, 'data', 'seed.txt'), encoding='utf-8').read() == 'user data seed')
         check('插件状态保留', read_json(os.path.join(workdir, '.plugin_state.json'))['plugins'] == {'sim_plugin': {'enabled': False}})
@@ -342,8 +345,8 @@ def scenario_rollback(workdir, port):
         st, _ = api(port, '/api/update/download')
         check('回滚场景：下载至 ready', wait_state_ready(port))
 
-        # 下载完成后把新版本换成坏 exe（无响应的 brokenapp）再 apply
-        shutil.copy(BROKENAPP, os.path.join(workdir, 'versions', 'v1.2.0', 'ZaoWu.exe'))
+        # 下载完成后把新版本（解压目录 versions/1.2.0）换成坏 exe 再 apply
+        shutil.copy(BROKENAPP, os.path.join(workdir, 'versions', '1.2.0', 'ZaoWu.exe'))
 
         st, res = api(port, '/api/update/apply', method='POST', timeout=30)
         check('回滚场景 apply 响应送达', res.get('ok') is True)

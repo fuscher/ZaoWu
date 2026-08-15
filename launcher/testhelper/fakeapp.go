@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"time"
 )
 
@@ -40,14 +41,19 @@ func main() {
 		if py == "" || script == "" {
 			os.Exit(3)
 		}
-		// 自定位：把自身 exe 路径传给 python（模拟 PyInstaller 应用的
-		// sys.executable 语义——无论被谁拉起，子进程都知道自己是哪个版本）
+		// 自定位：把自身 exe 路径与 PID 传给 python（模拟 PyInstaller 应用的
+		// sys.executable 语义——无论被谁拉起，子进程都知道自己是哪个版本；
+		// PID 供子进程 watchdog 追踪本进程存活——venv 重定向器会使子进程
+		// 的直接父进程是 python.exe 而非本进程）。
 		exePath, _ := os.Executable()
 		if dbg := os.Getenv("FAKE_APP_DEBUG"); dbg != "" {
 			os.WriteFile(dbg, []byte("python-server start\n"), 0644)
 		}
 		cmd := exec.Command(py, script)
-		cmd.Env = append(os.Environ(), "ZAOWU_SIM_EXE="+exePath)
+		cmd.Env = append(os.Environ(),
+			"ZAOWU_SIM_EXE="+exePath,
+			"ZAOWU_SIM_PARENT_PID="+strconv.Itoa(os.Getpid()),
+		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()

@@ -39,7 +39,10 @@ def watchdog(parent_pid):
             os._exit(0)
 
 
-threading.Thread(target=watchdog, args=(os.getppid(),), daemon=True).start()
+# 追踪 fakeapp（应用进程）而非直接父进程：venv 重定向器会使直接父进程是
+# python.exe；fakeapp 被启动器定向终止时，此处随之同步退出。
+_parent_pid = int(os.environ.get('ZAOWU_SIM_PARENT_PID') or os.getppid())
+threading.Thread(target=watchdog, args=(_parent_pid,), daemon=True).start()
 
 # PyInstaller bootloader 语义：frozen 标志 + executable 指向版本目录内的 exe。
 # 必须先于任何 zaowu_paths / server_quart 导入。
