@@ -7,6 +7,7 @@ from .terminal import terminal_bp
 from .community import community_bp
 from .plugin import plugin_bp
 from .agent_skills import bp as agent_skills_bp
+from .update import update_bp
 # workflow_bp 不在此处模块级导入，避免 workflow_engine → routes → workflow_engine 循环导入。
 # server_quart.py 直接从 routes.workflow 导入并注册。
 
@@ -20,4 +21,5 @@ __all__ = [
     'community_bp',
     'plugin_bp',
     'agent_skills_bp',
+    'update_bp',
 ]

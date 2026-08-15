@@ -130,6 +130,9 @@ func runSwitch(root string, oldPid int) int {
 
 	port := ResolvePort()
 
+	// 幂等判断：pending 为空/等于 current 说明上一轮启动器已完成翻转
+	// （重复 apply 场景）；此时健康响应者即上一轮拉起的实例。
+	idempotent := deref(cfg.Pending) == "" || deref(cfg.Pending) == cfg.Current
 	if deref(cfg.Pending) != "" && deref(cfg.Pending) != cfg.Current {
 		oldCurrent := cfg.Current
 		cfg.LastGood = &oldCurrent
@@ -141,21 +144,27 @@ func runSwitch(root string, oldPid int) int {
 		}
 	}
 
-	return ensureRunning(root, cfg, cfgPath, port)
+	return ensureRunning(root, cfg, cfgPath, port, idempotent)
 }
 
-// ensureRunning 保证当前配置的版本在跑：快速确认已有健康实例（幂等 apply），
-// 否则启动新实例并以「健康检查通过 且 新 PID 存活」双条件验收——
-// 第二实例占端口时新实例绑定失败即死亡，仅 healthOK 会误判成功。
-func ensureRunning(root string, cfg *VersionsConfig, cfgPath, port string) int {
+// ensureRunning 保证当前配置的版本在跑：
+// - 幂等 apply：快速确认已有健康实例即可；
+// - 常规切换：翻转后、拉起前若端口已被占用（更新期间运行的第二实例），
+//   直接回滚——真实应用绑定失败后进程可能存活，仅靠「新 PID 存活 + 健康」
+//   会假阳性；拉起后以「健康检查通过 且 新 PID 存活」双条件验收。
+func ensureRunning(root string, cfg *VersionsConfig, cfgPath, port string, idempotent bool) int {
 	appExe := filepath.Join(root, "versions", cfg.Current, "ZaoWu.exe")
 	if !fileExists(appExe) {
 		return rollback(root, cfg, cfgPath)
 	}
 
-	// 幂等 apply：上一轮启动器已完成切换且实例健康。
-	if WaitHealthy(port, fastHealthTimeout) {
-		return recordResult(cfgPath, cfg, "ok")
+	if idempotent {
+		if WaitHealthy(port, fastHealthTimeout) {
+			return recordResult(cfgPath, cfg, "ok")
+		}
+	} else if healthOnce(port) {
+		// 旧进程已退出，此响应者只能是外来实例（第二实例占用端口）
+		return rollback(root, cfg, cfgPath)
 	}
 
 	pid2, err := SpawnApp(appExe)

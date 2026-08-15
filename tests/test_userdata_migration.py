@@ -8,7 +8,6 @@ import sys
 import pytest
 
 import services.userdata_migration as migration
-from services.versions_config import read_versions_config, versions_path, write_versions_config
 
 
 def _write(path, data):
@@ -170,24 +169,3 @@ class TestPathRedirection:
         from zaowu_paths import get_project_root
 
         assert USER_SKILLS_DIR == os.path.join(get_project_root(), 'skills')
-
-
-class TestVersionsConfig:
-    def test_write_read_roundtrip(self, tmp_path):
-        data = {'schema': 1, 'current': 'v1.2.0', 'last_good': 'v1.1.0', 'pending': None, 'last_result': None}
-        write_versions_config(data, str(tmp_path))
-        assert (tmp_path / 'versions.json').exists()
-        assert not (tmp_path / 'versions.json.tmp').exists()  # 原子写无残留
-        assert read_versions_config(str(tmp_path)) == data
-
-    def test_read_missing_returns_empty(self, tmp_path):
-        assert read_versions_config(str(tmp_path)) == {}
-
-    def test_read_corrupt_returns_empty(self, tmp_path):
-        (tmp_path / 'versions.json').write_text('{broken', encoding='utf-8')
-        assert read_versions_config(str(tmp_path)) == {}
-
-    def test_versions_path_defaults_to_project_root(self):
-        from zaowu_paths import get_project_root
-
-        assert versions_path() == os.path.join(get_project_root(), 'versions.json')

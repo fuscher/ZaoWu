@@ -115,10 +115,37 @@ STATE7=$("$PY" -c "
 import json
 c=json.load(open(r'$(cygpath -w "$D7/versions.json")',encoding='utf-8'))
 print(c['current'], c['last_good'], c['last_result'])")
-taskkill //IM ZaoWu.exe //F >/dev/null 2>&1
+# 先等回滚拉起的子进程写完 marker，再清理残留（taskkill 会把新子进程一并杀掉）
 wait_file "$D7/rolled_back_marker.txt" 15
+taskkill //IM ZaoWu.exe //F >/dev/null 2>&1
 [ $RC7 = 0 ] && [ "$STATE7" = 'v1.1.0 None rolled_back' ] && [ -f "$D7/rolled_back_marker.txt" ]
 check "切换失败 → exit=0 + 翻回旧版（current=v1.1.0,last_good=null）+ rolled_back + 旧版被拉起" "$?"
+
+# ── 场景 9：更新期间第二实例占端口 → 回滚（翻转后、拉起前检测）──
+D9=$(mktemp -d); cp "$LAUNCHER" "$D9/"
+mkdir -p "$D9/versions/v1.1.0" "$D9/versions/v1.2.0"
+cp "$FAKEAPP" "$D9/versions/v1.1.0/ZaoWu.exe"
+cp "$FAKEAPP" "$D9/versions/v1.2.0/ZaoWu.exe"
+cat > "$D9/versions.json" << 'EOF'
+{"schema":1,"current":"v1.1.0","last_good":null,"pending":"v1.2.0","last_result":null}
+EOF
+# 第二实例：serve 模式常驻占端口（模拟用户更新期间又开了一个旧实例）
+FAKE_APP_MODE=serve ZAOWU_PORT=5612 "$D9/versions/v1.1.0/ZaoWu.exe" &
+sleep 1
+MARK9=$(cygpath -w "$D9/rolled_back_marker.txt")
+FAKE_APP_MODE=exit FAKE_APP_MARKER="$MARK9" ZAOWU_PORT=5612 \
+ZAOWU_LAUNCHER_HEALTH_TIMEOUT=2 ZAOWU_LAUNCHER_NOGUI=1 \
+"$D9/ZaoWuLauncher.exe" --switch --pid 99999999
+RC9=$?
+# 先等回滚拉起的子进程写完 marker，再清理残留
+wait_file "$D9/rolled_back_marker.txt" 15
+taskkill //IM ZaoWu.exe //F >/dev/null 2>&1
+STATE9=$("$PY" -c "
+import json
+c=json.load(open(r'$(cygpath -w "$D9/versions.json")',encoding='utf-8'))
+print(c['current'], c['last_good'], c['last_result'])")
+[ $RC9 = 0 ] && [ "$STATE9" = 'v1.1.0 None rolled_back' ] && [ -f "$D9/rolled_back_marker.txt" ]
+check "第二实例占端口 → 回滚（current=v1.1.0 + rolled_back + 旧版拉起）" "$?"
 
 echo
 echo "P1 矩阵结果: PASS=$PASS FAIL=$FAIL (工作目录 $WORK)"
