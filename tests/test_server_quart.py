@@ -301,7 +301,8 @@ def test_is_origin_allowed_rejects_public():
 
 
 class TestControlledShutdown:
-    """_run_hypercorn 三条路径：正常返回 / drain 超时 / 启动错误上抛。"""
+    """_run_hypercorn 四条路径：正常返回 / drain 超时强制退出 /
+    正常运行不退出（回归：兜底超时不得影响正常生命周期）/ 启动错误上抛。"""
 
     def _patch_serve(self, monkeypatch, fake_serve):
         import hypercorn.asyncio
@@ -318,7 +319,12 @@ class TestControlledShutdown:
             return None
 
         self._patch_serve(monkeypatch, fake_serve)
-        asyncio.run(server_quart._run_hypercorn())
+
+        async def main():
+            monkeypatch.setattr(server_quart, '_shutdown_event', asyncio.Event())
+            await server_quart._run_hypercorn()
+
+        asyncio.run(main())
         assert calls == [0]
 
     def test_drain_timeout_forces_process_exit(self, monkeypatch):
@@ -329,12 +335,45 @@ class TestControlledShutdown:
         monkeypatch.setattr(server_quart, '_DRAIN_TIMEOUT', 0.05)
 
         async def fake_serve(app, config, shutdown_trigger=None):
-            await asyncio.Event().wait()  # 挂死，永不返回
+            await asyncio.Event().wait()  # drain 挂死，serve 永不返回
             return None
 
         self._patch_serve(monkeypatch, fake_serve)
-        asyncio.run(server_quart._run_hypercorn())
-        assert calls == [0]
+
+        async def main():
+            ev = asyncio.Event()
+            monkeypatch.setattr(server_quart, '_shutdown_event', ev)
+            task = asyncio.create_task(server_quart._run_hypercorn())
+            await asyncio.sleep(0.1)  # 让 _run_hypercorn 进入 serve
+            ev.set()                  # 关闭事件触发
+            await asyncio.sleep(0.2)  # 守卫在事件 + _DRAIN_TIMEOUT 后强制退出
+            assert calls == [0]
+            task.cancel()
+
+        asyncio.run(main())
+
+    def test_normal_operation_never_exits(self, monkeypatch):
+        """回归：兜底超时只约束「事件触发后的 drain」，正常运行永不强制退出。"""
+        import server_quart
+
+        calls = []
+        monkeypatch.setattr(os, '_exit', lambda code: calls.append(code))
+        monkeypatch.setattr(server_quart, '_DRAIN_TIMEOUT', 0.05)
+
+        async def fake_serve(app, config, shutdown_trigger=None):
+            await asyncio.Event().wait()  # 正常服务：事件不触发则永不返回
+            return None
+
+        self._patch_serve(monkeypatch, fake_serve)
+
+        async def main():
+            monkeypatch.setattr(server_quart, '_shutdown_event', asyncio.Event())
+            task = asyncio.create_task(server_quart._run_hypercorn())
+            await asyncio.sleep(0.3)  # 远超 _DRAIN_TIMEOUT
+            assert calls == []        # 事件未触发 → 绝不退出
+            task.cancel()
+
+        asyncio.run(main())
 
     def test_serve_error_propagates_without_exit(self, monkeypatch):
         import server_quart

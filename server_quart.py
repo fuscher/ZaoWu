@@ -703,20 +703,29 @@ async def _run_hypercorn(port: int | None = None) -> None:
     config.bind = [f'0.0.0.0:{bind_port}']
     config.include_server_header = False
     config.shutdown_timeout = 5  # 短 drain：优雅关闭等待在途连接 ≤5s
+
+    # 兜底守卫：仅在关闭事件触发后计时——drain 被挂起的长连接拖住时
+    # 强制退出，保证进程最迟约「事件触发 + 10 秒」内退出。正常运行时
+    # 事件永不触发，serve() 永不返回，本守卫不产生任何影响。
+    guard = asyncio.create_task(_force_exit_after_shutdown())
     try:
-        await asyncio.wait_for(
-            serve(app, config, shutdown_trigger=_shutdown_event.wait),  # type: ignore[arg-type]
-            timeout=_DRAIN_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        # drain 被挂起的长连接拖住：不等待，直接退出（更新流程兜底）
-        logging.getLogger(__name__).warning('hypercorn drain timed out; forcing process exit')
+        await serve(app, config, shutdown_trigger=_shutdown_event.wait)  # type: ignore[arg-type]
     except Exception:
         # 绑定失败等启动错误维持原行为：异常上抛 → daemon 线程终止 →
         # webview 显示错误页（不 os._exit，让既有错误路径工作）
+        guard.cancel()
         raise
-    # serve() 正常返回仅发生在关闭事件触发时（正常情况永不返回），
+    # serve() 正常返回仅发生在关闭事件触发时（drain 完成），
     # 该路径即更新专用退出：drain 完成后由启动器接管切换。
+    guard.cancel()
+    os._exit(0)
+
+
+async def _force_exit_after_shutdown() -> None:
+    """关闭事件触发后等待 _DRAIN_TIMEOUT，serve 仍未返回则强制退出。"""
+    await _shutdown_event.wait()
+    await asyncio.sleep(_DRAIN_TIMEOUT)
+    logging.getLogger(__name__).warning('hypercorn drain timed out; forcing process exit')
     os._exit(0)
 
 
