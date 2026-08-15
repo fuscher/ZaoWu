@@ -16,3 +16,5 @@ y-py>=0.6
 # Development / testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+# Build tooling（tobuild/build.bat 打包必需）
+pyinstaller>=6.0

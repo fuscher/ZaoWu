@@ -4,14 +4,15 @@ chcp 65001 >nul
 title ZaoWu 一键构建
 
 REM ============================================================
-REM  ZaoWu 一键构建脚本（Build → 组装 → 验证）
+REM  ZaoWu 一键构建脚本（前端 → PyInstaller → 组装 → 发布产物 → 验证）
 REM  用法:
 REM    build.bat                         交互式输入目标目录
 REM    build.bat D:\ZaoWu                直接指定目标目录
 REM    build.bat -y D:\ZaoWu             跳过确认（覆盖已存在的目标）
 REM
-REM  目标目录内容 = 分发根目录（exe + _internal + settings.json）
-REM  整个目录复制到任意 Windows 主机，双击 ZaoWu.exe 即可运行。
+REM  目标目录内容 = 扁平部署目录（exe + _internal + settings.json），
+REM  同时作为发布包 zip 的源（zip 仅含 exe 与 _internal 两路径）。
+REM  发布产物：dist\ZaoWu-{v}-win64.zip + dist\version.json（sha256/体积实测写入）。
 REM ============================================================
 
 set "REPO_ROOT=%~dp0.."
@@ -64,7 +65,7 @@ if exist "%DEST%\ZaoWu.exe" (
 echo.
 
 REM ---- 1. 前端生产构建（Vue → 静态资源） ----
-echo [1/4] 前端构建 ...
+echo [1/5] 前端构建 ...
 pushd "%REPO_ROOT%\ZaoWu"
 call npm run build
 if errorlevel 1 (
@@ -75,8 +76,9 @@ if errorlevel 1 (
 popd
 
 REM ---- 2. PyInstaller 打包（后端 + 前端 → 目录应用） ----
-echo [2/4] PyInstaller 打包（约 50 秒）...
-"%VENV_PY%" -m PyInstaller "%SPEC%" --noconfirm --clean
+echo [2/5] PyInstaller 打包（约 50 秒）...
+REM 显式钉死输出目录（spec 未设 distpath，依赖 cwd 为仓库根；双击运行时 cwd 是 tobuild）
+"%VENV_PY%" -m PyInstaller "%SPEC%" --noconfirm --clean --distpath "%REPO_ROOT%\dist" --workpath "%REPO_ROOT%\build"
 if errorlevel 1 goto :fail
 
 if not exist "%BUILD_OUT%\ZaoWu.exe" (
@@ -90,7 +92,7 @@ if exist "%BUILD_OUT%\_internal\plugins\.plugin_state.json" del /q "%BUILD_OUT%\
 if exist "%BUILD_OUT%\_internal\agent_modules\skills\.skill_state.json" del /q "%BUILD_OUT%\_internal\agent_modules\skills\.skill_state.json"
 
 REM ---- 3. 组装部署目录 ----
-echo [3/4] 组装部署目录 ...
+echo [3/5] 组装部署目录 ...
 if exist "%DEST%" (
     echo   清空目标目录旧内容 ...
     robocopy "%DEST%" "%DEST%.old-%RANDOM%" /E /NJH /NJS >nul 2>&1
@@ -110,8 +112,33 @@ if not exist "%DEST%\settings.json" (
     copy /y "%REPO_ROOT%\settings.json" "%DEST%\settings.json" >nul
 )
 
-REM ---- 4. 运行验证（启动 → 健康检查 → 关闭） ----
-echo [4/4] 启动验证 ...
+REM ---- 4. 发布产物（zip + sha256 + version.json）----
+echo [4/5] 生成发布产物 ...
+REM 版本号单一来源：读 version.py（编译期常量）；exe 路径无空格不可加引号
+REM （for /f 命令串与嵌套引号不兼容）
+for /f "delims=" %%v in ('%VENV_PY% -c "from version import VERSION;print(VERSION)"') do set "APP_VER=%%v"
+set "ZIP_OUT=%REPO_ROOT%\dist\ZaoWu-%APP_VER%-win64.zip"
+if exist "%ZIP_OUT%" del /q "%ZIP_OUT%"
+REM zip 仅列 ZaoWu.exe 与 _internal 两路径（运行期数据结构性排除，不依赖时序）
+powershell -NoProfile -Command "Compress-Archive -Path '%DEST%\ZaoWu.exe','%DEST%\_internal' -DestinationPath '%ZIP_OUT%' -Force"
+if errorlevel 1 (
+    echo [错误] zip 打包失败
+    goto :fail
+)
+for /f "delims=" %%h in ('powershell -NoProfile -Command "(Get-FileHash '%ZIP_OUT%' -Algorithm SHA256).Hash.ToLower()"') do set "ZIP_SHA256=%%h"
+for %%A in ("%ZIP_OUT%") do set "ZIP_SIZE=%%~zA"
+REM 抽查：发布包内不得夹带状态文件（应用侧解压校验为最后防线）
+powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[System.IO.Compression.ZipFile]::OpenRead('%ZIP_OUT%'); if (-not $z) { exit 2 }; $bad=$z.Entries | Where-Object { $_.FullName -match '\.plugin_state\.json|\.skill_state\.json' }; $z.Dispose(); if ($bad) { exit 1 } else { exit 0 }"
+if errorlevel 1 (
+    echo [错误] 发布包内检出状态文件，禁止发布
+    goto :fail
+)
+"%VENV_PY%" "%REPO_ROOT%\tobuild\gen_version_json.py" --version "%APP_VER%" --size %ZIP_SIZE% --sha256 %ZIP_SHA256% --out "%REPO_ROOT%\dist\version.json"
+if errorlevel 1 goto :fail
+echo [完成] %ZIP_OUT% (%ZIP_SIZE% bytes, sha256=%ZIP_SHA256%)
+
+REM ---- 5. 运行验证（启动 → 健康检查 → 关闭） ----
+echo [5/5] 启动验证 ...
 start "" "%DEST%\ZaoWu.exe"
 
 set "OK=0"
