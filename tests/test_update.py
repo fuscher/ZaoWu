@@ -353,8 +353,8 @@ class TestDownload:
 
         # 重新检查（不信任前端参数）：下载期间再次请求了 version.json
         assert src in fake.get_calls
-        # 解压落位：目录名取自远端 version 字段
-        assert (isolated / 'versions' / '1.3.0' / '_internal' / 'app' / 'data.txt').exists()
+        # 解压落位：目录名 = v + version 字段（统一 v 前缀）
+        assert (isolated / 'versions' / 'v1.3.0' / '_internal' / 'app' / 'data.txt').exists()
         assert update._status['state'] == 'ready'
 
     async def test_checksum_mismatch(self, isolated, frozen, monkeypatch):
@@ -450,8 +450,8 @@ class TestApply:
     ):
         import server_quart
         _write_versions(isolated, current='v1.1.0')
-        update._status.update({'state': 'ready', 'version': '1.3.0'})
-        (isolated / 'versions' / '1.3.0').mkdir(parents=True)
+        update._status.update({'state': 'ready', 'version': 'v1.3.0'})
+        (isolated / 'versions' / 'v1.3.0').mkdir(parents=True)
         (isolated / update.LAUNCHER_NAME).write_text('fake launcher')
 
         popen_calls = []
@@ -470,14 +470,14 @@ class TestApply:
         assert (await resp.get_json())['ok'] is True
 
         cfg = json.loads((isolated / 'versions.json').read_text(encoding='utf-8'))
-        assert cfg['pending'] == '1.3.0'
+        assert cfg['pending'] == 'v1.3.0'
         assert popen_calls[0][0][:2] == [str(isolated / update.LAUNCHER_NAME), '--switch']
         assert popen_calls[0][0][3] == str(os.getpid())
         assert fake_event.set_called is True  # 事件 set 后仍返回 ok
 
     async def test_apply_idempotent_when_pending_exists(self, isolated, frozen, monkeypatch):
-        _write_versions(isolated, pending='1.3.0')
-        update._status.update({'state': 'ready', 'version': '1.3.0'})
+        _write_versions(isolated, pending='v1.3.0')
+        update._status.update({'state': 'ready', 'version': 'v1.3.0'})
         monkeypatch.setattr(update.subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('must not spawn')))
         async with app.test_client() as client:
             resp = await client.post('/api/update/apply')
@@ -500,9 +500,9 @@ class TestApply:
 
 class TestStatus:
     async def test_status_snapshot(self, isolated, monkeypatch):
-        monkeypatch.setattr(update, '_status', {'state': 'ready', 'progress': 100, 'version': '1.3.0', 'error': None})
+        monkeypatch.setattr(update, '_status', {'state': 'ready', 'progress': 100, 'version': 'v1.3.0', 'error': None})
         async with app.test_client() as client:
             resp = await client.get('/api/update/status')
         data = await resp.get_json()
         assert data['state'] == 'ready'
-        assert data['version'] == '1.3.0'
+        assert data['version'] == 'v1.3.0'

@@ -59,7 +59,7 @@ SOURCE_URLS = [
 # 解压防护阈值
 _MAX_ENTRIES = 20000
 _MAX_TOTAL_SIZE = 1 << 30  # 1GB
-_MAX_SEGMENTS_RE = re.compile(r'^[vV]?\d+(\.\d+){0,2}$')  # 目录名白名单：X.Y.Z ≤3 段
+_MAX_SEGMENTS_RE = re.compile(r'^[vV]?\d+(\.\d+){0,2}$')  # 目录名白名单：vX.Y.Z ≤3 段
 
 # 下载互斥（进程级；单进程 Quart 假设与 skill_loader 一致）。
 # 重复点击快速失败（409），不排队。
@@ -276,11 +276,19 @@ def _validate_zip(zf: zipfile.ZipFile) -> None:
                 raise UpdateError(f'unknown plugin directory rejected: {plugin_dir!r}')
 
 
-def _extract_zip(zip_path: str, dest_dir: str, version: str) -> None:
-    """防护校验通过后解压至 versions/<version>/（目录名取自远端 version 字段，
-    先过白名单校验，不取自 zip 内路径）。"""
-    if not _MAX_SEGMENTS_RE.match(version):
-        raise UpdateError(f'invalid version for directory name: {version!r}')
+def _version_dir(version: str) -> str:
+    """版本目录名统一为 vX.Y.Z（与首装/bootstrap 的 v0 前缀风格一致）。
+
+    远端 version 字段通常无 v 前缀；若已带 v/vV 前缀则保持原样，防重复。"""
+    return version if version[:1].lower() == 'v' else 'v' + version
+
+
+def _extract_zip(zip_path: str, dest_dir: str) -> None:
+    """防护校验通过后解压至 dest_dir（目录名 vX.Y.Z，先过白名单校验，
+    不取自 zip 内路径）。"""
+    dir_name = os.path.basename(dest_dir.rstrip('/\\'))
+    if not _MAX_SEGMENTS_RE.match(dir_name):
+        raise UpdateError(f'invalid version for directory name: {dir_name!r}')
     with zipfile.ZipFile(zip_path) as zf:
         _validate_zip(zf)
         if os.path.isdir(dest_dir):
@@ -357,10 +365,11 @@ async def download():
             if actual != sha256_expected:
                 raise UpdateError('checksum mismatch')
 
-            dest_dir = os.path.join(VERSIONS_DIR, version)
-            await asyncio.to_thread(_extract_zip, zip_path, dest_dir, version)
+            version_dir = _version_dir(version)
+            dest_dir = os.path.join(VERSIONS_DIR, version_dir)
+            await asyncio.to_thread(_extract_zip, zip_path, dest_dir)
 
-            _status.update({'state': 'ready', 'progress': 100, 'version': version, 'error': None})
+            _status.update({'state': 'ready', 'progress': 100, 'version': version_dir, 'error': None})
             logger.info('update package ready: %s', version)
             return jsonify({'ok': True, 'version': version})
         except UpdateError as exc:

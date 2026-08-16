@@ -158,9 +158,13 @@ def serve_package(server, version, zip_src_dir):
     return assets
 
 
-def build_version_dir(workdir, version, with_legacy_userdata=False):
-    """构造一个版本目录：fakeapp 作为 ZaoWu.exe + _internal 资源树。"""
-    vdir = os.path.join(workdir, 'versions', version)
+def build_version_dir(workdir, version, with_legacy_userdata=False, base='versions'):
+    """构造一个版本目录：fakeapp 作为 ZaoWu.exe + _internal 资源树。
+
+    base='versions' 用于本地已装版本（current/last_good/更早版本）；
+    发布 zip 源用 base='release'，与下载解压目标 versions/<version> 隔离，
+    避免统一 v 前缀后同名覆盖发布源。"""
+    vdir = os.path.join(workdir, base, version)
     internal = os.path.join(vdir, '_internal')
     os.makedirs(os.path.join(internal, 'ZaoWu', 'dist'), exist_ok=True)
     os.makedirs(os.path.join(internal, 'plugins'), exist_ok=True)
@@ -242,7 +246,7 @@ def wait_state_ready(port, timeout=30):
 def scenario_update(workdir, port, launcher_timeout_env=None):
     print(f'--- 场景1：更新成功全流程 (port={port}) ---')
     build_version_dir(workdir, 'v1.1.0', with_legacy_userdata=True)
-    build_version_dir(workdir, 'v1.2.0')
+    build_version_dir(workdir, 'v1.2.0', base='release')  # 发布 zip 源，与解压目标 versions/v1.2.0 隔离
     build_version_dir(workdir, 'v1.0.0')  # 更早版本（清理对象）
     write_json(os.path.join(workdir, 'versions.json'),
                {'schema': 1, 'current': 'v1.1.0', 'last_good': None,
@@ -255,7 +259,7 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
     src_a.start()
     src_b.start()
     try:
-        serve_package(src_a, '1.2.0', os.path.join(workdir, 'versions', 'v1.2.0'))
+        serve_package(src_a, '1.2.0', os.path.join(workdir, 'release', 'v1.2.0'))
         # 源 B 报旧版本（验证「双源取较大者」）
         write_json(os.path.join(src_b.root_dir, 'version.json'),
                    {'version': '1.1.0', 'notes': '', 'assets': {}})
@@ -287,16 +291,16 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
 
         assert wait_health(port, 60), '新版本启动失败（启动器切换后）'
         cfg = read_json(os.path.join(workdir, 'versions.json'))
-        # 目录名取自远端 version 字段（无 v 前缀）；last_good 为旧 current（v 前缀）
-        check('切换：current=1.2.0 + last_good=v1.1.0 + pending=null',
-              cfg.get('current') == '1.2.0' and cfg.get('last_good') == 'v1.1.0' and cfg.get('pending') is None)
+        # 切换后 current 与目录名统一 v 前缀；last_good 为旧 current
+        check('切换：current=v1.2.0 + last_good=v1.1.0 + pending=null',
+              cfg.get('current') == 'v1.2.0' and cfg.get('last_good') == 'v1.1.0' and cfg.get('pending') is None)
         check('切换：last_result=ok', cfg.get('last_result') == 'ok')
         boot = last_boot_line(workdir) or ''
-        check('新版本在跑（资源根指向 1.2.0）',
-              'versions' + os.sep + '1.2.0' + os.sep + '_internal' in boot)
-        src_marker = open(os.path.join(workdir, 'versions', 'v1.2.0', '_internal', 'version_marker.txt'),
+        check('新版本在跑（资源根指向 v1.2.0）',
+              'versions' + os.sep + 'v1.2.0' + os.sep + '_internal' in boot)
+        src_marker = open(os.path.join(workdir, 'release', 'v1.2.0', '_internal', 'version_marker.txt'),
                           encoding='utf-8').read()
-        extracted_marker = open(os.path.join(workdir, 'versions', '1.2.0', '_internal', 'version_marker.txt'),
+        extracted_marker = open(os.path.join(workdir, 'versions', 'v1.2.0', '_internal', 'version_marker.txt'),
                                 encoding='utf-8').read()
         check('zip 解压正确（解压内容与发布源一致）', extracted_marker == src_marker)
 
@@ -326,7 +330,7 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
 def scenario_rollback(workdir, port):
     print(f'--- 场景2：回滚（新版本坏 exe，健康检查超时）(port={port}) ---')
     build_version_dir(workdir, 'v1.1.0')
-    build_version_dir(workdir, 'v1.2.0')
+    build_version_dir(workdir, 'v1.2.0', base='release')  # 发布 zip 源，与解压目标 versions/v1.2.0 隔离
     write_json(os.path.join(workdir, 'versions.json'),
                {'schema': 1, 'current': 'v1.1.0', 'last_good': None,
                 'pending': None, 'last_result': None})
@@ -335,7 +339,7 @@ def scenario_rollback(workdir, port):
     os.makedirs(src.root_dir)
     src.start()
     try:
-        serve_package(src, '1.2.0', os.path.join(workdir, 'versions', 'v1.2.0'))
+        serve_package(src, '1.2.0', os.path.join(workdir, 'release', 'v1.2.0'))
         sources = [f'{src.url}/version.json']
 
         extra_env = {'ZAOWU_LAUNCHER_HEALTH_TIMEOUT': '3'}
@@ -345,8 +349,8 @@ def scenario_rollback(workdir, port):
         st, _ = api(port, '/api/update/download')
         check('回滚场景：下载至 ready', wait_state_ready(port))
 
-        # 下载完成后把新版本（解压目录 versions/1.2.0）换成坏 exe 再 apply
-        shutil.copy(BROKENAPP, os.path.join(workdir, 'versions', '1.2.0', 'ZaoWu.exe'))
+        # 下载完成后把新版本（解压目录 versions/v1.2.0）换成坏 exe 再 apply
+        shutil.copy(BROKENAPP, os.path.join(workdir, 'versions', 'v1.2.0', 'ZaoWu.exe'))
 
         st, res = api(port, '/api/update/apply', method='POST', timeout=30)
         check('回滚场景 apply 响应送达', res.get('ok') is True)
