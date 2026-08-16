@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from quart import Quart, send_from_directory, request, jsonify, redirect
 from routes import explorer_bp, search_bp, log_bp, chat_bp, git_bp, terminal_bp, community_bp, plugin_bp, agent_skills_bp, update_bp
 from routes.workflow import workflow_bp
-from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir, get_server_port
+from zaowu_paths import get_project_root, get_dist_dir, get_plugins_dir, get_user_plugins_dir, get_server_port
 from version import VERSION
 
 app = Quart(__name__)
@@ -20,13 +20,15 @@ BASE_DIR = get_project_root()
 DIST_DIR = get_dist_dir()
 SETTINGS_FILE = os.path.join(BASE_DIR, 'settings.json')
 PLUGINS_DIR = get_plugins_dir()
+USER_PLUGINS_DIR = get_user_plugins_dir()
 
 API_VERSION = 'v1'
 
 # ── Plugin system bootstrap ────────────────────────────────────────
 from plugin_system import PluginManager, get_plugin_manager, set_plugin_manager
 
-_plugin_mgr = PluginManager(PLUGINS_DIR, state_dir=BASE_DIR)
+_plugin_mgr = PluginManager(PLUGINS_DIR, state_dir=BASE_DIR,
+                            user_plugins_dir=USER_PLUGINS_DIR)
 _plugin_mgr.attach_app(app)
 set_plugin_manager(_plugin_mgr)
 _logger = logging.getLogger('plugin_system')
@@ -534,6 +536,11 @@ async def _migrate_userdata():
         await asyncio.to_thread(run_migration_if_needed, BASE_DIR)
     except Exception:
         _logger.exception('userdata migration hook failed; continuing')
+    try:
+        from services.userdata_migration import rescue_user_plugins   # 每次启动都跑，见 §3.5
+        await asyncio.to_thread(rescue_user_plugins, BASE_DIR)
+    except Exception:
+        _logger.exception('user plugin rescue hook failed; continuing')
 
 
 # ── Plugin system lifecycle ────────────────────────────────────────

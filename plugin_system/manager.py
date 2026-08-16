@@ -115,8 +115,11 @@ class PluginManager:
     Construction is cheap; the heavy work happens in :meth:`load_all`.
     """
 
-    def __init__(self, plugins_dir: str, state_dir: str | None = None) -> None:
-        self.plugins_dir = os.path.abspath(plugins_dir)
+    def __init__(self, plugins_dir: str, state_dir: str | None = None,
+                 user_plugins_dir: str | None = None) -> None:
+        self.plugins_dir = os.path.abspath(plugins_dir)                    # 内置（只读）
+        self.user_plugins_dir = (os.path.abspath(user_plugins_dir)
+                                 if user_plugins_dir is not None else None)  # 用户（可写）
         # 状态文件位于部署根（state_dir），与只读的版本资源目录分离，
         # 版本切换时用户数据天然保留；缺省回退 plugins_dir 兼容独立使用。
         self._state_path = os.path.join(
@@ -159,7 +162,9 @@ class PluginManager:
         return data
 
     def _write_state(self, data: Dict[str, Any]) -> None:
-        os.makedirs(self.plugins_dir, exist_ok=True)
+        # 状态文件机制不变（state_dir=BASE_DIR），确保 state 文件所在目录
+        # 存在即可——不再依赖只读的 plugins_dir 可写。
+        os.makedirs(os.path.dirname(self._state_path), exist_ok=True)
         tmp = self._state_path + '.tmp'
         with self._lock:
             try:
@@ -202,7 +207,19 @@ class PluginManager:
             return 0, 0
         self._loaded = True
 
-        discovered = discover(self.plugins_dir)
+        # 双目录发现：先内置（只读）后用户（可写）。同名时用户目录条目覆盖
+        # 内置条目——用户可安装同名新版本覆盖内置插件，且内置目录保持只读。
+        # 开发模式下 user_plugins_dir 与 plugins_dir 路径重合，仅扫一次（去重）。
+        discovered_by_name: Dict[str, DiscoveredPlugin] = {}
+        for d in discover(self.plugins_dir):
+            discovered_by_name[d.name] = d
+        if (self.user_plugins_dir is not None
+                and self.user_plugins_dir != self.plugins_dir
+                and os.path.isdir(self.user_plugins_dir)):
+            for d in discover(self.user_plugins_dir):
+                discovered_by_name[d.name] = d  # 用户目录后扫覆盖
+        discovered = list(discovered_by_name.values())
+
         state = self._read_state()
         plugins_state = state.get('plugins', {})
 
@@ -422,7 +439,14 @@ class PluginManager:
         their plugin.  To fully remove it, delete the renamed folder.
         """
         record = self._records.get(name)
-        plugin_path = record.discovered.path if record else os.path.join(self.plugins_dir, name)
+        if record is not None:
+            plugin_path = record.discovered.path
+        elif self.user_plugins_dir is not None:
+            # 损坏/未加载插件：按「用户目录 → 内置目录」顺序定位。
+            candidate = os.path.join(self.user_plugins_dir, name)
+            plugin_path = candidate if os.path.isdir(candidate) else os.path.join(self.plugins_dir, name)
+        else:
+            plugin_path = os.path.join(self.plugins_dir, name)
 
         if record is not None:
             await self.unload(name)

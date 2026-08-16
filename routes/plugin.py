@@ -56,6 +56,16 @@ def _err(exc: PluginError, status: int = 400):
     return jsonify({'ok': False, 'error': str(exc)}), status
 
 
+def _is_within(child: str, parent: str) -> bool:
+    """Return True if ``child`` resolves to ``parent`` or a sub-path of it."""
+    try:
+        child_real = os.path.realpath(child)
+        parent_real = os.path.realpath(parent)
+    except OSError:
+        return False
+    return child_real == parent_real or child_real.startswith(parent_real + os.sep)
+
+
 # ── List / detail ───────────────────────────────────────────────────
 
 @plugin_bp.route('', methods=['GET'])
@@ -126,6 +136,25 @@ async def uninstall_plugin(name: str):
     mgr, err = _mgr()
     if err:
         return err
+
+    # 409 前置拦截：内置插件（位于只读版本目录、且不在用户目录）不可卸载，
+    # 否则 frozen 下对版本目录 rename 失败会以 500 返回，而非设计的 409。
+    # 用户目录内的插件（含同名覆盖内置者）正常卸载；开发模式两目录重合时
+    # 命中用户目录分支，卸载照常可用。
+    info = mgr.get_plugin(name)  # type: ignore[union-attr]
+    if info is not None:
+        plugin_path = info['path']
+        user_plugins_dir = (mgr.user_plugins_dir  # type: ignore[union-attr]
+                            if mgr.user_plugins_dir is not None  # type: ignore[union-attr]
+                            else mgr.plugins_dir)  # type: ignore[union-attr]
+        builtin_dir = mgr.plugins_dir  # type: ignore[union-attr]
+        if _is_within(plugin_path, user_plugins_dir):
+            pass  # 用户目录内 → 允许卸载
+        elif _is_within(plugin_path, builtin_dir):
+            return jsonify(
+                {'ok': False, 'error': '内置插件不可卸载，可禁用'}), 409
+        # 既不在用户目录也不在内置目录（异常态）→ 放行交由 manager 处理
+
     try:
         await mgr.uninstall(name)  # type: ignore[union-attr]
     except PluginNotFoundError as exc:
@@ -285,9 +314,12 @@ async def install_plugin():
         if not isinstance(plugin_name, str) or not _NAME_RE.match(plugin_name):
             return jsonify({'ok': False, 'error': 'manifest "name" must match ^[A-Za-z0-9_]+$'}), 400
 
-        # 5. Copy to plugins directory
-        plugins_dir = mgr.plugins_dir  # type: ignore[union-attr]
-        dest_dir = os.path.join(plugins_dir, plugin_name)
+        # 5. Copy to the user plugins directory (deployment root, version-agnostic).
+        user_plugins_dir = (mgr.user_plugins_dir  # type: ignore[union-attr]
+                            if mgr.user_plugins_dir is not None  # type: ignore[union-attr]
+                            else mgr.plugins_dir)  # type: ignore[union-attr]
+        os.makedirs(user_plugins_dir, exist_ok=True)
+        dest_dir = os.path.join(user_plugins_dir, plugin_name)
 
         if os.path.exists(dest_dir):
             return jsonify({'ok': False, 'error': f'plugin {plugin_name!r} already exists'}), 409
@@ -327,8 +359,12 @@ async def serve_frontend(name: str, path: str):
     if err:
         return err
 
-    plugins_dir = mgr.plugins_dir  # type: ignore[union-attr]
-    frontend_dir = os.path.join(plugins_dir, name, 'frontend')
+    # 用户插件与内置插件都可能持有 frontend——按 record 实际路径解析，
+    # 而非写死的 mgr.plugins_dir（修复后用户插件住在用户目录，拼接会失效）。
+    info = mgr.get_plugin(name)  # type: ignore[union-attr]
+    if info is None:
+        return jsonify({'ok': False, 'error': f'plugin {name!r} not found'}), 404
+    frontend_dir = os.path.join(info['path'], 'frontend')
 
     if not os.path.isdir(frontend_dir):
         return jsonify({'ok': False, 'error': 'plugin frontend directory not found'}), 404

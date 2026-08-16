@@ -95,8 +95,10 @@ def api(port, path, method='GET', timeout=15):
 
 
 def taskkill_all():
+    # 不传 text=True：中文 Windows 下 taskkill 输出为 GBK，按 utf-8 解码会抛
+    # UnicodeDecodeError（后台 reader 线程崩溃），且返回值未被使用，故按字节捕获。
     subprocess.run(['taskkill', '/IM', 'ZaoWu.exe', '/F'],
-                   capture_output=True, text=True)
+                   capture_output=True)
     time.sleep(1)
 
 
@@ -119,6 +121,27 @@ def zip_dir(src_dir, zip_path):
                         zf.write(full, os.path.relpath(full, src_dir).replace('\\', '/'))
             elif os.path.isfile(p):
                 zf.write(p, base)
+
+
+def _mk_plugin(internal, name, *, builtin=False, disabled=False, marker=None):
+    """在 internal/plugins 下创建插件目录（或 .disabled 卸载态）。
+
+    写入 manifest.json（含可选 builtin 标记）+ __init__.py，可选 marker.txt
+    用于断言「同名取新」复制的是哪一版本副本。
+    """
+    dname = name + '.disabled' if disabled else name
+    d = os.path.join(internal, 'plugins', dname)
+    os.makedirs(d, exist_ok=True)
+    manifest = {'name': name, 'version': '1.0.0', 'minApiVersion': '1.0.0'}
+    if builtin:
+        manifest['builtin'] = True
+    write_json(os.path.join(d, 'manifest.json'), manifest)
+    with open(os.path.join(d, '__init__.py'), 'w', encoding='utf-8') as f:
+        f.write('def zaowu_register_routes():\n    return []\n')
+    if marker is not None:
+        with open(os.path.join(d, 'marker.txt'), 'w', encoding='utf-8') as f:
+            f.write(marker)
+    return d
 
 
 class SourceServer(threading.Thread):
@@ -158,12 +181,19 @@ def serve_package(server, version, zip_src_dir):
     return assets
 
 
-def build_version_dir(workdir, version, with_legacy_userdata=False, base='versions'):
+def build_version_dir(workdir, version, with_legacy_userdata=False, base='versions',
+                      with_user_plugin=False, with_user_plugin_disabled=False):
     """构造一个版本目录：fakeapp 作为 ZaoWu.exe + _internal 资源树。
 
     base='versions' 用于本地已装版本（current/last_good/更早版本）；
     发布 zip 源用 base='release'，与下载解压目标 versions/<version> 隔离，
-    避免统一 v 前缀后同名覆盖发布源。"""
+    避免统一 v 前缀后同名覆盖发布源。
+
+    插件救援相关（§6.2）：
+      - 每个版本都带内置插件 sim_builtin_plugin（manifest builtin:true）；
+      - with_user_plugin / with_user_plugin_disabled 控制在该版本 _internal/plugins
+        下放置用户插件 sim_user_plugin（启用 / 卸载态），用于隔版本救援与权威性回归。
+    """
     vdir = os.path.join(workdir, base, version)
     internal = os.path.join(vdir, '_internal')
     os.makedirs(os.path.join(internal, 'ZaoWu', 'dist'), exist_ok=True)
@@ -178,6 +208,9 @@ def build_version_dir(workdir, version, with_legacy_userdata=False, base='versio
     with open(os.path.join(builtin, '__init__.py'), 'w', encoding='utf-8') as f:
         f.write(SKILL_INIT_TMPL % ('sim_builtin', 'builtin skill'))
 
+    # 每个版本都带「内置插件」（manifest 带 builtin:true），供救援「内置跳过」断言
+    _mk_plugin(internal, 'sim_builtin_plugin', builtin=True)
+
     if with_legacy_userdata:
         # 旧版遗留用户数据（迁移源）：插件状态 + 技能状态 + 用户导入技能目录
         write_json(os.path.join(internal, 'plugins', '.plugin_state.json'),
@@ -189,6 +222,12 @@ def build_version_dir(workdir, version, with_legacy_userdata=False, base='versio
         write_json(os.path.join(us, 'manifest.json'), {'name': 'user_skill', 'type': 'skill'})
         with open(os.path.join(us, '__init__.py'), 'w', encoding='utf-8') as f:
             f.write(SKILL_INIT_TMPL % ('user_skill', 'user imported skill'))
+
+    # 用户插件（启用 / 卸载态）置于版本目录的 _internal/plugins
+    if with_user_plugin:
+        _mk_plugin(internal, 'sim_user_plugin', marker=version)
+    if with_user_plugin_disabled:
+        _mk_plugin(internal, 'sim_user_plugin', disabled=True, marker=version)
 
     shutil.copy(FAKEAPP, os.path.join(vdir, 'ZaoWu.exe'))
     return vdir
@@ -243,14 +282,33 @@ def wait_state_ready(port, timeout=30):
     return False
 
 
-def scenario_update(workdir, port, launcher_timeout_env=None):
-    print(f'--- 场景1：更新成功全流程 (port={port}) ---')
-    build_version_dir(workdir, 'v1.1.0', with_legacy_userdata=True)
+def scenario_update(workdir, port, launcher_timeout_env=None, *,
+                    user_plugin_in='v1.1.0', user_plugin_disabled_in=None,
+                    pre_existing_marker=False, expect_rescued=True):
+    """更新成功全流程（场景1/4/5/6 的统一实现，按参数变体）。
+
+    user_plugin_in / user_plugin_disabled_in：用户插件 sim_user_plugin 的
+      启用副本 / 卸载态分别落在哪个版本目录（'v1.0.0' / 'v1.1.0'）。
+    pre_existing_marker：启动前预写 .userdata_migrated（场景4，回归标记拦截缺陷）。
+    expect_rescued：更新后部署根是否应出现 sim_user_plugin（场景6 为 False）。
+    """
+    print(f'--- 场景 更新成功全流程 (port={port}, expect_rescued={expect_rescued}) ---')
+    build_version_dir(workdir, 'v1.1.0', with_legacy_userdata=True,
+                      with_user_plugin=(user_plugin_in == 'v1.1.0'),
+                      with_user_plugin_disabled=(user_plugin_disabled_in == 'v1.1.0'))
     build_version_dir(workdir, 'v1.2.0', base='release')  # 发布 zip 源，与解压目标 versions/v1.2.0 隔离
-    build_version_dir(workdir, 'v1.0.0')  # 更早版本（清理对象）
+    build_version_dir(workdir, 'v1.0.0',  # 更早版本（清理对象）
+                      with_user_plugin=(user_plugin_in == 'v1.0.0'),
+                      with_user_plugin_disabled=(user_plugin_disabled_in == 'v1.0.0'))
     write_json(os.path.join(workdir, 'versions.json'),
                {'schema': 1, 'current': 'v1.1.0', 'last_good': None,
                 'pending': None, 'last_result': None})
+
+    # 场景4：老部署迁移标记已存在，模拟 v0.2.0 已首启（救援必须不受标记约束）
+    if pre_existing_marker:
+        write_json(os.path.join(workdir, '.userdata_migrated'), {'migrated_at': 'legacy'})
+    # 一次性迁移是否会在首启执行：场景4 预写标记 → 跳过（首启迁移类断言不适用）
+    fresh = not pre_existing_marker
 
     src_a = SourceServer(os.path.join(workdir, 'src_a'))
     src_b = SourceServer(os.path.join(workdir, 'src_b'))
@@ -268,10 +326,11 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
         app = start_app(workdir, 'v1.1.0', port, sources, launcher_timeout_env)
         assert wait_health(port), 'v1.1.0 启动失败'
 
-        # 首启即完成数据迁出（source=current=v1.1.0）
-        check('首启迁移：插件状态落部署根', os.path.isfile(os.path.join(workdir, '.plugin_state.json')))
-        check('首启迁移：技能状态落部署根', os.path.isfile(os.path.join(workdir, 'skills', '.skill_state.json')))
-        check('首启迁移：用户导入技能目录迁出', os.path.isdir(os.path.join(workdir, 'skills', 'user_skill')))
+        # 首启即完成数据迁出（source=current=v1.1.0）；场景4 预写标记 → 跳过这些断言
+        if fresh:
+            check('首启迁移：插件状态落部署根', os.path.isfile(os.path.join(workdir, '.plugin_state.json')))
+            check('首启迁移：技能状态落部署根', os.path.isfile(os.path.join(workdir, 'skills', '.skill_state.json')))
+            check('首启迁移：用户导入技能目录迁出', os.path.isdir(os.path.join(workdir, 'skills', 'user_skill')))
         check('首启迁移：内置技能未被复制', not os.path.isdir(os.path.join(workdir, 'skills', 'sim_builtin')))
         check('首启迁移：标记已写', os.path.isfile(os.path.join(workdir, '.userdata_migrated')))
 
@@ -305,10 +364,22 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
         check('zip 解压正确（解压内容与发布源一致）', extracted_marker == src_marker)
 
         check('运行期数据保留', open(os.path.join(workdir, 'data', 'seed.txt'), encoding='utf-8').read() == 'user data seed')
-        check('插件状态保留', read_json(os.path.join(workdir, '.plugin_state.json'))['plugins'] == {'sim_plugin': {'enabled': False}})
+        if fresh:
+            check('插件状态保留', read_json(os.path.join(workdir, '.plugin_state.json'))['plugins'] == {'sim_plugin': {'enabled': False}})
+
+        # ── 插件救援断言（§3.5 / §6.2）──
+        check('救援：内置插件 sim_builtin_plugin 未被复制到部署根',
+              not os.path.isdir(os.path.join(workdir, 'plugins', 'sim_builtin_plugin')))
+        if expect_rescued:
+            check('救援：用户插件 sim_user_plugin 迁出到部署根',
+                  os.path.isdir(os.path.join(workdir, 'plugins', 'sim_user_plugin')))
+        else:
+            check('救援：权威卸载态 → 低版本启用副本不复活',
+                  not os.path.isdir(os.path.join(workdir, 'plugins', 'sim_user_plugin')))
         st, skills = api(port, '/api/agent/skills')
         names = {s['name'] for s in skills.get('skills', [])}
-        check('技能状态与内容保留', {'sim_builtin', 'user_skill'} <= names)
+        if fresh:
+            check('技能状态与内容保留', {'sim_builtin', 'user_skill'} <= names)
 
         st, res = api(port, '/api/update/check?consume_only=1')
         check('last_result 一次性消费=ok', res.get('lastResult') == 'ok')
@@ -316,11 +387,14 @@ def scenario_update(workdir, port, launcher_timeout_env=None):
         check('last_result 消费后再取=null', res.get('lastResult') is None)
 
         # consume 'ok' 触发后台清理：更早版本进回收站，last_good 保留
-        deadline = time.time() + 20
+        deadline = time.time() + 30
         while time.time() < deadline and os.path.isdir(os.path.join(workdir, 'versions', 'v1.0.0')):
             time.sleep(0.5)
         check('清理：更早版本已删除', not os.path.isdir(os.path.join(workdir, 'versions', 'v1.0.0')))
         check('清理：last_good 保留', os.path.isdir(os.path.join(workdir, 'versions', 'v1.1.0')))
+        if expect_rescued:
+            check('救援：清理后部署根副本无损',
+                  os.path.isdir(os.path.join(workdir, 'plugins', 'sim_user_plugin')))
     finally:
         src_a.stop()
         src_b.stop()
@@ -421,14 +495,23 @@ def main():
     # 场景 1：更新成功（默认端口路径，port 经 ZAOWU_PORT env 生效）
     scenario_update(init_workdir(), free_port())
 
+    # 场景 5：隔版本安装（用户插件在更早的 v1.0.0，回归救援窗口缺口）
+    scenario_update(init_workdir(), free_port(), user_plugin_in='v1.0.0')
+
+    # 场景 6：卸载权威性（低版本启用 + 高版本 P.disabled，回归跨版本复活缺陷）
+    scenario_update(init_workdir(), free_port(),
+                    user_plugin_in='v1.0.0', user_plugin_disabled_in='v1.1.0',
+                    expect_rescued=False)
+
     # 场景 2：回滚
     scenario_rollback(init_workdir(), free_port())
 
     # 场景 3：bootstrap
     scenario_bootstrap(init_workdir(), free_port(), [])
 
-    # 场景 4：非默认端口变体（另一随机端口再跑一遍全流程）
-    scenario_update(init_workdir(), free_port())
+    # 场景 4：老部署标记已存在（回归标记拦截缺陷）——非默认端口再跑一遍
+    scenario_update(init_workdir(), free_port(),
+                    user_plugin_in='v1.1.0', pre_existing_marker=True)
 
     taskkill_all()
     print(f'\n端到端模拟结果: PASS={PASS} FAIL={FAIL}')

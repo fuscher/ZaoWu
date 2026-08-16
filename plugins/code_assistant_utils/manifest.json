@@ -7,6 +7,7 @@
   },
   "author": "ZaoWu Plugin Team",
   "minApiVersion": "1.0.0",
+  "builtin": true,
   "enabled": true,
   "config": {
     "default_timezone": "local",

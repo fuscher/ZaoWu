@@ -78,6 +78,15 @@ def get_plugins_dir() -> str:
     return os.path.join(get_resource_root(), 'plugins')
 
 
+def get_user_plugins_dir() -> str:
+    """用户安装插件的工作区（部署根，版本无关）。
+
+    与技能同模式：frozen 下位于部署根而非 _internal，版本切换时天然保留。
+    开发模式下与 get_plugins_dir() 重合（资源根 = 仓库根），由调用方去重。
+    """
+    return os.path.join(get_project_root(), 'plugins')
+
+
 def get_agent_modules_dir() -> str:
     """Return the directory that contains agent module packages."""
     return os.path.join(get_resource_root(), 'agent_modules')

@@ -366,5 +366,104 @@ async def main():
     print('=' * 60)
 
 
+def _mk_plugin_dir(base_dir, name, *, enabled=True):
+    """Create a minimal valid plugin directory under ``base_dir``."""
+    d = os.path.join(base_dir, name)
+    os.makedirs(d)
+    with open(os.path.join(d, 'manifest.json'), 'w', encoding='utf-8') as f:
+        json.dump({
+            'name': name,
+            'version': '1.0.0',
+            'description': {'en': name},
+            'enabled': enabled,
+            'config': {},
+        }, f)
+    with open(os.path.join(d, '__init__.py'), 'w', encoding='utf-8') as f:
+        f.write(
+            "from plugin_system.api import plugin_api\n"
+            "def zaowu_plugin_loaded():\n"
+            "    plugin_api.logger.info('loaded')\n"
+            "def zaowu_register_routes():\n"
+            "    return []\n"
+        )
+    return d
+
+
+async def test_dual_dir_discovery_merge():
+    """双目录发现：先内置后用户，同名用户优先。"""
+    from plugin_system.manager import PluginManager, set_plugin_manager
+
+    builtin_dir = tempfile.mkdtemp(prefix='zaowu_builtin_')
+    user_dir = tempfile.mkdtemp(prefix='zaowu_user_')
+    try:
+        _mk_plugin_dir(builtin_dir, 'A')        # 内置 A
+        _mk_plugin_dir(user_dir, 'A')           # 用户 A（同名覆盖）
+        _mk_plugin_dir(user_dir, 'B')           # 仅用户 B
+
+        mgr = PluginManager(builtin_dir, user_plugins_dir=user_dir)
+        set_plugin_manager(mgr)
+        loaded, broken = await mgr.load_all()
+        assert loaded == 2, f'expected 2 loaded, got {loaded}'
+        info_a = mgr.get_plugin('A')
+        assert info_a is not None
+        assert os.path.realpath(info_a['path']) == os.path.realpath(os.path.join(user_dir, 'A'))
+        info_b = mgr.get_plugin('B')
+        assert os.path.realpath(info_b['path']) == os.path.realpath(os.path.join(user_dir, 'B'))
+    finally:
+        shutil.rmtree(builtin_dir, ignore_errors=True)
+        shutil.rmtree(user_dir, ignore_errors=True)
+
+
+async def test_same_path_not_loaded_twice():
+    """user_plugins_dir 与 plugins_dir 同路径（开发模式）时只扫一次，不重复加载。"""
+    from plugin_system.manager import PluginManager, set_plugin_manager
+
+    shared = tempfile.mkdtemp(prefix='zaowu_shared_')
+    try:
+        _mk_plugin_dir(shared, 'A')
+        mgr = PluginManager(shared, user_plugins_dir=shared)
+        set_plugin_manager(mgr)
+        loaded, broken = await mgr.load_all()
+        assert loaded == 1, f'expected 1 loaded (deduped), got {loaded}'
+        assert mgr.get_plugin('A') is not None
+    finally:
+        shutil.rmtree(shared, ignore_errors=True)
+
+
+async def test_uninstall_locates_user_dir_preferred():
+    """uninstall 对未加载插件按「用户 → 内置」顺序定位（命中用户目录）。"""
+    from plugin_system.manager import PluginManager, set_plugin_manager
+
+    builtin_dir = tempfile.mkdtemp(prefix='zaowu_builtin_')
+    user_dir = tempfile.mkdtemp(prefix='zaowu_user_')
+    try:
+        _mk_plugin_dir(user_dir, 'U')  # 仅在用户目录（不 load，模拟损坏/未加载）
+        mgr = PluginManager(builtin_dir, user_plugins_dir=user_dir)
+        set_plugin_manager(mgr)
+        await mgr.uninstall('U')
+        assert os.path.isdir(os.path.join(user_dir, 'U.disabled'))
+        assert not os.path.isdir(os.path.join(user_dir, 'U'))
+    finally:
+        shutil.rmtree(builtin_dir, ignore_errors=True)
+        shutil.rmtree(user_dir, ignore_errors=True)
+
+
+async def test_uninstall_locates_unloaded_plugin_in_builtin_dir():
+    """uninstall 用户目录无该插件时回退到内置目录定位。"""
+    from plugin_system.manager import PluginManager, set_plugin_manager
+
+    builtin_dir = tempfile.mkdtemp(prefix='zaowu_builtin_')
+    user_dir = tempfile.mkdtemp(prefix='zaowu_user_')
+    try:
+        _mk_plugin_dir(builtin_dir, 'Y')  # 仅在内置目录
+        mgr = PluginManager(builtin_dir, user_plugins_dir=user_dir)
+        set_plugin_manager(mgr)
+        await mgr.uninstall('Y')
+        assert os.path.isdir(os.path.join(builtin_dir, 'Y.disabled'))
+    finally:
+        shutil.rmtree(builtin_dir, ignore_errors=True)
+        shutil.rmtree(user_dir, ignore_errors=True)
+
+
 if __name__ == '__main__':
     asyncio.run(main())

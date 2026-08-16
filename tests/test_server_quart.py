@@ -398,3 +398,61 @@ class TestControlledShutdown:
             await asyncio.wait_for(server_quart._shutdown_event.wait(), timeout=1)
 
         asyncio.run(scenario())
+
+
+# ── 用户插件目录装配（§3.3 / §3.4）──────────────────────────────────
+
+
+def test_plugin_manager_wired_with_user_plugins_dir():
+    """PluginManager 装配了 user_plugins_dir = 部署根/plugins。"""
+    import server_quart
+
+    assert server_quart.USER_PLUGINS_DIR == os.path.join(server_quart.BASE_DIR, 'plugins')
+    assert server_quart._plugin_mgr.user_plugins_dir == server_quart.USER_PLUGINS_DIR
+
+
+def test_install_creates_user_plugins_dir(tmp_path):
+    """安装路由在 copytree 前确保用户插件目录存在（全新部署不再 FileNotFoundError）。"""
+    import server_quart
+    from plugin_system import set_plugin_manager
+
+    user_dir = tmp_path / 'user_plugins'
+    assert not user_dir.exists()
+
+    class FakeMgr:
+        plugins_dir = str(tmp_path / 'builtin_plugins')
+        user_plugins_dir = str(user_dir)
+
+        def get_plugin(self, name):
+            return None
+
+        async def install_from_path(self, path):
+            FakeMgr.called_path = path
+            return None
+
+    FakeMgr.called_path = None
+    set_plugin_manager(FakeMgr())
+
+    import io
+    import zipfile
+    from werkzeug.datastructures import FileStorage
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        zf.writestr('myplug/manifest.json',
+                    json.dumps({'name': 'myplug', 'version': '1.0.0', 'minApiVersion': '1.0.0'}))
+        zf.writestr('myplug/__init__.py', 'x = 1\n')
+    buf.seek(0)
+    upload = FileStorage(stream=buf, filename='myplug.zip')
+
+    async def run():
+        client = server_quart.app.test_client()
+        return await client.post(
+            '/api/plugins/install',
+            files={'file': upload},
+        )
+
+    resp = asyncio.run(run())
+    assert resp.status_code == 200, resp.get_json()
+    assert user_dir.is_dir(), '安装路由未创建用户插件目录'
+    assert (user_dir / 'myplug').is_dir()
