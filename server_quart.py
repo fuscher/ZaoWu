@@ -50,7 +50,7 @@ app.register_blueprint(update_bp, url_prefix='/api/update')
 
 DEFAULTS = {
     'enabled': True,
-    'effect': 'linewaves',
+    'effect': 'silk',
     'persist': False,
     'language': 'zh-CN',
     'theme': 'dark',
