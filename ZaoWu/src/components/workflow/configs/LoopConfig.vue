@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
 import type { WorkflowNode, LoopConfig as LoopConfigType } from '@/types/workflow'
+import NumberInput from '@/components/NumberInput.vue'
 
 const props = defineProps<{
   node: WorkflowNode
@@ -25,12 +26,12 @@ function update(patch: Partial<LoopConfigType>) {
 <template>
   <div class="config-form">
     <label class="field-label">{{ t('workflow.config.maxIterations') }}</label>
-    <input
-      :value="cfg.maxIterations"
-      class="field-input"
-      type="number"
-      min="1"
-      @input="update({ maxIterations: Number(($event.target as HTMLInputElement).value) })"
+    <NumberInput
+      :model-value="cfg.maxIterations"
+      :min="1"
+      variant="input"
+      block
+      @update:model-value="v => { if (v !== undefined) update({ maxIterations: v }) }"
     />
 
     <p class="hint">{{ t('workflow.config.loopCanvasHint') }}</p>

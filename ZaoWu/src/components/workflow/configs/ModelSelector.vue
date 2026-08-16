@@ -3,6 +3,7 @@ import { computed, ref, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
 import type { ModelSlot } from '@/types/workflow'
+import NumberInput from '@/components/NumberInput.vue'
 
 const props = withDefaults(defineProps<{
   modelValue: ModelSlot
@@ -92,17 +93,8 @@ const effectiveMaxTokens = computed(() =>
   props.modelValue.maxTokens ?? suggestedMaxTokens.value,
 )
 
-function onMaxTokensInput(e: Event) {
-  const raw = (e.target as HTMLInputElement).value
-  if (raw === '') {
-    // 清空 → 回到自动模式
-    emit('update:modelValue', { ...props.modelValue, maxTokens: undefined })
-    return
-  }
-  const val = Number(raw)
-  if (!Number.isNaN(val)) {
-    emit('update:modelValue', { ...props.modelValue, maxTokens: val })
-  }
+function onMaxTokensInput(v: number | undefined) {
+  emit('update:modelValue', { ...props.modelValue, maxTokens: v })
 }
 
 function resetMaxTokens() {
@@ -111,11 +103,9 @@ function resetMaxTokens() {
 
 // ── Temperature ───────────────────────────────────────────
 
-function onTemperatureInput(e: Event) {
-  const val = Number((e.target as HTMLInputElement).value)
-  if (!Number.isNaN(val)) {
-    emit('update:modelValue', { ...props.modelValue, temperature: val })
-  }
+function onTemperatureInput(v: number | undefined) {
+  if (v === undefined) return
+  emit('update:modelValue', { ...props.modelValue, temperature: v })
 }
 </script>
 
@@ -159,14 +149,14 @@ function onTemperatureInput(e: Event) {
       <!-- Temperature -->
       <template v-if="showTemperature">
         <label class="field-label">{{ t('workflow.config.temperature') }}</label>
-        <input
-          :value="modelValue.temperature ?? 0.7"
-          class="field-input"
-          type="number"
-          step="0.1"
-          min="0"
-          max="2"
-          @input="onTemperatureInput"
+        <NumberInput
+          :model-value="modelValue.temperature ?? 0.7"
+          :min="0"
+          :max="2"
+          :step="0.1"
+          variant="input"
+          block
+          @update:model-value="onTemperatureInput"
         />
       </template>
 
@@ -183,13 +173,15 @@ function onTemperatureInput(e: Event) {
             {{ t('workflow.config.resetAuto') }}
           </button>
         </div>
-        <input
-          :value="effectiveMaxTokens"
+        <NumberInput
+          :model-value="effectiveMaxTokens"
           :placeholder="String(suggestedMaxTokens)"
-          :class="['field-input', { 'auto-mode': isMaxTokensAuto }]"
-          type="number"
-          min="1"
-          @input="onMaxTokensInput"
+          :min="1"
+          variant="input"
+          block
+          allow-empty
+          :muted="isMaxTokensAuto"
+          @update:model-value="onMaxTokensInput"
         />
         <p v-if="isMaxTokensAuto" class="hint">
           {{ t('workflow.config.maxTokensAutoHint', { suggested: suggestedMaxTokens }) }}
@@ -231,11 +223,6 @@ function onTemperatureInput(e: Event) {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   font-size: 12px;
-}
-
-.field-input.auto-mode {
-  color: var(--text-tertiary);
-  font-style: italic;
 }
 
 .hint {

@@ -3,18 +3,24 @@ import { ref, computed, watch } from 'vue'
 import { Minus, Plus } from '@lucide/vue'
 
 const props = withDefaults(defineProps<{
-  modelValue: number
+  modelValue?: number
   min?: number
   max?: number
   step?: number
+  snap?: boolean
+  block?: boolean
+  muted?: boolean
+  allowEmpty?: boolean
   unit?: string
   placeholder?: string
   variant?: 'stepper' | 'input'
   disabled?: boolean
 }>(), {
-  min: 1,
-  max: 100,
   step: 1,
+  snap: true,
+  block: false,
+  muted: false,
+  allowEmpty: false,
   unit: '',
   placeholder: '',
   variant: 'stepper',
@@ -22,29 +28,39 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  'update:modelValue': [value: number]
-  change: [value: number]
+  'update:modelValue': [value: number | undefined]
+  change: [value: number | undefined]
+  blur: []
 }>()
 
-const rawInput = ref(String(props.modelValue))
+const rawInput = ref(props.modelValue === undefined || props.modelValue === null ? '' : String(props.modelValue))
 const isFocused = ref(false)
 const hasError = ref(false)
 
-function clampToStep(value: number): number {
-  const stepped = Math.round(value / props.step) * props.step
-  return Math.max(props.min, Math.min(props.max, stepped))
+function clampToStep(value: number | undefined): number | undefined {
+  if (value === undefined || value === null || !isFinite(value)) return value
+  let v = value
+  if (props.snap && props.step > 0 && isFinite(props.step)) {
+    v = Math.round(value / props.step) * props.step
+  }
+  if (props.min !== undefined) v = Math.max(props.min, v)
+  if (props.max !== undefined) v = Math.min(props.max, v)
+  return v
 }
 
-const displayValue = computed(() => clampToStep(props.modelValue))
+const displayValue = computed(() => {
+  const v = clampToStep(props.modelValue)
+  return v === undefined || v === null ? '' : v
+})
 
 watch(() => props.modelValue, (val) => {
   if (!isFocused.value) {
-    rawInput.value = String(clampToStep(val))
+    rawInput.value = val === undefined || val === null ? '' : String(clampToStep(val))
     hasError.value = false
   }
 })
 
-function commitValue(value: number) {
+function commitValue(value: number | undefined) {
   const clamped = clampToStep(value)
   emit('update:modelValue', clamped)
   emit('change', clamped)
@@ -52,19 +68,30 @@ function commitValue(value: number) {
 
 function handleDecrease() {
   if (props.disabled) return
-  commitValue(props.modelValue - props.step)
+  const base = props.modelValue ?? props.min ?? 0
+  commitValue(base - props.step)
 }
 
 function handleIncrease() {
   if (props.disabled) return
-  commitValue(props.modelValue + props.step)
+  const base = props.modelValue ?? props.min ?? 0
+  commitValue(base + props.step)
 }
 
 function handleInput(event: Event) {
   const target = event.target as HTMLInputElement
   rawInput.value = target.value
+  if (!target.value.trim()) {
+    if (props.allowEmpty) {
+      hasError.value = false
+      commitValue(undefined)
+    } else {
+      hasError.value = true
+    }
+    return
+  }
   const parsed = Number(target.value)
-  if (!target.value.trim() || isNaN(parsed) || !isFinite(parsed)) {
+  if (isNaN(parsed) || !isFinite(parsed)) {
     hasError.value = true
     return
   }
@@ -74,9 +101,17 @@ function handleInput(event: Event) {
 
 function handleBlur() {
   isFocused.value = false
-  const parsed = Number(rawInput.value)
-  if (hasError.value || rawInput.value.trim() === '' || isNaN(parsed) || !isFinite(parsed)) {
-    rawInput.value = String(displayValue.value)
+  const raw = rawInput.value
+  if (raw.trim() === '' && props.allowEmpty) {
+    hasError.value = false
+    commitValue(undefined)
+    return
+  }
+  const parsed = Number(raw)
+  if (hasError.value || raw.trim() === '' || isNaN(parsed) || !isFinite(parsed)) {
+    rawInput.value = props.modelValue === undefined || props.modelValue === null
+      ? ''
+      : String(clampToStep(props.modelValue))
     hasError.value = false
   } else {
     const clamped = clampToStep(parsed)
@@ -85,9 +120,14 @@ function handleBlur() {
   }
 }
 
+function onBlur() {
+  handleBlur()
+  emit('blur')
+}
+
 function handleFocus() {
   isFocused.value = true
-  rawInput.value = String(props.modelValue)
+  rawInput.value = props.modelValue === undefined || props.modelValue === null ? '' : String(props.modelValue)
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -105,16 +145,16 @@ function handleKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="number-input" :class="[`variant-${variant}`, { disabled, focused: isFocused, error: hasError }]">
+  <div class="number-input" :class="[`variant-${variant}`, { disabled, focused: isFocused, error: hasError, block }]">
     <template v-if="variant === 'stepper'">
-      <button class="stepper-btn decrease" :disabled="disabled || modelValue <= min" @click="handleDecrease">
+      <button class="stepper-btn decrease" :disabled="disabled || (min != null && modelValue != null && modelValue <= min)" @click="handleDecrease">
         <Minus :size="12" />
       </button>
       <div class="stepper-display">
         <span class="stepper-value">{{ displayValue }}</span>
         <span v-if="unit" class="stepper-unit">{{ unit }}</span>
       </div>
-      <button class="stepper-btn increase" :disabled="disabled || modelValue >= max" @click="handleIncrease">
+      <button class="stepper-btn increase" :disabled="disabled || (max != null && modelValue != null && modelValue >= max)" @click="handleIncrease">
         <Plus :size="12" />
       </button>
     </template>
@@ -127,8 +167,9 @@ function handleKeydown(event: KeyboardEvent) {
         :placeholder="placeholder"
         :disabled="disabled"
         class="plain-input"
+        :class="{ muted }"
         @input="handleInput"
-        @blur="handleBlur"
+        @blur="onBlur"
         @focus="handleFocus"
         @keydown="handleKeydown"
       />
@@ -146,6 +187,11 @@ function handleKeydown(event: KeyboardEvent) {
   border: 1px solid var(--border-glass);
   background: var(--bg-glass);
   transition: all var(--transition);
+}
+
+.number-input.block {
+  display: flex;
+  width: 100%;
 }
 
 .number-input:hover:not(.disabled) {
@@ -241,6 +287,11 @@ function handleKeydown(event: KeyboardEvent) {
   outline: none;
   text-align: right;
   min-width: 60px;
+}
+
+.plain-input.muted {
+  color: var(--text-tertiary);
+  font-style: italic;
 }
 
 .plain-input::placeholder {

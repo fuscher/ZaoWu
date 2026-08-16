@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n'
 import { apiPath } from '@/utils/api'
 import type { WorkflowNode, ModelSlot, PromptSlot, SkillSlot } from '@/types/workflow'
 import ModelSelector from './ModelSelector.vue'
+import NumberInput from '@/components/NumberInput.vue'
 
 const props = defineProps<{
   node: WorkflowNode
@@ -35,12 +36,12 @@ const prompt = computed<PromptSlot>({
 
 const maxToolIterations = computed({
   get: () => (props.node.config.maxToolIterations as number) ?? 10,
-  set: (v) => workflowStore.updateNodeConfig(props.node.id, { maxToolIterations: v }),
+  set: (v: number | undefined) => workflowStore.updateNodeConfig(props.node.id, { maxToolIterations: v }),
 })
 
 const toolLoopThreshold = computed({
   get: () => (props.node.config.toolLoopThreshold as number) ?? 3,
-  set: (v) => workflowStore.updateNodeConfig(props.node.id, { toolLoopThreshold: v }),
+  set: (v: number | undefined) => workflowStore.updateNodeConfig(props.node.id, { toolLoopThreshold: v }),
 })
 
 // Skill management
@@ -152,10 +153,10 @@ function updatePrompt(patch: Partial<PromptSlot>) {
     <h4 class="section-title">{{ t('workflow.config.toolCall') }}</h4>
 
     <label class="field-label">{{ t('workflow.config.maxToolIterations') }}</label>
-    <input v-model.number="maxToolIterations" class="field-input" type="number" min="1" max="100" />
+    <NumberInput v-model="maxToolIterations" :min="1" :max="100" variant="input" block />
 
     <label class="field-label">{{ t('workflow.config.toolLoopThreshold') }}</label>
-    <input v-model.number="toolLoopThreshold" class="field-input" type="number" min="2" max="20" />
+    <NumberInput v-model="toolLoopThreshold" :min="2" :max="20" variant="input" block />
   </div>
 </template>
 

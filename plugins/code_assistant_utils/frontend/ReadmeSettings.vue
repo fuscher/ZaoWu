@@ -32,12 +32,12 @@
 
     <div class="setting-row">
       <label class="setting-label">{{ t('refresh_interval') }}</label>
-      <input
-        v-model.number="config.readme_refresh_seconds"
-        type="number"
-        min="5"
-        class="setting-input narrow"
-        @change="save"
+      <NumberInput
+        :model-value="config.readme_refresh_seconds"
+        :min="5"
+        variant="input"
+        @update:model-value="v => { if (v !== undefined) config.readme_refresh_seconds = v }"
+        @blur="save"
       />
       <span class="setting-unit">{{ t('seconds') }}</span>
     </div>
@@ -49,6 +49,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { usePluginsStore } from '@/stores/plugins'
+import NumberInput from '@/components/NumberInput.vue'
 
 const pluginsStore = usePluginsStore()
 
@@ -157,10 +158,6 @@ function pluginConfig(): Record<string, any> {
   min-width: 180px;
   outline: none;
   transition: border-color 0.2s var(--transition);
-}
-
-.setting-input.narrow {
-  min-width: 80px;
 }
 
 .setting-input:focus,

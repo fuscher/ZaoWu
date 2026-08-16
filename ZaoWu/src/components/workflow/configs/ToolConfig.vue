@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useI18n } from '@/i18n'
 import type { WorkflowNode, ToolDef } from '@/types/workflow'
+import NumberInput from '@/components/NumberInput.vue'
 
 const props = defineProps<{
   node: WorkflowNode
@@ -48,12 +49,6 @@ function setArg(key: string, value: unknown) {
     next[key] = value
   }
   workflowStore.updateNodeConfig(props.node.id, { toolArgs: next })
-}
-
-function parseNumberInput(value: string): number | undefined {
-  if (value === '' || value === undefined || value === null) return undefined
-  const num = Number(value)
-  return Number.isNaN(num) ? undefined : num
 }
 
 function setArgJson(key: string, raw: string) {
@@ -139,25 +134,27 @@ function fieldType(prop: { type: string; enum?: string[] }): string {
         </select>
 
         <!-- integer -->
-        <input
+        <NumberInput
           v-else-if="prop.type === 'integer'"
-          class="field-input"
-          type="number"
-          step="1"
-          :value="getArg(key) ?? ''"
+          :model-value="typeof getArg(key) === 'number' ? (getArg(key) as number) : undefined"
           :placeholder="prop.default != null ? String(prop.default) : key"
-          @input="setArg(key, parseNumberInput(($event.target as HTMLInputElement).value))"
+          :step="1"
+          variant="input"
+          block
+          allow-empty
+          @update:model-value="setArg(key, $event)"
         />
 
         <!-- number -->
-        <input
+        <NumberInput
           v-else-if="prop.type === 'number'"
-          class="field-input"
-          type="number"
-          step="any"
-          :value="getArg(key) ?? ''"
+          :model-value="typeof getArg(key) === 'number' ? (getArg(key) as number) : undefined"
           :placeholder="prop.default != null ? String(prop.default) : key"
-          @input="setArg(key, parseNumberInput(($event.target as HTMLInputElement).value))"
+          :snap="false"
+          variant="input"
+          block
+          allow-empty
+          @update:model-value="setArg(key, $event)"
         />
 
         <!-- boolean -->
