@@ -173,6 +173,7 @@ export interface BackgroundSettings {
   communityDefaultRole: string
   communityFileSizeLimitKB: number
   communityInactiveTimeoutMinutes: number
+  autoCheckUpdates: boolean
 }
 
 export interface Project {

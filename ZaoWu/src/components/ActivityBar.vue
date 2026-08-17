@@ -10,7 +10,7 @@ import { usePluginsStore, type PluginAction } from '@/stores/plugins'
 import { pluginEventBus } from '@/plugin-system/events'
 import type { Theme, ViewType } from '@/types'
 
-defineProps<{ activeView: ViewType; theme: Theme }>()
+const props = defineProps<{ activeView: ViewType; theme: Theme; updateAvailable?: boolean }>()
 const emit = defineEmits<{ select: [view: ViewType]; toggleTheme: [] }>()
 const { t, locale } = useI18n()
 const pluginsStore = usePluginsStore()
@@ -78,6 +78,7 @@ function onItemClick(item: any) {
         @click="onItemClick(item)"
       >
         <component :is="lucideIconMap[item.icon] ?? Puzzle" :size="22" />
+        <span v-if="item.id === 'settings' && props.updateAvailable" class="update-dot" />
       </button>
     </div>
     <div class="bottom">
@@ -127,6 +128,7 @@ function onItemClick(item: any) {
   align-items: center;
   justify-content: center;
   transition: all var(--transition);
+  position: relative;
 }
 
 .icon-btn:hover {
@@ -137,5 +139,16 @@ function onItemClick(item: any) {
 .icon-btn.active {
   background: var(--accent-muted);
   color: var(--accent);
+}
+
+.update-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  background: #ef4444;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg-secondary);
 }
 </style>

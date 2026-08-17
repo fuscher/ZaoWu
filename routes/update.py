@@ -65,6 +65,10 @@ _MAX_SEGMENTS_RE = re.compile(r'^[vV]?\d+(\.\d+){0,2}$')  # 目录名白名单�
 # 重复点击快速失败（409），不排队。
 _download_lock = asyncio.Lock()
 
+# versions.json 写锁：_consume_last_result 与 apply 写同一文件，
+# 串行化防并发读改写覆盖。
+_config_lock = asyncio.Lock()
+
 # 内存态下载状态（不落盘，勿增实体）
 _status: Dict[str, Any] = {'state': 'idle', 'progress': 0, 'version': None, 'error': None}
 
@@ -158,18 +162,19 @@ async def _check_latest() -> Dict[str, Any]:
     }
 
 
-def _consume_last_result() -> Optional[str]:
+async def _consume_last_result() -> Optional[str]:
     """一次性消费 last_result：读后置 null 写回；缺失/损坏返回 None。"""
-    cfg = read_versions_config(BASE_DIR)
-    if not cfg or cfg.get('last_result') is None:
-        return None
-    result = cfg['last_result']
-    cfg['last_result'] = None
-    try:
-        write_versions_config(cfg, BASE_DIR)
-    except OSError as exc:
-        logger.warning('failed to consume last_result: %s', exc)
-    return result
+    async with _config_lock:
+        cfg = read_versions_config(BASE_DIR)
+        if not cfg or cfg.get('last_result') is None:
+            return None
+        result = cfg['last_result']
+        cfg['last_result'] = None
+        try:
+            write_versions_config(cfg, BASE_DIR)
+        except OSError as exc:
+            logger.warning('failed to consume last_result: %s', exc)
+        return result
 
 
 async def _cleanup_old_versions() -> None:
@@ -271,6 +276,11 @@ def _validate_zip(zf: zipfile.ZipFile) -> None:
         if '.skill_state.json' in lower or '.plugin_state.json' in lower:
             raise UpdateError(f'bundled state file rejected: {name!r}')
         if len(segments) >= 3 and segments[0] == '_internal' and segments[1] == 'plugins':
+            # plugins/ 根下的散文件（如 PLUGIN_DEV_GUIDE.md，路径恰好 3 段）
+            # 不是插件目录，不参与"未知插件目录"校验；目录条目已在上方
+            # lower.endswith('/') 分支跳过，此处只需按段数区分。
+            if len(segments) == 3:
+                continue
             plugin_dir = segments[2]
             if plugin_dir not in known_plugins:
                 raise UpdateError(f'unknown plugin directory rejected: {plugin_dir!r}')
@@ -302,7 +312,7 @@ def _extract_zip(zip_path: str, dest_dir: str) -> None:
 @update_bp.route('/check', methods=['GET'])
 async def check():
     consume_only = request.args.get('consume_only') == '1'
-    last_result = _consume_last_result()
+    last_result = await _consume_last_result()
     if last_result == 'ok':
         # 切换成功的后台清理（fire-and-forget，任务内部整体容错）
         asyncio.create_task(_cleanup_old_versions())
@@ -358,8 +368,24 @@ async def download():
                 shutil.rmtree(STAGING_DIR)
             os.makedirs(STAGING_DIR, exist_ok=True)
 
+            # 清理之前下载但未切换的版本目录（防磁盘累积，与 _cleanup_old_versions 对称）
+            target_vdir = _version_dir(version)
+            if os.path.isdir(VERSIONS_DIR):
+                cfg = read_versions_config(BASE_DIR)
+                keep = {cfg.get('current'), cfg.get('last_good'), '.staging', target_vdir}
+                for entry in os.scandir(VERSIONS_DIR):
+                    if entry.name in keep or entry.name.startswith('.'):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                        logger.info('cleaned up unused version dir: %s', entry.name)
+
             zip_path = os.path.join(STAGING_DIR, f'ZaoWu-{version}-win64.zip')
-            await _download_with_fallback(urls, zip_path, int(size) if size else None)
+            try:
+                expected_size = int(size) if size else None
+            except (ValueError, TypeError):
+                expected_size = None
+            await _download_with_fallback(urls, zip_path, expected_size)
 
             actual = await asyncio.to_thread(_sha256_file, zip_path)
             if actual != sha256_expected:
@@ -373,9 +399,13 @@ async def download():
             logger.info('update package ready: %s', version)
             return jsonify({'ok': True, 'version': version})
         except UpdateError as exc:
+            if os.path.exists(STAGING_DIR):
+                shutil.rmtree(STAGING_DIR, ignore_errors=True)
             _status.update({'state': 'idle', 'version': None, 'error': str(exc)})
             return jsonify({'ok': False, 'error': str(exc)}), 400
         except Exception:
+            if os.path.exists(STAGING_DIR):
+                shutil.rmtree(STAGING_DIR, ignore_errors=True)
             logger.exception('download failed')
             _status.update({'state': 'idle', 'version': None, 'error': 'internal_error'})
             return jsonify({'ok': False, 'error': 'internal_error'}), 500
@@ -389,21 +419,46 @@ async def apply():
     if not _is_frozen():
         return jsonify({'ok': False, 'error': 'unsupported'}), 400
 
-    cfg = read_versions_config(BASE_DIR)
-    if cfg.get('pending'):
-        # 幂等：已发起过切换（防重复点击）
-        return jsonify({'ok': True})
+    from server_quart import _shutdown_event
 
-    version = _status.get('version')
-    if _status.get('state') != 'ready' or not version:
-        return jsonify({'ok': False, 'error': 'not_ready'}), 400
-    if not os.path.isdir(os.path.join(VERSIONS_DIR, version)):
-        return jsonify({'ok': False, 'error': 'package_missing'}), 400
+    async with _config_lock:
+        cfg = read_versions_config(BASE_DIR)
+        if cfg.get('pending'):
+            pending_dir = os.path.join(VERSIONS_DIR, cfg['pending'])
+            if not os.path.isdir(pending_dir):
+                # 版本目录不存在：上次切换失败留下残留 pending，清除后允许重试
+                logger.warning('stale pending %r cleared (version dir missing)', cfg['pending'])
+                cfg['pending'] = None
+                write_versions_config(cfg, BASE_DIR)
+            elif _shutdown_event.is_set():
+                # shutdown 已触发 → 上次 apply 成功，切换确在进行中，幂等返回
+                return jsonify({'ok': True})
+            else:
+                # pending + 目录存在 + shutdown 未触发 → Popen/启动器失败残留，重新 spawn
+                # 若 _status 有更新版本（用户重新下载了），升级 pending
+                new_ver = _status.get('version')
+                if (new_ver and new_ver != cfg['pending']
+                        and _status.get('state') == 'ready'
+                        and os.path.isdir(os.path.join(VERSIONS_DIR, new_ver))):
+                    logger.warning('upgrading pending %r → %r', cfg['pending'], new_ver)
+                    cfg['pending'] = new_ver
+                    write_versions_config(cfg, BASE_DIR)
+                else:
+                    logger.warning('re-spawning launcher for pending %r (shutdown not set)', cfg['pending'])
+            # stale 清除后 fall-through 到下方正常流程；re-spawn 也 fall-through
 
-    # 原子写 pending（flush + fsync 落盘：随后进程 os._exit，无清理机会）
-    cfg['pending'] = version
-    write_versions_config(cfg, BASE_DIR)
+        # 正常首次 apply 路径：确定版本、写 pending
+        if not cfg.get('pending'):
+            version = _status.get('version')
+            if _status.get('state') != 'ready' or not version:
+                return jsonify({'ok': False, 'error': 'not_ready'}), 400
+            if not os.path.isdir(os.path.join(VERSIONS_DIR, version)):
+                return jsonify({'ok': False, 'error': 'package_missing'}), 400
+            cfg['pending'] = version
+            write_versions_config(cfg, BASE_DIR)
 
+    # spawn 启动器 + 触发退出（锁外执行，避免持锁启动子进程）
+    pending_version = cfg.get('pending')
     launcher_path = os.path.join(BASE_DIR, LAUNCHER_NAME)
     if not os.path.isfile(launcher_path):
         return jsonify({'ok': False, 'error': 'launcher_missing'}), 500
@@ -416,7 +471,6 @@ async def apply():
     # 触发受控退出（函数内导入避免 server_quart ↔ routes.update 循环导入；
     # apply 是同一事件循环内的 async handler，set() 线程安全）。
     # Hypercorn 优雅关闭不取消在途请求，本响应必达前端。
-    from server_quart import _shutdown_event
     _shutdown_event.set()
     return jsonify({'ok': True})
 

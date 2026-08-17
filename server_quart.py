@@ -61,6 +61,7 @@ DEFAULTS = {
     'communityDefaultRole': 'collaborator',
     'communityFileSizeLimitKB': 512,
     'communityInactiveTimeoutMinutes': 120,
+    'autoCheckUpdates': False,
 }
 
 

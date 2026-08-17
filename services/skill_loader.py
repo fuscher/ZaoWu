@@ -60,6 +60,9 @@ def _read_json(path: str) -> Dict[str, Any]:
     try:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
+    except FileNotFoundError:
+        logger.debug('state file not found (first run?): %s', path)
+        return {}
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning('failed to read %s: %s', path, exc)
         return {}

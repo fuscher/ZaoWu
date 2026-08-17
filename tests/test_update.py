@@ -316,6 +316,24 @@ class TestValidateZip:
         with pytest.raises(update.UpdateError, match='unknown plugin'):
             update._validate_zip(bad)
 
+    def test_plugin_root_files_allowed(self, tmp_path, monkeypatch):
+        # _internal/plugins 根下的散文件（插件开发文档等）不是插件目录，
+        # 不应触发"未知插件目录"校验——下载更新失败 bug 的回归用例。
+        resource_root = tmp_path / 'res'
+        (resource_root / 'plugins' / 'known_plugin').mkdir(parents=True)
+        monkeypatch.setattr(update, 'get_resource_root', lambda: str(resource_root))
+
+        ok = zipfile.ZipFile(self._make_zip(tmp_path, [
+            '_internal/plugins/PLUGIN_DEV_GUIDE.md',
+            '_internal/plugins/PLUGIN_DEV_GUIDE_EN.md',
+            '_internal/plugins/known_plugin/x.txt',
+        ]))
+        update._validate_zip(ok)  # 散文件 + 已知插件目录均放行
+
+        bad = zipfile.ZipFile(self._make_zip(tmp_path, ['_internal/plugins/evil_plugin/x.txt']))
+        with pytest.raises(update.UpdateError, match='unknown plugin'):
+            update._validate_zip(bad)  # 真实未知插件目录仍拒绝
+
 
 # ── download ─────────────────────────────────────────────────────────
 
@@ -417,8 +435,42 @@ class TestDownload:
         assert resp.status_code == 400
         assert (await resp.get_json())['error'] == 'unsupported'
 
-    async def test_staging_cleanup_aborts_on_failure(self, isolated, frozen, monkeypatch):
-        """清理失败（文件占用模拟）→ 中止下载返回错误，防残留合并。"""
+    async def test_download_rejects_unknown_plugin_in_zip(self, isolated, frozen, monkeypatch):
+        """sha256 通过但 zip 含未知插件目录 → _validate_zip 拒绝 → 400。"""
+        # 创建含未知插件目录的 zip
+        bad_zip = isolated / 'bad.zip'
+        with zipfile.ZipFile(bad_zip, 'w') as zf:
+            zf.writestr('ZaoWu.exe', 'fake')
+            zf.writestr('_internal/app/data.txt', 'ok')
+            zf.writestr('_internal/plugins/evil_plugin/malware.txt', 'bad')
+        sha = self._sha256(bad_zip)
+
+        # resource_root 下无任何已知插件
+        resource_root = isolated / 'res'
+        resource_root.mkdir()
+        (resource_root / 'plugins').mkdir()
+        monkeypatch.setattr(update, 'get_resource_root', lambda: str(resource_root))
+
+        src = 'http://src.test/version.json'
+        url_a = 'http://a.test/pkg.zip'
+        vj = _version_json(isolated, version='1.3.0', urls=[url_a],
+                           sha256=sha, size=bad_zip.stat().st_size)
+        fake = FakeAsyncClient(
+            get_map={src: vj},
+            streams={url_a: [bad_zip.read_bytes()]},
+        )
+        monkeypatch.setattr(update, 'SOURCE_URLS', [src])
+        monkeypatch.setattr(update, '_make_client', lambda: fake)
+
+        async with app.test_client() as client:
+            resp = await client.get('/api/update/download')
+        assert resp.status_code == 400
+        body = await resp.get_json()
+        assert 'unknown plugin' in body['error']
+
+    async def test_staging_cleanup_is_best_effort(self, isolated, frozen, monkeypatch):
+        """下载前 staging 清理失败 → 中止返回 500（防残留合并）。
+        下载失败后的 staging 清理用 ignore_errors，不会二次抛异常。"""
         src = 'http://src.test/version.json'
         vj = _version_json(isolated, version='1.3.0', urls=['http://a.test/pkg.zip'],
                            sha256='0' * 64, size=10)
@@ -426,12 +478,60 @@ class TestDownload:
         monkeypatch.setattr(update, '_make_client', lambda: FakeAsyncClient(get_map={src: vj}))
         (isolated / 'versions' / '.staging').mkdir(parents=True)
 
-        def boom(path):
+        def boom(path, **kw):
             raise OSError('in use')
         monkeypatch.setattr(update.shutil, 'rmtree', boom)
         async with app.test_client() as client:
             resp = await client.get('/api/update/download')
         assert resp.status_code == 500
+
+    async def test_staging_cleaned_up_on_failure(self, isolated, frozen, monkeypatch):
+        """下载失败（校验和不匹配）后 staging 目录被清理，不留残留。"""
+        pkg = self._make_package_zip(isolated)
+        src = 'http://src.test/version.json'
+        url_a = 'http://a.test/pkg.zip'
+        # sha256 故意不匹配 → 校验和失败
+        vj = _version_json(isolated, version='1.3.0', urls=[url_a],
+                           sha256='0' * 64, size=pkg.stat().st_size)
+        fake = FakeAsyncClient(
+            get_map={src: vj},
+            streams={url_a: [pkg.read_bytes()]},
+        )
+        monkeypatch.setattr(update, 'SOURCE_URLS', [src])
+        monkeypatch.setattr(update, '_make_client', lambda: fake)
+
+        staging = isolated / 'versions' / '.staging'
+        async with app.test_client() as client:
+            resp = await client.get('/api/update/download')
+        assert resp.status_code == 400
+        assert 'checksum mismatch' in (await resp.get_json())['error']
+        assert not staging.exists()
+
+    async def test_download_cleans_old_version_dirs(self, isolated, frozen, monkeypatch):
+        """下载新版本前清理已解压但未切换的旧版本目录（M4）。"""
+        pkg = self._make_package_zip(isolated)
+        src = 'http://src.test/version.json'
+        url_a = 'http://a.test/pkg.zip'
+        vj = _version_json(isolated, version='1.3.0', urls=[url_a],
+                           sha256=self._sha256(pkg), size=pkg.stat().st_size)
+        fake = FakeAsyncClient(
+            get_map={src: vj},
+            streams={url_a: [pkg.read_bytes()]},
+        )
+        monkeypatch.setattr(update, 'SOURCE_URLS', [src])
+        monkeypatch.setattr(update, '_make_client', lambda: fake)
+
+        # 模拟旧版本残留目录
+        old_dir = isolated / 'versions' / 'v1.0.0'
+        old_dir.mkdir(parents=True)
+        (old_dir / 'dummy.txt').write_text('old')
+        _write_versions(isolated, current='v1.1.0')
+
+        async with app.test_client() as client:
+            resp = await client.get('/api/update/download')
+        assert resp.status_code == 200
+        assert not old_dir.exists()  # 旧版本目录被清理
+        assert (isolated / 'versions' / 'v1.3.0' / '_internal' / 'app' / 'data.txt').exists()
 
 
 # ── apply ────────────────────────────────────────────────────────────
@@ -442,6 +542,9 @@ class FakeEvent:
 
     def set(self):
         self.set_called = True
+
+    def is_set(self):
+        return self.set_called
 
 
 class TestApply:
@@ -476,12 +579,57 @@ class TestApply:
         assert fake_event.set_called is True  # 事件 set 后仍返回 ok
 
     async def test_apply_idempotent_when_pending_exists(self, isolated, frozen, monkeypatch):
+        """pending + 目录存在 + shutdown 已触发 → 切换确在进行，幂等返回。"""
+        import server_quart
         _write_versions(isolated, pending='v1.3.0')
+        (isolated / 'versions' / 'v1.3.0').mkdir(parents=True)
         update._status.update({'state': 'ready', 'version': 'v1.3.0'})
+        # shutdown 已 set → 上次 apply 成功触发了退出
+        fake_event = FakeEvent()
+        fake_event.set()
+        monkeypatch.setattr(server_quart, '_shutdown_event', fake_event)
         monkeypatch.setattr(update.subprocess, 'Popen', lambda *a, **kw: (_ for _ in ()).throw(AssertionError('must not spawn')))
         async with app.test_client() as client:
             resp = await client.post('/api/update/apply')
         assert (await resp.get_json())['ok'] is True
+
+    async def test_apply_respawns_on_failed_pending(self, isolated, frozen, monkeypatch):
+        """pending + 目录存在 + shutdown 未触发 → Popen/启动器失败残留，重新 spawn。"""
+        import server_quart
+        _write_versions(isolated, pending='v1.3.0')
+        (isolated / 'versions' / 'v1.3.0').mkdir(parents=True)
+        (isolated / update.LAUNCHER_NAME).write_text('fake')
+        update._status.update({'state': 'ready', 'version': 'v1.3.0'})
+        popen_calls = []
+        monkeypatch.setattr(update.subprocess, 'Popen', lambda *a, **kw: popen_calls.append(a))
+        fake_event = FakeEvent()
+        monkeypatch.setattr(server_quart, '_shutdown_event', fake_event)
+        async with app.test_client() as client:
+            resp = await client.post('/api/update/apply')
+        assert resp.status_code == 200
+        assert (await resp.get_json())['ok'] is True
+        assert len(popen_calls) == 1  # 启动器被重新 spawn
+        assert fake_event.set_called is True
+
+    async def test_apply_clears_stale_pending(self, isolated, frozen, monkeypatch):
+        """pending 指向旧版本 v1.2.0（目录不存在）→ 清除残留 pending，
+        正常流程用 _status 中的 v1.3.0 重新写 pending 并 spawn。"""
+        import server_quart
+        _write_versions(isolated, pending='v1.2.0')  # 旧版本，目录不存在
+        update._status.update({'state': 'ready', 'version': 'v1.3.0'})
+        (isolated / 'versions' / 'v1.3.0').mkdir(parents=True)  # 新版本目录存在
+        (isolated / update.LAUNCHER_NAME).write_text('fake')
+        popen_calls = []
+        monkeypatch.setattr(update.subprocess, 'Popen', lambda *a, **kw: popen_calls.append(a))
+        fake_event = FakeEvent()
+        monkeypatch.setattr(server_quart, '_shutdown_event', fake_event)
+        async with app.test_client() as client:
+            resp = await client.post('/api/update/apply')
+        assert resp.status_code == 200
+        assert (await resp.get_json())['ok'] is True
+        cfg = json.loads((isolated / 'versions.json').read_text(encoding='utf-8'))
+        assert cfg['pending'] == 'v1.3.0'  # 新 pending（非旧的 v1.2.0）
+        assert len(popen_calls) == 1
 
     async def test_apply_not_ready_rejected(self, isolated, frozen):
         _write_versions(isolated)

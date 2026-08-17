@@ -246,6 +246,8 @@
     "updateBannerTitle": "Check for Updates",
     "updateBannerDesc": "Version check, download and one-click switch",
     "currentVersion": "Current version",
+    "autoCheckUpdates": "Auto-check updates",
+    "autoCheckUpdatesDesc": "Silently check on startup; show a dot when a new version is available",
     "checkForUpdates": "Check for updates",
     "checkingUpdate": "Checking...",
     "latestVersion": "Latest version",

@@ -21,6 +21,7 @@ export const useSettingsStore = defineStore('settings', () => {
     communityDefaultRole: 'collaborator',
     communityFileSizeLimitKB: 512,
     communityInactiveTimeoutMinutes: 120,
+    autoCheckUpdates: false,
   }
 
   const background = reactive<BackgroundSettings>({

@@ -21,6 +21,10 @@ set "SPEC=%REPO_ROOT%\tobuild\ZaoWu.spec"
 set "BUILD_OUT=%REPO_ROOT%\dist\ZaoWu"
 set "AUTO_YES=0"
 
+REM 兜底：切到仓库根，保证后续 from version import VERSION 与相对路径一致
+REM （双击运行时 cwd 是 tobuild，读不到仓库根的 version.py）
+cd /d "%REPO_ROOT%"
+
 REM ---- 目标目录：命令行参数或交互输入 ----
 if not "%~1"=="" (
     if "%~1"=="-y" (
@@ -112,30 +116,15 @@ if not exist "%DEST%\settings.json" (
     copy /y "%REPO_ROOT%\settings.json" "%DEST%\settings.json" >nul
 )
 
-REM ---- 4. 发布产物（zip + sha256 + version.json）----
+REM ---- 4. 发布产物（zip + version.json：调 assemble_release.py 复用排除+自检）----
 echo [4/5] 生成发布产物 ...
 REM 版本号单一来源：读 version.py（编译期常量）；exe 路径无空格不可加引号
 REM （for /f 命令串与嵌套引号不兼容）
 for /f "delims=" %%v in ('%VENV_PY% -c "from version import VERSION;print(VERSION)"') do set "APP_VER=%%v"
-set "ZIP_OUT=%REPO_ROOT%\dist\ZaoWu-%APP_VER%-win64.zip"
-if exist "%ZIP_OUT%" del /q "%ZIP_OUT%"
-REM zip 仅列 ZaoWu.exe 与 _internal 两路径（运行期数据结构性排除，不依赖时序）
-powershell -NoProfile -Command "Compress-Archive -Path '%DEST%\ZaoWu.exe','%DEST%\_internal' -DestinationPath '%ZIP_OUT%' -Force"
-if errorlevel 1 (
-    echo [错误] zip 打包失败
-    goto :fail
-)
-for /f "delims=" %%h in ('powershell -NoProfile -Command "(Get-FileHash '%ZIP_OUT%' -Algorithm SHA256).Hash.ToLower()"') do set "ZIP_SHA256=%%h"
-for %%A in ("%ZIP_OUT%") do set "ZIP_SIZE=%%~zA"
-REM 抽查：发布包内不得夹带状态文件（应用侧解压校验为最后防线）
-powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $z=[System.IO.Compression.ZipFile]::OpenRead('%ZIP_OUT%'); if (-not $z) { exit 2 }; $bad=$z.Entries | Where-Object { $_.FullName -match '\.plugin_state\.json|\.skill_state\.json' }; $z.Dispose(); if ($bad) { exit 1 } else { exit 0 }"
-if errorlevel 1 (
-    echo [错误] 发布包内检出状态文件，禁止发布
-    goto :fail
-)
-"%VENV_PY%" "%REPO_ROOT%\tobuild\gen_version_json.py" --version "%APP_VER%" --size %ZIP_SIZE% --sha256 %ZIP_SHA256% --out "%REPO_ROOT%\dist\version.json"
+REM 打 zip（排除 __pycache__/状态文件）+ 自检（状态文件/缓存/未知插件目录）+ 生成 version.json，一步完成
+"%VENV_PY%" "%REPO_ROOT%\tobuild\assemble_release.py" package --src "%DEST%" --out "%REPO_ROOT%\dist" --version "%APP_VER%"
 if errorlevel 1 goto :fail
-echo [完成] %ZIP_OUT% (%ZIP_SIZE% bytes, sha256=%ZIP_SHA256%)
+echo [完成] %REPO_ROOT%\dist\ZaoWu-%APP_VER%-win64.zip
 
 REM ---- 5. 运行验证（启动 → 健康检查 → 关闭） ----
 echo [5/5] 启动验证 ...

@@ -17,6 +17,7 @@ import { useCommunityStore } from '@/stores/community'
 import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from '@/i18n'
 import { pluginEventBus } from '@/plugin-system/events'
+import { useUpdate } from '@/composables/useUpdate'
 
 defineProps<{ theme: Theme }>()
 const emit = defineEmits<{ toggleTheme: [] }>()
@@ -34,6 +35,8 @@ const editorStore = useEditorStore()
 const communityStore = useCommunityStore()
 const { t } = useI18n()
 const clickHint = computed(() => t('filePreview.clickHint'))
+const { updateState, initAutoCheck } = useUpdate()
+const updateAvailable = computed(() => updateState.value === 'available')
 
 function selectView(view: ViewType) {
   if (view === activeView.value) {
@@ -66,6 +69,9 @@ function openModelSwitcherEvent() {
 
 // 监听插件 activity bar action handler 事件
 onMounted(() => {
+  // 应用启动时后台检查更新（受 autoCheckUpdates 设置控制）
+  initAutoCheck()
+
   pluginEventBus.on('hello_world.click', () => {
     activeView.value = 'plugins'
     sideCollapsed.value = false
@@ -98,7 +104,7 @@ onUnmounted(() => {
   <div class="main-layout">
     <CustomTitleBar />
     <div class="body">
-      <ActivityBar :active-view="activeView" :theme="theme" @select="selectView" @toggle-theme="emit('toggleTheme')" />
+      <ActivityBar :active-view="activeView" :theme="theme" :update-available="updateAvailable" @select="selectView" @toggle-theme="emit('toggleTheme')" />
       <SidePanel :view="activeView" :collapsed="sideCollapsed" @toggle="sideCollapsed = !sideCollapsed" @highlight-section="handleHighlightSection" @show-plugin-detail="handleShowPluginDetail" />
       <div v-if="activeView === 'chat'" class="content-area">
         <ChatPanel />

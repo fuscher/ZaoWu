@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle, Sparkles, Download, RefreshCw } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
@@ -8,6 +8,7 @@ import { PluginHost } from '@/plugin-system'
 import { backgroundRegistry } from './backgrounds/index'
 import { saveProviders } from '@/services/ai'
 import { useI18n } from '@/i18n'
+import { useUpdate } from '@/composables/useUpdate'
 import NumberInput from './NumberInput.vue'
 import ErrorToast from './ErrorToast.vue'
 import type { Theme, LLMProvider, ViewType } from '@/types'
@@ -58,152 +59,11 @@ function showToast(message: string, type: 'error' | 'warning' | 'info' = 'info')
   })
 }
 
-// ── Update state (检查更新) ───────────────────────────────
-type UpdateState =
-  | 'idle' | 'unsupported' | 'checking' | 'latest'
-  | 'available' | 'downloading' | 'ready' | 'applying'
-const updateState = ref<UpdateState>('idle')
-const currentVersion = ref('')
-const latestVersion = ref('')
-const updateNotes = ref('')
-const updateProgress = ref(0)
-let statusPoll: ReturnType<typeof setInterval> | null = null
-
-function stopStatusPoll() {
-  if (statusPoll !== null) {
-    clearInterval(statusPoll)
-    statusPoll = null
-  }
-}
-
-async function loadVersion() {
-  try {
-    const res = await fetch('/api/version')
-    if (res.ok) {
-      const data = await res.json()
-      if (data?.version) currentVersion.value = data.version
-    }
-  } catch {
-    // 后端不可达时保持默认显示
-  }
-}
-
-async function consumeUpdateResult() {
-  // 挂载时静默消费 last_result：不发外部请求，一次性提示上次更新结果
-  try {
-    const res = await fetch('/api/update/check?consume_only=1')
-    if (!res.ok) return
-    const data = await res.json()
-    if (!data.supported) {
-      updateState.value = 'unsupported'
-      return
-    }
-    if (data.lastResult === 'ok') {
-      showToast(t('settings.updateSuccess'), 'info')
-    } else if (data.lastResult === 'rolled_back') {
-      showToast(t('settings.updateFailed'), 'warning')
-    }
-  } catch {
-    // 静默：后端不可达不打扰
-  }
-}
-
-async function checkForUpdates() {
-  updateState.value = 'checking'
-  try {
-    const res = await fetch('/api/update/check')
-    if (!res.ok) throw new Error('check failed')
-    const data = await res.json()
-    if (!data.supported) {
-      updateState.value = 'unsupported'
-      return
-    }
-    if (data.error) {
-      showToast(t('settings.checkFailed'), 'error')
-      updateState.value = 'idle'
-      return
-    }
-    if (data.hasUpdate) {
-      latestVersion.value = data.latest ?? ''
-      updateNotes.value = data.notes ?? ''
-      updateState.value = 'available'
-    } else {
-      showToast(t('settings.updateUnavailable'), 'info')
-      updateState.value = 'latest'
-      // 按钮短暂冷却后回到可再查状态
-      setTimeout(() => {
-        if (updateState.value === 'latest') updateState.value = 'idle'
-      }, 3000)
-    }
-  } catch {
-    showToast(t('settings.checkFailed'), 'error')
-    updateState.value = 'idle'
-  }
-}
-
-function pollDownloadStatus() {
-  stopStatusPoll()
-  statusPoll = setInterval(async () => {
-    try {
-      const res = await fetch('/api/update/status')
-      if (!res.ok) return
-      const data = await res.json()
-      if (data.state === 'downloading') {
-        updateProgress.value = data.progress ?? 0
-      } else if (data.state === 'ready') {
-        stopStatusPoll()
-        updateProgress.value = 100
-        updateState.value = 'ready'
-      } else if (data.state === 'idle' && data.error) {
-        stopStatusPoll()
-        showToast(t('settings.downloadFailed'), 'error')
-        updateState.value = 'available'
-      }
-    } catch {
-      // 轮询失败忽略，下个周期继续
-    }
-  }, 1000)
-}
-
-async function startDownload() {
-  updateState.value = 'downloading'
-  updateProgress.value = 0
-  try {
-    const res = await fetch('/api/update/download')
-    const data = await res.json().catch(() => null)
-    if (res.ok && data?.ok) {
-      pollDownloadStatus()
-      return
-    }
-    if (data?.error === 'download_in_progress') {
-      pollDownloadStatus()  // 已在下载：转入轮询
-      return
-    }
-    showToast(t('settings.downloadFailed'), 'error')
-    updateState.value = 'available'
-  } catch {
-    showToast(t('settings.downloadFailed'), 'error')
-    updateState.value = 'available'
-  }
-}
-
-async function applyUpdate() {
-  updateState.value = 'applying'
-  try {
-    const res = await fetch('/api/update/apply', { method: 'POST' })
-    const data = await res.json().catch(() => null)
-    if (res.ok && data?.ok) {
-      // 应用即将受控退出并由启动器完成切换；无需再调 shutdown。
-      // 保持 applying 状态显示「正在重启…」。
-      return
-    }
-    throw new Error('apply failed')
-  } catch {
-    // 网络异常/响应超时：状态未知（应用可能已进入退出流程）
-    showToast(t('settings.applyUnknown'), 'warning')
-    updateState.value = 'ready'
-  }
-}
+// ── Update state (检查更新，全局共享 composable) ─────────────
+const {
+  updateState, currentVersion, latestVersion, updateNotes, updateProgress,
+  bindToast, checkForUpdates, startDownload, applyUpdate,
+} = useUpdate()
 
 function openAddProvider() {
   editingProvider.value = {
@@ -336,12 +196,7 @@ async function removeSkill(name: string) {
 onMounted(() => {
   chatStore.loadProviders()
   chatStore.loadSkills()
-  loadVersion()
-  consumeUpdateResult()
-})
-
-onUnmounted(() => {
-  stopStatusPoll()
+  bindToast(showToast)
 })
 </script>
 
@@ -800,6 +655,22 @@ onUnmounted(() => {
             >
               <span v-if="updateState === 'checking'" class="import-spinner" />
               {{ updateState === 'checking' ? t('settings.checkingUpdate') : t('settings.checkForUpdates') }}
+            </button>
+          </div>
+
+          <div class="setting-divider" />
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">{{ t('settings.autoCheckUpdates') }}</span>
+              <span class="setting-desc">{{ t('settings.autoCheckUpdatesDesc') }}</span>
+            </div>
+            <button
+              class="toggle-btn"
+              :class="{ active: settingsStore.background.autoCheckUpdates }"
+              @click="settingsStore.updateBg({ autoCheckUpdates: !settingsStore.background.autoCheckUpdates })"
+            >
+              <span class="toggle-knob" />
             </button>
           </div>
 
@@ -1531,5 +1402,39 @@ onUnmounted(() => {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.toggle-btn {
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-glass);
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.toggle-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-knob {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.toggle-btn.active .toggle-knob {
+  transform: translateX(16px);
+  background: #fff;
 }
 </style>
