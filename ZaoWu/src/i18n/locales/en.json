@@ -51,8 +51,7 @@
   "statusBar": {
     "checking": "Checking...",
     "ready": "Ready",
-    "offline": "Offline",
-    "model": "ZaoWu v0.2.0-dashu"
+    "offline": "Offline"
   },
   "loading": {
     "title": "ZaoWu",
