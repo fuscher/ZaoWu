@@ -201,6 +201,7 @@ const recoveryActions = computed(() => {
   switch (quality.value) {
     case 'idle':
     case 'empty':
+    case 'incomplete':
       return [{ label: t('agent.recovery.retry'), action: 'retry' }]
     case 'constrained':
       return [
@@ -218,6 +219,7 @@ const qualityMeta = computed(() => {
     case 'constrained': return { cls: 'constrained', text: t('agent.quality.constrained') }
     case 'empty': return { cls: 'empty', text: t('agent.quality.empty') }
     case 'stopped': return { cls: 'stopped', text: t('agent.quality.stopped') }
+    case 'incomplete': return { cls: 'incomplete', text: t('agent.quality.incomplete') }
     default: return null
   }
 })
@@ -572,7 +574,8 @@ function handleRecoveryAction(action: string) {
 /* idle/empty: 黄色边 + 警告 CTA 条；constrained: 蓝色边；error_fallback: 红色边 */
 
 .quality-idle .bubble-body,
-.quality-empty .bubble-body {
+.quality-empty .bubble-body,
+.quality-incomplete .bubble-body {
   border: 1px solid rgba(255, 149, 0, 0.4);
   border-radius: 12px;
   padding: 8px 12px;
@@ -601,7 +604,8 @@ function handleRecoveryAction(action: string) {
 }
 
 .quality-bar.idle,
-.quality-bar.empty {
+.quality-bar.empty,
+.quality-bar.incomplete {
   color: var(--warning);
   background: rgba(255, 149, 0, 0.08);
 }

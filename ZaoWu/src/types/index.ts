@@ -117,6 +117,10 @@ export interface Conversation {
   updatedAt: string
   messageCount?: number
   maxTokens?: number
+  /** P0-4: 上下文压缩预算（可到 1M），回退 maxTokens */
+  contextBudget?: number
+  /** P0-4: LLM 生成上限（钳 131072），独立于压缩预算 */
+  maxGenerationTokens?: number
   agentConfig?: AgentConfig
 }
 
@@ -141,6 +145,10 @@ export interface LLMConfig {
   maxTokens: number
   /** true = 自动从模型 contextLength 取值（默认）；false = 手动使用 maxTokens */
   maxTokensAuto?: boolean
+  /** P0-4: 上下文压缩预算，回退 maxTokens */
+  contextBudget?: number
+  /** P0-4: LLM 生成上限，独立于压缩预算 */
+  maxGenerationTokens?: number
   topP: number
   systemPrompt: string
 }
@@ -280,7 +288,7 @@ export interface ToolResult {
 
 /** 完成质量（阶段 A4/B）：驱动气泡分级渲染。success=正常；idle=说而不做；
  * constrained=模式约束致空；empty=真空响应；stopped=用户停止/循环中断；
- * error_fallback=错误终态（挂 ErrorCard）。 */
+ * error_fallback=错误终态（挂 ErrorCard）；incomplete=轮次耗尽未收敛。 */
 export type MessageQuality =
   | 'success'
   | 'idle'
@@ -288,6 +296,7 @@ export type MessageQuality =
   | 'empty'
   | 'stopped'
   | 'error_fallback'
+  | 'incomplete'
 
 /** 智能体消息元数据（阶段 A6，落库 messages.metadata_json） */
 export interface MessageMetadata {

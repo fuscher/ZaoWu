@@ -50,6 +50,8 @@ export async function createConversation(params: {
   modelId?: string
   systemPrompt?: string
   maxTokens?: number
+  contextBudget?: number
+  maxGenerationTokens?: number
 }): Promise<Conversation> {
   const data = await request<{ conversation: Conversation }>(`${BASE}/conversations`, {
     method: 'POST',
@@ -65,7 +67,7 @@ export async function getConversation(id: string): Promise<Conversation> {
 
 export async function updateConversation(
   id: string,
-  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt' | 'agentConfig' | 'maxTokens'>>
+  params: Partial<Pick<Conversation, 'title' | 'providerId' | 'modelId' | 'systemPrompt' | 'agentConfig' | 'maxTokens' | 'contextBudget' | 'maxGenerationTokens'>>
 ): Promise<Conversation> {
   const data = await request<{ conversation: Conversation }>(`${BASE}/conversations/${id}`, {
     method: 'PATCH',
@@ -94,7 +96,7 @@ export async function sendMessageStream(
   conversationId: string,
   content: string,
   callbacks: StreamCallbacks,
-  params?: { temperature?: number; maxTokens?: number; topP?: number }
+  params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
 ): Promise<AbortController> {
   const controller = new AbortController()
 
@@ -169,7 +171,7 @@ export async function sendAgentMessageStream(
   conversationId: string,
   content: string,
   callbacks: AgentStreamCallbacks,
-  params?: { temperature?: number; maxTokens?: number; topP?: number }
+  params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
 ): Promise<AbortController> {
   const controller = new AbortController()
 

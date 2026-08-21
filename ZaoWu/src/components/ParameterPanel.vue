@@ -11,6 +11,7 @@ const isOpen = ref(false)
 const temperature = ref(chatStore.config.temperature)
 const maxTokens = ref(chatStore.config.maxTokens)
 const maxTokensAuto = ref(chatStore.config.maxTokensAuto ?? true)
+const maxGenerationTokens = ref(chatStore.config.maxGenerationTokens ?? 4096)
 const topP = ref(chatStore.config.topP)
 const systemPrompt = ref(chatStore.config.systemPrompt)
 
@@ -20,6 +21,7 @@ watch(
     temperature.value = c.temperature
     maxTokens.value = c.maxTokens
     maxTokensAuto.value = c.maxTokensAuto ?? true
+    maxGenerationTokens.value = c.maxGenerationTokens ?? 4096
     topP.value = c.topP
     systemPrompt.value = c.systemPrompt
   }
@@ -55,6 +57,8 @@ function apply() {
     temperature: temperature.value,
     maxTokens: maxTokens.value,
     maxTokensAuto: maxTokensAuto.value,
+    contextBudget: maxTokens.value,
+    maxGenerationTokens: maxGenerationTokens.value,
     topP: topP.value,
     systemPrompt: systemPrompt.value,
   })
@@ -65,6 +69,7 @@ function reset() {
   temperature.value = 0.7
   maxTokens.value = 4096
   maxTokensAuto.value = true
+  maxGenerationTokens.value = 4096
   topP.value = 1.0
   systemPrompt.value = 'You are a helpful assistant.'
   apply()
@@ -128,6 +133,24 @@ function reset() {
           />
           <p v-if="maxTokensAuto" class="param-hint">
             {{ t('chat.maxTokensAutoHint', { suggested: autoMaxTokens }) }}
+          </p>
+        </div>
+
+        <div class="param-group">
+          <label class="param-label">
+            {{ t('chat.maxGenerationTokens') || '生成上限' }}
+            <span class="param-value">{{ maxGenerationTokens }}</span>
+          </label>
+          <input
+            v-model.number="maxGenerationTokens"
+            type="range"
+            min="256"
+            max="131072"
+            step="256"
+            class="param-slider"
+          />
+          <p class="param-hint">
+            {{ t('chat.maxGenerationTokensHint') || 'LLM 单次生成最大 token 数（不影响上下文预算）' }}
           </p>
         </div>
 

@@ -14,6 +14,8 @@ export const useChatStore = defineStore('chat', () => {
     temperature: 0.7,
     maxTokens: 4096,
     maxTokensAuto: true,
+    contextBudget: 4096,
+    maxGenerationTokens: 4096,
     topP: 1.0,
     systemPrompt: 'You are a helpful assistant.',
   })
@@ -220,6 +222,8 @@ export const useChatStore = defineStore('chat', () => {
     modelId?: string
     systemPrompt?: string
     maxTokens?: number
+    contextBudget?: number
+    maxGenerationTokens?: number
   }): Promise<Conversation | null> {
     try {
       const conv = await ai.createConversation({
@@ -228,6 +232,8 @@ export const useChatStore = defineStore('chat', () => {
         modelId: params?.modelId || config.value.defaultModelId,
         systemPrompt: params?.systemPrompt,
         maxTokens: params?.maxTokens,
+        contextBudget: params?.contextBudget,
+        maxGenerationTokens: params?.maxGenerationTokens,
       })
       conversations.value.unshift(conv)
       currentConversation.value = conv
@@ -292,7 +298,7 @@ export const useChatStore = defineStore('chat', () => {
   // ── Message Sending ───────────────────────────────────
   async function sendMessage(
     content: string,
-    params?: { temperature?: number; maxTokens?: number; topP?: number }
+    params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
   ) {
     if (!content.trim() || isStreaming.value) return
 
@@ -412,7 +418,7 @@ export const useChatStore = defineStore('chat', () => {
   // ── Agent message sending (Stage 8) ──────────────────────
   async function sendAgentMessage(
     content: string,
-    params?: { temperature?: number; maxTokens?: number; topP?: number }
+    params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
   ) {
     if (!content.trim() || isStreaming.value) return
 

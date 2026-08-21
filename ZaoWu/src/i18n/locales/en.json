@@ -94,7 +94,9 @@
     "setupHint": "Please configure an LLM Provider and API Key in settings first",
     "maxTokensAuto": "Auto",
     "maxTokensAutoLabel": "Auto-fetch from model context",
-    "maxTokensAutoHint": "Using model context length {suggested}"
+    "maxTokensAutoHint": "Using model context length {suggested}",
+    "maxGenerationTokens": "Generation Limit",
+    "maxGenerationTokensHint": "Max tokens per LLM generation (independent of context budget)"
   },
   "common": {
     "cancel": "Cancel",
@@ -504,7 +506,8 @@
       "idle": "Declared action not executed",
       "constrained": "Plan ready · read-only mode",
       "empty": "No valid response generated",
-      "stopped": "Stopped"
+      "stopped": "Stopped",
+      "incomplete": "Incomplete (max iterations reached)"
     },
     "notice": {
       "intent_not_executed": "Model declared tool intent but did not execute",
@@ -512,7 +515,9 @@
       "compacted": "Context was long; earlier messages compacted",
       "retrying_empty": "Model produced no valid response; retrying…",
       "plan_ready_for_build": "Plan ready; switch to build mode to implement",
-      "user_stopped": "Generation stopped by user"
+      "user_stopped": "Generation stopped by user",
+      "max_iterations_reached": "Reached max iterations; send a new message to continue",
+      "tool_calls_truncated": "Tool calls truncated due to output length, retrying…"
     },
     "recovery": {
       "retry": "Retry",
@@ -533,7 +538,10 @@
         "rejected": "Rejected by user",
         "timeout": "Approval timed out"
       },
-      "failed": "Failed"
+      "failed": {
+        "label": "Failed",
+        "truncated": "Output truncated — response exceeded generation limit, auto-retrying"
+      }
     },
     "presetSwitchFailed": "Mode switch failed, please retry"
   },

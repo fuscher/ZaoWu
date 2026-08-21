@@ -94,7 +94,9 @@
     "setupHint": "请先在设置中配置 LLM Provider 和 API Key",
     "maxTokensAuto": "自动",
     "maxTokensAutoLabel": "自动从模型获取最大上下文",
-    "maxTokensAutoHint": "使用模型上下文长度 {suggested}"
+    "maxTokensAutoHint": "使用模型上下文长度 {suggested}",
+    "maxGenerationTokens": "生成上限",
+    "maxGenerationTokensHint": "LLM 单次生成最大 token 数（不影响上下文预算）"
   },
   "common": {
     "cancel": "取消",
@@ -504,7 +506,8 @@
       "idle": "未执行声明的操作",
       "constrained": "方案已生成 · 只读模式",
       "empty": "未生成有效响应",
-      "stopped": "已停止"
+      "stopped": "已停止",
+      "incomplete": "未完成（已达最大迭代轮数）"
     },
     "notice": {
       "intent_not_executed": "模型声明了工具意图但未执行",
@@ -512,7 +515,9 @@
       "compacted": "上下文较长，已自动压缩早期对话",
       "retrying_empty": "模型未生成有效响应，正在重试…",
       "plan_ready_for_build": "方案已生成，切到执行模式落地",
-      "user_stopped": "生成已被用户终止"
+      "user_stopped": "生成已被用户终止",
+      "max_iterations_reached": "已达最大迭代轮数，如需继续请发送新消息",
+      "tool_calls_truncated": "工具调用因输出过长被截断，正在重试…"
     },
     "recovery": {
       "retry": "重试",
@@ -533,7 +538,10 @@
         "rejected": "用户拒绝",
         "timeout": "确认超时"
       },
-      "failed": "失败"
+      "failed": {
+        "label": "失败",
+        "truncated": "输出被截断 — 响应超出生成上限，已自动重试"
+      }
     },
     "presetSwitchFailed": "切换模式失败，请重试"
   },

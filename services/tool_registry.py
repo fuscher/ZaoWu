@@ -21,6 +21,7 @@ class ToolDefinition:
     handler: Callable
     requires_approval: bool = False
     tags: List[str] = field(default_factory=list)
+    execution_mode: str = 'parallel'  # P0-1: 'parallel' | 'sequential'
 
 
 # ── Python → JSON Schema 类型映射 ─────────────────────────────
@@ -87,7 +88,7 @@ def _parse_docstring_params(doc: str) -> dict[str, str]:
 
 # ── @tool 装饰器 ──────────────────────────────────────────────
 
-def tool(name=None, description=None, requires_approval=False, tags=None):
+def tool(name=None, description=None, requires_approval=False, tags=None, execution_mode='parallel'):
     """装饰器：将函数注册为智能体工具，自动推导参数 Schema。
 
     用法:
@@ -137,6 +138,7 @@ def tool(name=None, description=None, requires_approval=False, tags=None):
             handler=func,
             requires_approval=requires_approval,
             tags=tags or [],
+            execution_mode=execution_mode,
         )
         ToolRegistry.get_instance().register(td)
         return func
@@ -202,7 +204,7 @@ def _read_file_tool(path: str, offset: int = 1, limit: int = 2000) -> dict:
     return read_file_content(path, offset=offset, limit=limit)
 
 
-@tool(name='write_file', requires_approval=True, tags=['filesystem', 'write'])
+@tool(name='write_file', requires_approval=True, tags=['filesystem', 'write'], execution_mode='sequential')
 def _write_file_tool(path: str, content: str) -> dict:
     """向指定文件写入内容。注意：这会覆盖原文件内容。需要用户确认。
 
@@ -213,7 +215,7 @@ def _write_file_tool(path: str, content: str) -> dict:
     return write_file_content(path, content)
 
 
-@tool(name='edit_file', requires_approval=True, tags=['filesystem', 'write'])
+@tool(name='edit_file', requires_approval=True, tags=['filesystem', 'write'], execution_mode='sequential')
 def _edit_file_tool(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict:
     """精确编辑文件的一段内容。用 old_string 定位替换为 new_string。
     优先使用此工具而非 write_file 进行局部修改，因为它不会覆盖整个文件。
@@ -308,7 +310,7 @@ def _git_log_tool(project_path: str, count: int = 5) -> dict:
     return get_recent_commits(project_path, count)
 
 
-@tool(name='run_command', requires_approval=True, tags=['terminal', 'write'])
+@tool(name='run_command', requires_approval=True, tags=['terminal', 'write'], execution_mode='sequential')
 async def _run_command_tool(command: str, cwd: str) -> dict:
     """在项目目录执行终端命令。仅允许安全的命令列表。需要用户确认。
 

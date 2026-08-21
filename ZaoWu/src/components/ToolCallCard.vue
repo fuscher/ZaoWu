@@ -42,7 +42,7 @@ const displayState = computed<{
       case 'denied':
         return { key: 'denied', reason: props.part.reason }
       case 'failed':
-        return { key: 'failed' }
+        return { key: 'failed', reason: props.part.reason }
     }
   }
   // 历史消息回退：从 toolResult.success 推断
@@ -207,12 +207,17 @@ function summaryForResult(result: ToolResult): string {
           {{ deniedReasonText(displayState.reason) }}
         </div>
       </div>
+      <!-- P0-2: 截断失败专属提示 -->
+      <div v-if="displayState.key === 'failed' && displayState.reason === 'truncated'" class="tool-section">
+        <div class="section-label">{{ t('agent.toolPart.failed.label') }}</div>
+        <div class="denied-reason">{{ t('agent.toolPart.failed.truncated') }}</div>
+      </div>
       <div v-if="toolCall" class="tool-section">
         <div class="section-label">{{ t('agent.parameters') }}</div>
         <pre class="tool-json"><code>{{ JSON.stringify(toolCall.arguments, null, 2) }}</code></pre>
       </div>
       <div v-if="toolResult" class="tool-section">
-        <div class="section-label">{{ toolResult.success ? t('agent.result') : t('agent.toolPart.failed') }}</div>
+        <div class="section-label">{{ toolResult.success ? t('agent.result') : t('agent.toolPart.failed.label') }}</div>
         <pre class="tool-content" :class="{ 'error-text': !toolResult.success }"><code>{{ toolResult.content || toolResult.error }}</code></pre>
       </div>
       <!-- 6.3.2: 三态确认 — 仅本次/始终允许/拒绝(带原因) -->

@@ -2502,3 +2502,294 @@ def test_idle_annotation_set_metrics():
     assert precision >= 0.90, f'precision={precision:.2f} < 0.90 (tp={tp}, fp={fp})'
     assert fpr <= 0.10, f'fpr={fpr:.2f} > 0.10 (fp={fp}, tn={tn})'
 
+
+# ── Stage 12 P0 回归测试 ────────────────────────────────────
+
+
+def _make_p0_mocks(service, monkeypatch, max_iterations=3):
+    """P0 测试共用的 mock 基础设施。"""
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id,
+            'providerId': 'test-provider',
+            'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': max_iterations},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        # 模拟注入：向 messages 追加 assistant+tool 消息，否则后续迭代看不到工具结果
+        tool_calls_block = [{
+            'id': tc['requestId'], 'type': 'function',
+            'function': {'name': tc['name'], 'arguments': json.dumps(tc['arguments'])},
+        } for tc in calls]
+        messages.append({'role': 'assistant', 'content': None, 'tool_calls': tool_calls_block})
+        for tc, result in zip(calls, results):
+            messages.append({
+                'role': 'tool', 'tool_call_id': tc['requestId'],
+                'name': tc['name'], 'content': json.dumps(result),
+            })
+
+    async def mock_build_system_prompt(conv):
+        return 'You are a test assistant.'
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+    monkeypatch.setattr(service, '_build_system_prompt', mock_build_system_prompt)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'test-model'}],
+    })
+    monkeypatch.setattr(service, '_read_global_config', lambda: {})
+
+
+# ── P0-2: 截断判失败 ─────────────────────────────────────────
+
+
+def test_p02_truncated_tool_calls_are_failed_and_retried(agent_service, monkeypatch):
+    """P0-2: finish_reason=='length' + 有工具调用 → 工具不执行，回喂纠正消息重试。
+    第二轮正常完成。"""
+    from agent_modules.agent_core.idle_detector import IdleDetector, IdleDecision
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    _make_p0_mocks(service, monkeypatch)
+
+    tc = _make_tool_call('read_file', {'path': '/tmp/x'}, 'call_trunc_1')
+    call_idx = iter([0, 1])
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        idx = next(call_idx)
+        if idx == 0:
+            yield {'type': 'tool_call_part', 'tool_call': tc}
+            yield {'type': 'finish_reason', 'reason': 'length'}
+        else:
+            yield {'type': 'delta', 'delta': 'done'}
+            yield {'type': 'finish_reason', 'reason': 'stop'}
+        yield {'type': 'usage', 'tokens_in': 100, 'tokens_out': 50}
+
+    service._stream_llm = mock_stream_llm
+    # 第二轮无工具调用时 IdleDetector 需返回 terminal
+    monkeypatch.setattr(IdleDetector, 'detect', lambda self, **kw:
+        IdleDecision(action='terminal', quality='success'))
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-p02', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    payloads = [json.loads(ev[6:]) for ev in events]
+
+    # 截断的工具应被标记为 failed
+    failed_parts = [p for p in payloads if p.get('type') == 'tool_part' and p.get('part') == 'failed']
+    assert any(p.get('reason') == 'truncated' for p in failed_parts), \
+        'truncated tool calls should be marked failed with reason=truncated'
+
+    # 应有截断 notice
+    notices = [p for p in payloads if p.get('type') == 'notice']
+    assert any('截断' in n.get('message', '') for n in notices), \
+        'should emit truncation notice'
+
+    # 最终 done 事件 quality 应为 success（第二轮正常完成）
+    done_events = [p for p in payloads if p.get('type') == 'done']
+    assert done_events[-1].get('quality') == 'success'
+
+
+def test_p02_finish_reason_stop_does_not_trigger_truncation(agent_service, monkeypatch):
+    """P0-2: finish_reason=='stop' 不应触发截断逻辑。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    _make_p0_mocks(service, monkeypatch)
+
+    execute_calls = []
+
+    class _TrackingSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            execute_calls.append(name)
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _TrackingSandbox())
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('read_file', {'path': '/a'}, 'call_stop_1')}
+        yield {'type': 'finish_reason', 'reason': 'stop'}
+        yield {'type': 'usage', 'tokens_in': 100, 'tokens_out': 50}
+
+    service._stream_llm = mock_stream_llm
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-p02b', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    # finish_reason=stop 时工具应正常执行
+    assert 'read_file' in execute_calls, 'stop finish_reason should not prevent tool execution'
+
+
+# ── P0-3: 轮次上限标 incomplete ──────────────────────────────
+
+
+def test_p03_max_iterations_exhausted_marks_incomplete(agent_service, monkeypatch):
+    """P0-3: 纯工具轮跑满 max_iterations → quality='incomplete' + notice。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    _make_p0_mocks(service, monkeypatch, max_iterations=2)
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 每轮都返回一个工具调用，让循环耗尽
+        yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('read_file', {'path': '/tmp/x'}, f'call_iter_{id(messages)}')}
+        yield {'type': 'usage', 'tokens_in': 100, 'tokens_out': 50}
+
+    service._stream_llm = mock_stream_llm
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-p03', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    payloads = [json.loads(ev[6:]) for ev in events]
+
+    done_events = [p for p in payloads if p.get('type') == 'done']
+    assert done_events, 'should have a done event'
+    assert done_events[-1].get('quality') == 'incomplete', \
+        f'expected quality=incomplete, got {done_events[-1].get("quality")}'
+
+    notices = [p for p in payloads if p.get('type') == 'notice']
+    assert any(n.get('code') == 'max_iterations_reached' for n in notices), \
+        'should emit max_iterations_reached notice'
+
+
+# ── P0-1: 工具并行执行 ──────────────────────────────────────
+
+
+def test_p01_parallel_tools_executed_concurrently(agent_service, monkeypatch):
+    """P0-1: 多个 parallel allow 工具应并发执行（asyncio.gather）。"""
+    from agent_modules.agent_core.idle_detector import IdleDetector, IdleDecision
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    _make_p0_mocks(service, monkeypatch)
+
+    execution_log = []
+    call_idx = iter([0, 1])
+
+    class _TrackingSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            execution_log.append(('start', name, asyncio.get_event_loop().time()))
+            await asyncio.sleep(0.05)
+            execution_log.append(('end', name, asyncio.get_event_loop().time()))
+            return {'success': True, 'content': f'ok:{name}'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _TrackingSandbox())
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        idx = next(call_idx)
+        if idx == 0:
+            yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('read_file', {'path': '/a'}, 'call_p1')}
+            yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('search_code', {'query': 'x'}, 'call_p2')}
+        else:
+            yield {'type': 'delta', 'delta': 'analysis complete'}
+        yield {'type': 'usage', 'tokens_in': 100, 'tokens_out': 50}
+
+    service._stream_llm = mock_stream_llm
+    monkeypatch.setattr(IdleDetector, 'detect', lambda self, **kw:
+        IdleDecision(action='terminal', quality='success'))
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-p01', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 两个工具都应被执行
+    executed_names = {name for _, name, _ in execution_log}
+    assert executed_names == {'read_file', 'search_code'}, 'both tools should execute'
+
+    # 并发验证：两个 start 之间的时间差应远小于 0.05s（串行时差 ≈ 0.05s）
+    starts = [(name, t) for op, name, t in execution_log if op == 'start']
+    starts.sort(key=lambda x: x[1])
+    gap = starts[1][1] - starts[0][1]
+    assert gap < 0.02, f'parallel tools should start concurrently, gap={gap:.3f}s'
+
+    # done 事件应为 success
+    done_events = [json.loads(ev[6:]) for ev in events if json.loads(ev[6:]).get('type') == 'done']
+    assert done_events[-1].get('quality') == 'success'
+
+
+def test_p01_sequential_tools_stay_serial(agent_service, monkeypatch):
+    """P0-1: sequential 工具（write_file）仍串行执行。"""
+    from agent_modules.agent_core.idle_detector import IdleDetector, IdleDecision
+    import services.tool_approval as approval_mod
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    _make_p0_mocks(service, monkeypatch, max_iterations=1)
+
+    execution_log = []
+
+    class _TrackingSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            execution_log.append(('start', name, asyncio.get_event_loop().time()))
+            await asyncio.sleep(0.05)
+            execution_log.append(('end', name, asyncio.get_event_loop().time()))
+            return {'success': True, 'content': f'ok:{name}'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _TrackingSandbox())
+    # write_file/edit_file 需 approval → mock evaluate 为 always allow
+    # 必须 patch import 侧（agent_service），不能只 patch 源模块
+    monkeypatch.setattr('agent_modules.agent_core.agent_service.evaluate', lambda name, resource, rules: 'allow')
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('write_file', {'path': '/a', 'content': 'x'}, 'call_s1')}
+        yield {'type': 'tool_call_part', 'tool_call': _make_tool_call('edit_file', {'path': '/b', 'old_string': 'o', 'new_string': 'n'}, 'call_s2')}
+        yield {'type': 'usage', 'tokens_in': 100, 'tokens_out': 50}
+
+    service._stream_llm = mock_stream_llm
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-p01b', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+
+    # 串行验证：第二个 start 应在第一个 end 之后
+    starts = [(name, t) for op, name, t in execution_log if op == 'start']
+    ends = [(name, t) for op, name, t in execution_log if op == 'end']
+    assert len(starts) == 2 and len(ends) == 2
+    # write_file 先执行（按 LLM 返回顺序）
+    assert starts[0][0] == 'write_file'
+    assert starts[1][0] == 'edit_file'
+    # 第二个 start 应在第一个 end 之后（串行）
+    assert starts[1][1] >= ends[0][1], 'sequential tools should not overlap'
+

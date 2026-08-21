@@ -143,6 +143,7 @@ async def llm_stream(
 
     accumulated_tool_calls: Dict[int, Dict[str, Any]] = {}
     usage: Dict[str, Any] | None = None
+    finish_reason: Optional[str] = None
 
     own_client = http_client is None
     client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(120.0))
@@ -193,6 +194,10 @@ async def llm_stream(
                                 usage = chunk['usage']
                             choices = chunk.get('choices') or [{}]
                             choice = choices[0]
+                            # 捕获 finish_reason（截断判失败 P0-2 依赖此值）
+                            fr = choice.get('finish_reason')
+                            if fr:
+                                finish_reason = fr
                             # delta 键存在但为 null 时 .get 返回 None，or {} 兜底防 'in' 迭代 None
                             delta = choice.get('delta', {}) or {}
                             if 'content' in delta and delta['content']:
@@ -262,6 +267,10 @@ async def llm_stream(
                         'arguments': parsed_args,
                     },
                 }
+
+        # P0-2: 透传 finish_reason，消费端据此判截断
+        if finish_reason:
+            yield {'type': 'finish_reason', 'reason': finish_reason}
 
         yield {
             'type': 'usage',

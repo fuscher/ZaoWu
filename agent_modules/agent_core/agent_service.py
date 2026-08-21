@@ -3,7 +3,7 @@
 核心特性：
 - 死循环检测：同一工具 + 相同参数连续 3 次调用 → 自动中断
 - 逐轮持久化：每轮迭代结束后实时写入 SQLite，确保崩溃可恢复
-- 串行执行 + 错误不终止
+- 按 execution_mode 分组执行：parallel 工具并发，sequential 工具串行
 """
 import os
 import json
@@ -179,11 +179,21 @@ class AgentService:
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
             max_iterations = agent_config.get('maxIterations', 10)
-            # 取值链：会话级显式设置 → 全局 config（ParameterPanel 滑块）→ 4096 兜底。
-            # 会话级为 None（旧数据未迁移）时回退全局，保证滑块调整对 agent 模式生效。
-            max_tokens = (
-                conv.get('maxTokens')
-                or self._read_global_config().get('maxTokens')
+            # P0-4：max_tokens 语义解耦 — 拆为 contextBudget（压缩预算）与
+            # maxGenerationTokens（LLM 生成上限）。旧 maxTokens 回退两者。
+            global_cfg = self._read_global_config()
+            context_budget = (
+                conv.get('contextBudget')
+                or conv.get('maxTokens')
+                or global_cfg.get('contextBudget')
+                or global_cfg.get('maxTokens')
+                or 4096
+            )
+            max_gen_tokens = (
+                conv.get('maxGenerationTokens')
+                or global_cfg.get('maxGenerationTokens')
+                or conv.get('maxTokens')          # 旧数据回退
+                or global_cfg.get('maxTokens')
                 or 4096
             )
 
@@ -199,15 +209,15 @@ class AgentService:
             idle_detector = IdleDetector()
             # 本轮 phase 节点收集（A6 承诺补全：落 done.phase_history 与 metadata）
             phase_nodes: List[str] = ['thinking']
-            # IdleDetector 终态 quality（None=全工具轮 for 耗尽，兜底 success）
+            # IdleDetector 终态 quality（None=全工具轮 for 耗尽，兜底 incomplete）
             terminal_quality = None
             terminal_handoff = False  # constrained 交接标志（发 handoff 事件 + recovery CTA）
 
-            # 5.2 主动压缩（预算触发）：system+历史超 0.8*max_tokens 时摘要化早期对话。
+            # 5.2 主动压缩（预算触发）：system+历史超 0.8*context_budget 时摘要化早期对话。
             # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
             compacted_once = False
             proactive_msgs, _ = await self._context.compact_if_needed(
-                conv, messages[0]['content'], max_tokens, provider,
+                conv, messages[0]['content'], context_budget, provider,
             )
             if proactive_msgs is not None:
                 messages = proactive_msgs
@@ -244,19 +254,22 @@ class AgentService:
 
                 collected_tool_calls = []
                 collected_text = ''
+                stream_finish_reason = None  # P0-2: 截断判失败
 
                 # Step 1: 流式调用 LLM
                 try:
                     async for event in self._stream_llm(
                         provider, messages, tool_specs,
                         temperature=conv.get('temperature', 0.7),
-                        max_tokens=min(max_tokens, MAX_GENERATION_TOKENS),
+                        max_tokens=min(max_gen_tokens, MAX_GENERATION_TOKENS),
                         top_p=conv.get('topP', 1.0),
                         stop_event=self.stop_event,
                     ):
                         if event.get('type') == 'delta':
                             collected_text += event.get('delta', '')
                             yield self._delta_event(assistant_msg_id, event['delta'])
+                        elif event.get('type') == 'finish_reason':
+                            stream_finish_reason = event.get('reason')
                         elif event.get('type') == 'tool_call_part':
                             tc = event.get('tool_call')
                             # 防御：异常 Provider/脏 chunk 可能产出 None 或缺 requestId 的
@@ -290,7 +303,7 @@ class AgentService:
                         fresh_conv = await self._get_conversation(conv_id)
                         if fresh_conv:
                             retry_msgs, _ = await self._context.compact_if_needed(
-                                fresh_conv, messages[0]['content'], max_tokens, provider,
+                                fresh_conv, messages[0]['content'], context_budget, provider,
                             )
                             if retry_msgs is not None:
                                 messages = retry_msgs
@@ -358,6 +371,28 @@ class AgentService:
                             'metadata': {'quality': 'stopped'},
                         })
                         return
+                    # P0-2: 截断判失败 — finish_reason=='length' 且有工具调用时，
+                    # 工具参数被截断（JSON 不完整 → 解析为 {}），不执行，回喂纠正消息。
+                    if stream_finish_reason == 'length':
+                        for tc in collected_tool_calls:
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'], 'failed',
+                                reason='truncated',
+                            )
+                            yield self._tool_call_end_event(
+                                assistant_msg_id, tc['requestId'],
+                                {'success': False, 'error': '输出过长被截断', 'tool': tc['name']},
+                            )
+                        messages.append({
+                            'role': 'system',
+                            'content': '上一轮工具调用因输出过长被截断，请减少工具调用数量或参数大小后重试。',
+                        })
+                        yield self._notice_event(
+                            'warn', 'tool_calls_truncated',
+                            '[系统] 工具调用因输出过长被截断，正在重试…',
+                            recoverable=True,
+                        )
+                        continue  # 重走 LLM 调用，不执行截断工具
                     # 2a: F05 连续死循环检测 — 检测尾部连续重复（跨迭代延续），而非全局累计计数
                     # 从 tool_call_history 尾部延续 streak，使跨迭代的单次重复调用也能被检测到，
                     # 同时避免 A-B-A-B-A 交替模式被误判（streak 在每次切换时重置）。
@@ -411,10 +446,64 @@ class AgentService:
                     # 2c: 阶段三 6.1 审批引擎求值 + F12 确认竞态处理 + F13 批量注入
                     # 三态：allow=直接执行；deny=拒绝（plan 模式/preset 规则）；ask=发确认事件等待
                     # 阶段 B4：每工具发 tool_part 生命周期事件（generating 已在流式循环发射）
-                    tool_results = []
+                    # P0-1：按 execution_mode 分组，parallel allow 工具并发执行
+                    parallel_batch = []   # (tc, resource) — allow + parallel
+                    sequential_batch = []  # (tc, decision, resource) — 含 ask/deny/sequential-allow
+
                     for tc in collected_tool_calls:
                         resource = derive_resource(tc['name'], tc['arguments'])
                         decision = evaluate(tc['name'], resource, approval_rules)
+                        if decision == 'allow':
+                            tool_def = self.tool_registry.get(tc['name'])
+                            mode = getattr(tool_def, 'execution_mode', 'parallel') if tool_def else 'parallel'
+                            if mode == 'parallel' and not self.stop_event.is_set():
+                                parallel_batch.append((tc, resource))
+                            else:
+                                sequential_batch.append((tc, decision, resource))
+                        else:
+                            sequential_batch.append((tc, decision, resource))
+
+                    tool_results = [None] * len(collected_tool_calls)
+                    # tc_index: requestId → 在 collected_tool_results 中的索引
+                    tc_index = {tc['requestId']: i for i, tc in enumerate(collected_tool_calls)}
+
+                    # P0-1: 并行执行 parallel_batch
+                    if parallel_batch:
+                        for tc, _ in parallel_batch:
+                            yield self._tool_call_start_event(assistant_msg_id, tc)
+                        # 发 running 事件后并发执行
+                        for tc, _ in parallel_batch:
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'], 'running',
+                            )
+
+                        async def _exec_one(t, _sandbox=sandbox):
+                            return t, await _sandbox.execute(t['name'], t['arguments'])
+
+                        results = await asyncio.gather(
+                            *[_exec_one(tc) for tc, _ in parallel_batch],
+                            return_exceptions=True,
+                        )
+                        for item in results:
+                            if isinstance(item, BaseException):
+                                # gather 异常兜底（理论上 sandbox.execute 已捕获）
+                                logger.warning('parallel tool execution error: %s', item)
+                                continue
+                            tc, result = item
+                            yield self._tool_part_event(
+                                assistant_msg_id, tc['requestId'],
+                                'success' if result.get('success') else 'failed',
+                                reason=None if result.get('success') else 'execute_error',
+                            )
+                            yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
+                            tool_results[tc_index[tc['requestId']]] = result
+                        if 'tool' not in phase_nodes:
+                            yield self._phase_event(assistant_msg_id, 'tool')
+                        phase_nodes.append('tool')
+
+                    # 串行执行 sequential_batch（保持原有逻辑）
+                    for tc, decision, resource in sequential_batch:
+                        yield self._tool_call_start_event(assistant_msg_id, tc)
 
                         if decision == 'allow':
                             yield self._tool_part_event(
@@ -423,8 +512,6 @@ class AgentService:
                             result = await sandbox.execute(tc['name'], tc['arguments'])
                         elif decision == 'deny':
                             # plan 模式或显式 deny 规则：拒绝并回喂模型。
-                            # evaluate 只返回 'deny' 不提供来源 → 靠 preset 区分
-                            # plan 只读约束（信息性）vs 用户/预设配置拒绝。
                             yield self._tool_part_event(
                                 assistant_msg_id, tc['requestId'], 'denied',
                                 reason=('plan_mode_readonly'
@@ -445,9 +532,7 @@ class AgentService:
                             yield self._requires_confirmation_event(assistant_msg_id, tc)
                             confirmation = await self._wait_for_confirmation(tc['requestId'])
                             if not confirmation or not confirmation.get('approved'):
-                                # 拒绝（可能含 feedback）或超时/停止：feedback 回喂模型。
-                                # reason 区分 user_rejected / user_stopped / timeout，
-                                # 避免 ToolCard 卡在 permission_pending。
+                                # 拒绝（可能含 feedback）或超时/停止
                                 feedback = confirmation.get('feedback') if confirmation else None
                                 if feedback:
                                     reason = 'user_rejected'
@@ -470,7 +555,6 @@ class AgentService:
                                     await self._persist_approval_rule(
                                         conv_id, tc['name'], resource, 'allow',
                                     )
-                                    # 追加到内存规则，本轮后续相同调用直接放行
                                     approval_rules.append(
                                         ApprovalRule(tc['name'], resource, 'allow')
                                     )
@@ -479,19 +563,19 @@ class AgentService:
                                 )
                                 result = await sandbox.execute(tc['name'], tc['arguments'])
 
-                        # success/failed：ToolExecutor 吞掉 handler 异常只留 str(e)（无类名），
-                        # failed reason 恒为 execute_error
                         yield self._tool_part_event(
                             assistant_msg_id, tc['requestId'],
                             'success' if result.get('success') else 'failed',
                             reason=None if result.get('success') else 'execute_error',
                         )
                         yield self._tool_call_end_event(assistant_msg_id, tc['requestId'], result)
-                        tool_results.append(result)
-                        # 事件发射与历史记录同步：工具执行结果轮也补 phase:tool（去重）
+                        tool_results[tc_index[tc['requestId']]] = result
                         if 'tool' not in phase_nodes:
                             yield self._phase_event(assistant_msg_id, 'tool')
                         phase_nodes.append('tool')
+
+                    # 填充 None 兜底（理论上不应出现）
+                    tool_results = [r if r is not None else {'success': False, 'error': 'execution skipped'} for r in tool_results]
                     executed_tool_names.extend(
                         tc['name'] for tc in collected_tool_calls
                     )
@@ -545,8 +629,17 @@ class AgentService:
 
             # Step 3: 发送完成事件，持久化最终消息
             # 阶段 B2：quality 由 IdleDetector 输出驱动（terminal_quality）；
-            # 全工具轮 for 耗尽（无 else 判定）→ 兜底 success。
-            quality = terminal_quality or 'success'
+            # 全工具轮 for 耗尽（无 else 判定）→ incomplete（P0-3：不再伪装 success）。
+            if terminal_quality is None:
+                quality = 'incomplete'
+            else:
+                quality = terminal_quality
+            # P0-3：满轮次无收敛时通知前端
+            if quality == 'incomplete':
+                yield self._notice_event(
+                    'warn', 'max_iterations_reached',
+                    f'[系统] 已达最大轮次（{max_iterations}），如需继续请发送新消息',
+                )
             # content 策略（与各终态文案/既有测试断言对齐）：
             # - success + 无文本有工具 → 执行摘要（scenario1）
             # - constrained → plan 只读解释文案（scenario3/4）
@@ -1136,7 +1229,7 @@ class AgentService:
                     phase_history: Optional[List[str]] = None,
                     recovery: Optional[List[dict]] = None) -> str:
         """完成事件。quality 枚举见设计文档 §3.3.1/§5.5：
-        success | idle | constrained | empty | stopped | error_fallback。
+        success | idle | constrained | empty | stopped | error_fallback | incomplete。
         recovery 为 [{label, action}] CTA 列表（constrained 交接等场景）。"""
         payload = {
             'id': msg_id, 'type': 'done', 'content': content,

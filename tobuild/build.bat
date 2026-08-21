@@ -10,7 +10,7 @@ REM    build.bat                         交互式输入目标目录
 REM    build.bat D:\ZaoWu                直接指定目标目录
 REM    build.bat -y D:\ZaoWu             跳过确认（覆盖已存在的目标）
 REM
-REM  目标目录内容 = 扁平部署目录（exe + _internal + settings.json），
+REM  目标目录内容 = 扁平部署目录（exe + _internal），
 REM  同时作为发布包 zip 的源（zip 仅含 exe 与 _internal 两路径）。
 REM  发布产物：dist\ZaoWu-{v}-win64.zip + dist\version.json（sha256/体积实测写入）。
 REM ============================================================
@@ -111,10 +111,8 @@ REM 目标目录兜底剔除历史残留（防御旧版构建曾随包分发过�
 if exist "%DEST%\_internal\plugins\.plugin_state.json" del /q "%DEST%\_internal\plugins\.plugin_state.json"
 if exist "%DEST%\_internal\agent_modules\skills\.skill_state.json" del /q "%DEST%\_internal\agent_modules\skills\.skill_state.json"
 
-REM 预置 settings.json（唯一必须预置的 marker；其余 json 后端首次启动自动生成）
-if not exist "%DEST%\settings.json" (
-    copy /y "%REPO_ROOT%\settings.json" "%DEST%\settings.json" >nul
-)
+REM 不预置 settings.json（R59/R60：仓库根 settings.json 硬编码 language=zh-CN，
+REM 预置会压死系统语言自动检测；由后端首启 frozen 物化生成完整默认值）
 
 REM ---- 4. 发布产物（zip + version.json：调 assemble_release.py 复用排除+自检）----
 echo [4/5] 生成发布产物 ...
