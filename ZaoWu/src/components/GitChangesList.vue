@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
 import ConfirmDialog from './ConfirmDialog.vue'
+import GitStashDialog from './GitStashDialog.vue'
 
 const { t } = useI18n()
 const gitStore = useGitStore()
@@ -10,6 +11,8 @@ const gitStore = useGitStore()
 const batchMode = ref(false)
 const selectedFiles = ref<Set<string>>(new Set())
 const showDiscardConfirm = ref(false)
+const showDiscardUntrackedConfirm = ref(false)
+const showStashDialog = ref(false)
 
 const untrackedFiles = computed(() => gitStore.untrackedChanges)
 const stagedFiles = computed(() => gitStore.stagedChanges)
@@ -64,12 +67,32 @@ async function executeDiscard() {
   await gitStore.discardFiles(files)
   exitBatchMode()
 }
+
+function confirmDiscardUntracked() {
+  showDiscardUntrackedConfirm.value = true
+}
+
+async function executeDiscardUntracked() {
+  showDiscardUntrackedConfirm.value = false
+  const files = untrackedFiles.value.map(f => f.path)
+  if (files.length > 0) {
+    await gitStore.discardFiles(files, true)
+  }
+}
 </script>
 
 <template>
   <div class="changes-list">
     <div class="changes-header">
       <span class="changes-title">{{ t('git.changes') }}</span>
+      <button
+        v-if="!batchMode && hasChanges"
+        class="changes-btn"
+        :title="t('git.stash')"
+        @click="showStashDialog = true"
+      >
+        {{ t('git.stash') }}
+      </button>
       <button
         v-if="!batchMode && hasChanges"
         class="changes-btn"
@@ -108,7 +131,17 @@ async function executeDiscard() {
 
     <div v-else class="changes-body">
       <template v-if="untrackedFiles.length > 0">
-        <div class="changes-section-label">{{ t('git.untrackedChanges') }} ({{ untrackedFiles.length }})</div>
+        <div class="changes-section-label">
+          {{ t('git.untrackedChanges') }} ({{ untrackedFiles.length }})
+          <button
+            v-if="!batchMode"
+            class="changes-section-action"
+            :title="t('git.discardAllUntracked')"
+            @click="confirmDiscardUntracked"
+          >
+            {{ t('git.discardAllUntracked') }}
+          </button>
+        </div>
         <div
           v-for="f in untrackedFiles"
           :key="f.path"
@@ -144,6 +177,17 @@ async function executeDiscard() {
       :message="t('git.confirmDiscardDesc', { count: selectedFiles.size })"
       @confirm="executeDiscard"
       @cancel="showDiscardConfirm = false"
+    />
+    <ConfirmDialog
+      :visible="showDiscardUntrackedConfirm"
+      :title="t('git.confirmDiscardTitle')"
+      :message="t('git.confirmDiscardUntracked')"
+      @confirm="executeDiscardUntracked"
+      @cancel="showDiscardUntrackedConfirm = false"
+    />
+    <GitStashDialog
+      v-if="showStashDialog"
+      @close="showStashDialog = false"
     />
   </div>
 </template>
@@ -224,11 +268,31 @@ async function executeDiscard() {
 }
 
 .changes-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 6px 12px 2px;
   font-size: 10px;
   font-weight: 600;
   color: var(--text-tertiary);
   text-transform: uppercase;
+}
+
+.changes-section-action {
+  font-size: 10px;
+  font-weight: 400;
+  text-transform: none;
+  padding: 1px 6px;
+  border: 1px solid var(--danger-muted, rgba(185, 28, 28, 0.2));
+  border-radius: 3px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.changes-section-action:hover {
+  background: var(--danger-muted, rgba(185, 28, 28, 0.1));
 }
 
 .changes-file {

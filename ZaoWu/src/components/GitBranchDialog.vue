@@ -3,11 +3,19 @@ import { ref, computed } from 'vue'
 import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
 import type { GitBranch } from '@/types'
+import ConfirmDialog from './ConfirmDialog.vue'
+import GitCreateBranchDialog from './GitCreateBranchDialog.vue'
 
 const emit = defineEmits<{ close: []; select: [branch: string] }>()
 const { t } = useI18n()
 const gitStore = useGitStore()
 const searchQuery = ref('')
+const showCreateDialog = ref(false)
+const showDeleteConfirm = ref(false)
+const branchToDelete = ref('')
+
+// 默认受保护分支（与后端一致）
+const protectedBranches = ['main', 'master']
 
 function open() {
   gitStore.fetchBranches()
@@ -20,6 +28,28 @@ const remoteBranches = computed(() =>
   gitStore.branches.filter(b => b.isRemote && b.name.toLowerCase().includes(searchQuery.value.toLowerCase()))
 )
 
+function isProtected(name: string) {
+  return protectedBranches.includes(name)
+}
+
+function confirmDelete(name: string) {
+  branchToDelete.value = name
+  showDeleteConfirm.value = true
+}
+
+async function executeDelete() {
+  showDeleteConfirm.value = false
+  const name = branchToDelete.value
+  if (!name) return
+  await gitStore.deleteBranch(name)
+  branchToDelete.value = ''
+}
+
+function handleBranchCreated() {
+  showCreateDialog.value = false
+  gitStore.fetchBranches()
+}
+
 open()
 </script>
 
@@ -28,9 +58,14 @@ open()
     <div class="dialog">
       <div class="dialog-header">
         <span class="dialog-title">{{ t('git.selectBranch') }}</span>
-        <button class="dialog-close" @click="emit('close')">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-        </button>
+        <div class="dialog-header-actions">
+          <button class="dialog-action-btn" :title="t('git.createBranch')" @click="showCreateDialog = true">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 3v8M3 7h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <button class="dialog-close" @click="emit('close')">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
       </div>
       <div class="dialog-search">
         <svg class="dialog-search-icon" width="12" height="12" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -57,6 +92,15 @@ open()
               <svg class="dialog-item-icon" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 2v5l3 3 3-3V2H3z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
               <span class="dialog-item-name">{{ b.name }}</span>
               <span v-if="b.isCurrent" class="dialog-item-badge">{{ t('git.currentBranch', { name: '' }).replace(': ', '') }}</span>
+              <span v-if="isProtected(b.name)" class="dialog-item-badge protected">{{ t('git.protectedBranch') }}</span>
+              <button
+                v-if="!b.isCurrent && !isProtected(b.name)"
+                class="dialog-item-delete"
+                :title="t('git.deleteBranch')"
+                @click.stop="confirmDelete(b.name)"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 3h6M4.5 3V2h3v1M4 4v5h4V4" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
             </div>
           </div>
           <div v-if="remoteBranches.length > 0" class="dialog-section">
@@ -75,6 +119,19 @@ open()
       </div>
     </div>
   </div>
+
+  <GitCreateBranchDialog
+    v-if="showCreateDialog"
+    @close="showCreateDialog = false"
+    @created="handleBranchCreated"
+  />
+  <ConfirmDialog
+    :visible="showDeleteConfirm"
+    :title="t('git.deleteBranch')"
+    :message="t('git.confirmDeleteBranch', { name: branchToDelete })"
+    @confirm="executeDelete"
+    @cancel="showDeleteConfirm = false"
+  />
 </template>
 
 <style scoped>
@@ -111,6 +168,31 @@ open()
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dialog-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.dialog-action-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--accent);
 }
 
 .dialog-close {
@@ -215,6 +297,10 @@ open()
 .dialog-item-name {
   font-size: 13px;
   color: var(--text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dialog-item-badge {
@@ -223,5 +309,36 @@ open()
   background: var(--accent-muted);
   padding: 1px 6px;
   border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.dialog-item-badge.protected {
+  color: var(--warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.dialog-item-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: all var(--transition);
+  flex-shrink: 0;
+}
+
+.dialog-item:hover .dialog-item-delete {
+  opacity: 1;
+}
+
+.dialog-item-delete:hover {
+  background: var(--danger-muted, rgba(185, 28, 28, 0.1));
+  color: var(--danger);
 }
 </style>

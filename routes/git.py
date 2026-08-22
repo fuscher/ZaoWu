@@ -14,6 +14,23 @@ _git_locks_lock = threading.Lock()
 
 RETRYABLE_OPS = {'check', 'status', 'branches', 'commits', 'init'}
 
+# 默认受保护分支列表
+DEFAULT_PROTECTED_BRANCHES = ['main', 'master']
+
+
+def _get_protected_branches():
+    """从配置文件读取受保护分支列表，未配置则返回默认值"""
+    try:
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'config.json')
+        if os.path.isfile(config_path):
+            import json
+            with open(config_path, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            return cfg.get('git', {}).get('protected_branches', DEFAULT_PROTECTED_BRANCHES)
+    except Exception:
+        pass
+    return DEFAULT_PROTECTED_BRANCHES
+
 
 def get_git_lock(path):
     with _git_locks_lock:
@@ -330,6 +347,7 @@ async def git_discard():
     data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     files = data.get('files', [])
+    include_untracked = data.get('includeUntracked', False)
     error = validate_git_path(path)
     if error:
         return jsonify({'ok': False, 'error': error}), 403
@@ -340,7 +358,32 @@ async def git_discard():
     with get_git_lock(path):
         try:
             repo = _git.Repo(path)
-            repo.git.checkout('--', *files)
+            # 区分已跟踪文件和未跟踪文件
+            tracked = []
+            untracked = []
+            if include_untracked:
+                raw = repo.git.status('--porcelain')
+                untracked_set = set()
+                for line in raw.strip().split('\n'):
+                    if line.startswith('?? '):
+                        untracked_set.add(line[3:].strip())
+                for f in files:
+                    (untracked if f in untracked_set else tracked).append(f)
+            else:
+                tracked = files
+
+            # 已跟踪文件用 git checkout 还原
+            if tracked:
+                repo.git.checkout('--', *tracked)
+
+            # 未跟踪文件直接删除（支持目录）
+            for f in untracked:
+                full = os.path.join(path, f)
+                if os.path.isdir(full):
+                    shutil.rmtree(full)
+                elif os.path.isfile(full):
+                    os.remove(full)
+
             return jsonify({'ok': True})
         except Exception as e:
             append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
@@ -354,17 +397,25 @@ async def git_commit():
     data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
     message = data.get('message', '')
+    amend = data.get('amend', False)
     error = validate_git_path(path)
     if error:
         return jsonify({'ok': False, 'error': error}), 403
-    if not message or not isinstance(message, str) or len(message) > 200:
+    # amend 模式下允许空消息（复用上一次提交信息）
+    if not amend and (not message or not isinstance(message, str) or len(message) > 200):
         return jsonify({'ok': False, 'error': 'commit message required (max 200 chars)'}), 400
+    if isinstance(message, str) and len(message) > 200:
+        return jsonify({'ok': False, 'error': 'commit message too long (max 200 chars)'}), 400
 
     import git as _git
     with get_git_lock(path):
         try:
             repo = _git.Repo(path)
-            commit = repo.index.commit(message)
+            # amend 且未提供消息时复用上一次提交信息
+            if amend and not message:
+                message = repo.head.commit.message.strip()
+            kwargs = {'amend': True, 'head': repo.head.commit} if amend else {}
+            commit = repo.index.commit(message, **kwargs)
             return jsonify({'ok': True, 'hash': commit.hexsha[:7]})
         except Exception as e:
             append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
@@ -385,9 +436,18 @@ async def git_push():
         try:
             repo = _git.Repo(path)
             import subprocess
+            # 检查当前分支是否有上游跟踪，没有则自动设置
+            branch = repo.active_branch.name
+            has_upstream = subprocess.run(
+                ['git', 'rev-parse', '--abbrev-ref', '@{upstream}'],
+                cwd=path, capture_output=True, text=True,
+                encoding='utf-8', errors='replace',
+            )
+            cmd = ['git', 'push']
+            if has_upstream.returncode != 0:
+                cmd = ['git', 'push', '-u', 'origin', branch]
             result = subprocess.run(
-                ['git', 'push'],
-                cwd=path, capture_output=True, text=True, timeout=60,
+                cmd, cwd=path, capture_output=True, text=True, timeout=60,
                 encoding='utf-8', errors='replace',
             )
             output = result.stdout
@@ -406,18 +466,21 @@ async def git_push():
 async def git_pull():
     data = await request.get_json(silent=True) or {}
     path = data.get('path', '')
+    strategy = data.get('strategy', 'merge')  # merge 或 rebase
     error = validate_git_path(path)
     if error:
         return jsonify({'ok': False, 'error': error}), 403
+    if strategy not in ('merge', 'rebase'):
+        return jsonify({'ok': False, 'error': 'strategy must be merge or rebase'}), 400
 
     import git as _git
     with get_git_lock(path):
         try:
             repo = _git.Repo(path)
             import subprocess
+            cmd = ['git', 'pull', '--rebase', '--autostash'] if strategy == 'rebase' else ['git', 'pull']
             result = subprocess.run(
-                ['git', 'pull'],
-                cwd=path, capture_output=True, text=True, timeout=60,
+                cmd, cwd=path, capture_output=True, text=True, timeout=60,
                 encoding='utf-8', errors='replace',
             )
             conflicts = {}
@@ -438,6 +501,58 @@ async def git_pull():
         except Exception as e:
             append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
                         'details': {'operation': 'pull', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/fetch', methods=['POST'])
+async def git_fetch():
+    """获取远程更新但不合并，返回本地与远程的差异信息"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            # 先 fetch 远程更新
+            fetch_result = subprocess.run(
+                ['git', 'fetch'], cwd=path, capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace',
+            )
+            if fetch_result.returncode != 0:
+                return jsonify({'ok': False, 'error': (fetch_result.stdout + '\n' + fetch_result.stderr).strip()})
+
+            # 统计 ahead/behind
+            count_result = subprocess.run(
+                ['git', 'rev-list', '--left-right', '--count', 'HEAD...@{upstream}'],
+                cwd=path, capture_output=True, text=True,
+                encoding='utf-8', errors='replace',
+            )
+            ahead, behind = 0, 0
+            if count_result.returncode == 0 and count_result.stdout.strip():
+                parts = count_result.stdout.strip().split()
+                if len(parts) == 2:
+                    ahead, behind = int(parts[0]), int(parts[1])
+
+            # 获取远程领先提交列表
+            commits = []
+            if behind > 0:
+                log_result = subprocess.run(
+                    ['git', 'log', 'HEAD..@{upstream}', '--oneline', '-20'],
+                    cwd=path, capture_output=True, text=True,
+                    encoding='utf-8', errors='replace',
+                )
+                if log_result.returncode == 0 and log_result.stdout.strip():
+                    commits = log_result.stdout.strip().split('\n')
+
+            return jsonify({'ok': True, 'ahead': ahead, 'behind': behind, 'commits': commits})
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': False, 'error': 'fetch timed out'})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'fetch', 'path': path, 'traceback': traceback.format_exc()}})
             return jsonify({'ok': False, 'error': str(e)})
 
 
@@ -501,5 +616,218 @@ async def git_reset_file():
         except Exception as e:
             append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
                         'details': {'operation': 'reset-file', 'path': path, 'file': file,
+                                    'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/stash', methods=['POST'])
+async def git_stash():
+    """暂存当前工作区更改"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    message = data.get('message', '')
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            cmd = ['git', 'stash', 'push']
+            if message:
+                cmd += ['-m', message]
+            result = subprocess.run(
+                cmd, cwd=path, capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace',
+            )
+            return jsonify({'ok': result.returncode == 0, 'output': result.stdout.strip()})
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': False, 'error': 'stash timed out'})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'stash', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/stash-pop', methods=['POST'])
+async def git_stash_pop():
+    """恢复最近的暂存（从栈中移除）"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    index = data.get('index', 0)
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            cmd = ['git', 'stash', 'pop']
+            if index > 0:
+                cmd += ['stash@{' + str(index) + '}']
+            result = subprocess.run(
+                cmd, cwd=path, capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace',
+            )
+            return jsonify({'ok': result.returncode == 0, 'output': (result.stdout + '\n' + result.stderr).strip()})
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': False, 'error': 'stash pop timed out'})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'stash-pop', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/stash-apply', methods=['POST'])
+async def git_stash_apply():
+    """恢复暂存但不从栈中移除"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    index = data.get('index', 0)
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            cmd = ['git', 'stash', 'apply']
+            if index > 0:
+                cmd += ['stash@{' + str(index) + '}']
+            result = subprocess.run(
+                cmd, cwd=path, capture_output=True, text=True, timeout=30,
+                encoding='utf-8', errors='replace',
+            )
+            return jsonify({'ok': result.returncode == 0, 'output': (result.stdout + '\n' + result.stderr).strip()})
+        except subprocess.TimeoutExpired:
+            return jsonify({'ok': False, 'error': 'stash apply timed out'})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'stash-apply', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/stash-list', methods=['POST'])
+async def git_stash_list():
+    """列出所有暂存"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            result = subprocess.run(
+                ['git', 'stash', 'list', '--format=%gd %s'],
+                cwd=path, capture_output=True, text=True, timeout=10,
+                encoding='utf-8', errors='replace',
+            )
+            stashes = []
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.strip().split('\n'):
+                    parts = line.split(' ', 1)
+                    if len(parts) >= 2:
+                        ref = parts[0].strip('{}')
+                        idx = int(ref.replace('stash@', '')) if 'stash@' in ref else 0
+                        stashes.append({'index': idx, 'message': parts[1]})
+                    elif parts:
+                        stashes.append({'index': 0, 'message': parts[0]})
+            return jsonify({'ok': True, 'stashes': stashes})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'stash-list', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/stash-drop', methods=['POST'])
+async def git_stash_drop():
+    """删除指定暂存"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    index = data.get('index', 0)
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+
+    import subprocess
+    with get_git_lock(path):
+        try:
+            cmd = ['git', 'stash', 'drop', 'stash@{' + str(index) + '}']
+            result = subprocess.run(
+                cmd, cwd=path, capture_output=True, text=True, timeout=10,
+                encoding='utf-8', errors='replace',
+            )
+            return jsonify({'ok': result.returncode == 0, 'output': result.stderr.strip()})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'stash-drop', 'path': path, 'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/create-branch', methods=['POST'])
+async def git_create_branch():
+    """创建新分支，可选切换到新分支"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    name = data.get('name', '')
+    switch = data.get('switch', False)
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+    if not name or not isinstance(name, str):
+        return jsonify({'ok': False, 'error': 'branch name required'}), 400
+    if '/' in name or '..' in name or name.startswith('-'):
+        return jsonify({'ok': False, 'error': 'invalid branch name'}), 400
+
+    import git as _git
+    with get_git_lock(path):
+        try:
+            repo = _git.Repo(path)
+            if switch:
+                repo.git.checkout('-b', name)
+            else:
+                repo.git.branch(name)
+            return jsonify({'ok': True})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'create-branch', 'path': path, 'name': name,
+                                    'traceback': traceback.format_exc()}})
+            return jsonify({'ok': False, 'error': str(e)})
+
+
+@git_bp.route('/delete-branch', methods=['POST'])
+async def git_delete_branch():
+    """删除分支，受保护分支需 force=true"""
+    data = await request.get_json(silent=True) or {}
+    path = data.get('path', '')
+    name = data.get('name', '')
+    force = data.get('force', False)
+    error = validate_git_path(path)
+    if error:
+        return jsonify({'ok': False, 'error': error}), 403
+    if not name or not isinstance(name, str):
+        return jsonify({'ok': False, 'error': 'branch name required'}), 400
+
+    import git as _git
+    with get_git_lock(path):
+        try:
+            repo = _git.Repo(path)
+            # 不能删除当前分支
+            if repo.active_branch.name == name:
+                return jsonify({'ok': False, 'error': 'cannot delete current branch'}), 400
+            # 受保护分支校验
+            protected = _get_protected_branches()
+            if name in protected and not force:
+                return jsonify({'ok': False, 'error': 'branch is protected', 'protected': True}), 403
+            if force:
+                repo.git.branch('-D', name)
+            else:
+                repo.git.branch('-d', name)
+            return jsonify({'ok': True})
+        except Exception as e:
+            append_log({'level': 'error', 'type': 'GitOperationError', 'message': str(e),
+                        'details': {'operation': 'delete-branch', 'path': path, 'name': name,
                                     'traceback': traceback.format_exc()}})
             return jsonify({'ok': False, 'error': str(e)})
