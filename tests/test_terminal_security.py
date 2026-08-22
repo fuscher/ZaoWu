@@ -2,7 +2,7 @@
 import pytest
 import sys
 
-from routes.terminal import (
+from services.command_policy import (
     is_command_safe,
     build_terminal_args,
     _SHELL_OPERATORS,

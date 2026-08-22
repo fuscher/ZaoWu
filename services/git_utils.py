@@ -13,6 +13,8 @@ def get_git_status(project_path: str) -> dict:
             capture_output=True,
             text=True,
             timeout=10,
+            encoding='utf-8',
+            errors='replace',
         )
         if result.returncode != 0:
             return {'ok': False, 'error': result.stderr.strip()}
@@ -21,7 +23,7 @@ def get_git_status(project_path: str) -> dict:
         for line in result.stdout.strip().split('\n'):
             if not line:
                 continue
-            status_code = line[:2].strip()
+            status_code = line[:2]
             filename = line[3:].strip()
             status_map = {
                 'M': 'modified',
@@ -34,6 +36,9 @@ def get_git_status(project_path: str) -> dict:
                 'M ': 'modified (staged)',
                 'A ': 'added (staged)',
                 'D ': 'deleted (staged)',
+                ' M': 'modified (unstaged)',
+                ' D': 'deleted (unstaged)',
+                ' A': 'added (unstaged)',
             }
             status = status_map.get(status_code, status_code)
             files.append({'status': status, 'file': filename})
@@ -60,6 +65,8 @@ def get_git_diff(project_path: str, staged: bool = False) -> dict:
             capture_output=True,
             text=True,
             timeout=10,
+            encoding='utf-8',
+            errors='replace',
         )
         if result.returncode != 0:
             return {'ok': False, 'error': result.stderr.strip()}
@@ -87,6 +94,8 @@ def get_recent_commits(project_path: str, count: int = 5) -> dict:
             capture_output=True,
             text=True,
             timeout=10,
+            encoding='utf-8',
+            errors='replace',
         )
         if result.returncode != 0:
             return {'ok': False, 'error': result.stderr.strip()}

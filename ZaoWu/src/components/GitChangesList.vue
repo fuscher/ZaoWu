@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useI18n } from '@/i18n'
 import { useGitStore } from '@/stores/git'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -16,9 +16,11 @@ const showStashDialog = ref(false)
 
 const untrackedFiles = computed(() => gitStore.untrackedChanges)
 const stagedFiles = computed(() => gitStore.stagedChanges)
-const hasChanges = computed(() => untrackedFiles.value.length > 0 || stagedFiles.value.length > 0)
+const unstagedFiles = computed(() => gitStore.unstagedChanges)
+const conflictFiles = computed(() => gitStore.conflictChanges)
+const hasChanges = computed(() => untrackedFiles.value.length > 0 || unstagedFiles.value.length > 0 || stagedFiles.value.length > 0 || conflictFiles.value.length > 0)
 
-const allSelectable = computed(() => [...untrackedFiles.value, ...stagedFiles.value].map(f => f.path))
+const allSelectable = computed(() => [...untrackedFiles.value, ...unstagedFiles.value].map(f => f.path))
 const allSelected = computed(() =>
   allSelectable.value.length > 0 && allSelectable.value.every(f => selectedFiles.value.has(f))
 )
@@ -49,10 +51,26 @@ function exitBatchMode() {
   selectedFiles.value = new Set()
 }
 
+watch(() => gitStore.selectedProject?.id, () => {
+  batchMode.value = false
+  selectedFiles.value.clear()
+})
+
+async function unstageSingle(path: string) {
+  await gitStore.unstageFiles([path])
+}
+
 async function stageSelected() {
   const files = [...selectedFiles.value]
   if (files.length === 0) return
   await gitStore.stageFiles(files)
+  exitBatchMode()
+}
+
+async function unstageSelected() {
+  const files = [...selectedFiles.value]
+  if (files.length === 0) return
+  await gitStore.unstageFiles(files)
   exitBatchMode()
 }
 
@@ -78,6 +96,14 @@ async function executeDiscardUntracked() {
   if (files.length > 0) {
     await gitStore.discardFiles(files, true)
   }
+}
+
+async function resolveOurs(path: string) {
+  await gitStore.resolveAcceptOurs([path])
+}
+
+async function resolveTheirs(path: string) {
+  await gitStore.resolveAcceptTheirs([path])
 }
 </script>
 
@@ -155,6 +181,21 @@ async function executeDiscardUntracked() {
         </div>
       </template>
 
+      <template v-if="unstagedFiles.length > 0">
+        <div class="changes-section-label">{{ t('git.unstagedChanges') }} ({{ unstagedFiles.length }})</div>
+        <div
+          v-for="f in unstagedFiles"
+          :key="f.path"
+          class="changes-file"
+          :class="{ selected: batchMode && selectedFiles.has(f.path) }"
+          @click="batchMode && toggleFile(f.path)"
+        >
+          <span v-if="batchMode" class="changes-check">{{ selectedFiles.has(f.path) ? '✓' : '○' }}</span>
+          <span class="changes-file-type" :class="f.type">{{ (f.type?.[0] || '?').toUpperCase() }}</span>
+          <span class="changes-file-path">{{ f.path }}</span>
+        </div>
+      </template>
+
       <template v-if="stagedFiles.length > 0">
         <div class="changes-section-label">{{ t('git.stagedChanges') }} ({{ stagedFiles.length }})</div>
         <div
@@ -162,11 +203,27 @@ async function executeDiscardUntracked() {
           :key="f.path"
           class="changes-file staged"
           :class="{ selected: batchMode && selectedFiles.has(f.path) }"
-          @click="batchMode && toggleFile(f.path)"
+          @click="batchMode ? toggleFile(f.path) : unstageSingle(f.path)"
         >
           <span v-if="batchMode" class="changes-check">{{ selectedFiles.has(f.path) ? '✓' : '○' }}</span>
           <span class="changes-file-type" :class="f.type">{{ (f.type?.[0] || '?').toUpperCase() }}</span>
           <span class="changes-file-path">{{ f.path }}</span>
+        </div>
+      </template>
+
+      <template v-if="conflictFiles.length > 0">
+        <div class="changes-section-label conflict">{{ t('git.conflictChanges') }} ({{ conflictFiles.length }})</div>
+        <div
+          v-for="f in conflictFiles"
+          :key="f.path"
+          class="changes-file conflict"
+        >
+          <span class="changes-file-type conflict">C</span>
+          <span class="changes-file-path">{{ f.path }}</span>
+          <span v-if="!batchMode" class="conflict-actions">
+            <button class="conflict-btn" :title="t('git.acceptOurs')" @click.stop="resolveOurs(f.path)">{{ t('git.ours') }}</button>
+            <button class="conflict-btn" :title="t('git.acceptTheirs')" @click.stop="resolveTheirs(f.path)">{{ t('git.theirs') }}</button>
+          </span>
         </div>
       </template>
     </div>
@@ -340,6 +397,9 @@ async function executeDiscardUntracked() {
 .changes-file-type.added { background: rgba(22, 101, 52, 0.1); color: #166534; }
 .changes-file-type.deleted { background: rgba(185, 28, 28, 0.1); color: #b91c1c; }
 .changes-file-type.renamed { background: rgba(94, 74, 208, 0.1); color: #5e4ad0; }
+.changes-section-label.conflict { color: #b91c1c; }
+.changes-file.conflict { background: rgba(185, 28, 28, 0.05); }
+.changes-file-type.conflict { background: rgba(185, 28, 28, 0.15); color: #b91c1c; }
 
 .changes-file-path {
   color: var(--text-primary);
@@ -347,5 +407,26 @@ async function executeDiscardUntracked() {
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: Consolas, Monaco, monospace;
+}
+
+.conflict-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.conflict-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-glass);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.conflict-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-primary);
 }
 </style>

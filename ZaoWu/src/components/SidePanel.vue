@@ -97,6 +97,7 @@ const showBranchDialog = ref(false)
 const showMissingDialog = ref(false)
 const showNoRepoDialog = ref(false)
 const historyExpanded = ref(false)
+const gitError = ref('')
 
 const canManageBranch = computed(() => gitStore.selectedProject !== null)
 const canViewHistory = computed(() => gitStore.selectedProject !== null && gitStore.hasGitRepo)
@@ -119,9 +120,14 @@ async function handleProjectClick() {
   showProjectDialog.value = true
 }
 
-function handleProjectSelected(project: Project) {
+async function handleProjectSelected(project: Project) {
   showProjectDialog.value = false
-  gitStore.selectProject(project)
+  gitError.value = ''
+  const result = await gitStore.selectProject(project)
+  if (result?.error) {
+    gitError.value = result.error
+    setTimeout(() => { gitError.value = '' }, 5000)
+  }
 }
 
 function handleBranchClick() {
@@ -153,6 +159,10 @@ async function handleInitRepo() {
 
 watch(() => gitStore.gitAvailable, (val) => {
   if (val === 'unchecked' && showMissingDialog.value) return
+})
+
+watch(() => gitStore.selectedProject?.id, () => {
+  historyExpanded.value = false
 })
 
 watch(
@@ -217,6 +227,8 @@ watch(
           </div>
         </div>
 
+        <div v-if="gitError" class="git-error">{{ gitError }}</div>
+
         <!-- Card 2: Manage Branch -->
         <div
           class="list-item git-card"
@@ -245,7 +257,7 @@ watch(
           </div>
           <div class="list-text">
             <div class="list-title">{{ t('git.history') }}</div>
-            <div class="list-desc">{{ gitStore.commitCount > 0 ? t('git.commitCount', { count: gitStore.commitCount }) : (gitStore.hasGitRepo ? t('git.commitCount', { count: 0 }) : '--') }}</div>
+            <div class="list-desc">{{ gitStore.commitCount > 0 ? t('git.loadedCommitCount', { count: gitStore.commitCount }) : (gitStore.hasGitRepo ? t('git.commitCount', { count: 0 }) : '--') }}</div>
           </div>
         </div>
 
@@ -733,6 +745,15 @@ watch(
   font-size: 10px;
   color: var(--danger);
   padding: 2px 0;
+}
+
+.git-error {
+  font-size: 11px;
+  color: var(--danger);
+  padding: 4px 8px;
+  margin: 4px 0;
+  background: rgba(185, 28, 28, 0.08);
+  border-radius: 4px;
 }
 
 .plugin-panel-section {

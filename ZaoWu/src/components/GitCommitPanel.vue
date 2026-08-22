@@ -12,6 +12,7 @@ const isAmend = ref(false)
 const isPushing = ref(false)
 const isPulling = ref(false)
 const isFetching = ref(false)
+const isError = ref(false)
 
 const canCommit = computed(() => message.value.trim().length > 0 && !gitStore.isCommitting)
 const hasStaged = computed(() => gitStore.stagedChanges.length > 0)
@@ -37,13 +38,14 @@ const syncClass = computed(() => {
 function toggleAmend() {
   isAmend.value = !isAmend.value
   if (isAmend.value && !message.value && gitStore.commits.length > 0) {
-    message.value = gitStore.commits[0].message
+    message.value = gitStore.commits[0]?.message ?? ''
   }
 }
 
 async function handleCommit() {
   if (!canCommit.value) return
   const result = await gitStore.commit(message.value.trim(), isAmend.value)
+  isError.value = !result.ok
   if (result.ok) {
     message.value = ''
     isAmend.value = false
@@ -54,11 +56,23 @@ async function handleCommit() {
   }
 }
 
+async function handleUndoCommit() {
+  const result = await gitStore.undoCommit()
+  isError.value = !result.ok
+  if (result.ok) {
+    feedback.value = t('git.undoCommitSuccess')
+  } else {
+    feedback.value = result.error || t('git.undoCommitFailed')
+  }
+  setTimeout(() => { feedback.value = '' }, 3000)
+}
+
 async function handlePush() {
   isPushing.value = true
   feedback.value = t('git.pushing')
   try {
     const result = await gitStore.push()
+    isError.value = !result.ok
     feedback.value = result.ok ? (result.output || 'OK') : (result.error || 'push failed')
     setTimeout(() => { feedback.value = '' }, 5000)
   } finally {
@@ -72,8 +86,10 @@ async function handlePull() {
   try {
     const result = await gitStore.pull()
     if (result.hasConflicts) {
+      isError.value = true
       feedback.value = t('git.conflictsDesc')
     } else {
+      isError.value = !result.ok
       feedback.value = result.ok ? (result.output || 'OK') : (result.error || 'pull failed')
     }
     setTimeout(() => { feedback.value = '' }, 5000)
@@ -86,6 +102,7 @@ async function handleFetch() {
   isFetching.value = true
   try {
     const result = await gitStore.fetchRemote()
+    isError.value = !result.ok
     if (result.ok) {
       feedback.value = t('git.fetchSuccess')
     } else {
@@ -130,7 +147,7 @@ async function handleFetch() {
       </button>
       <button
         class="commit-btn push"
-        :disabled="!gitStore.hasProject || isPushing"
+        :disabled="!gitStore.hasProject || isPushing || gitStore.isCommitting"
         :title="t('git.push')"
         @click="handlePush"
       >
@@ -140,7 +157,7 @@ async function handleFetch() {
       </button>
       <button
         class="commit-btn pull"
-        :disabled="!gitStore.hasProject || isPulling"
+        :disabled="!gitStore.hasProject || isPulling || gitStore.isCommitting"
         :title="t('git.pull')"
         @click="handlePull"
       >
@@ -165,8 +182,17 @@ async function handleFetch() {
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M9 4l-4 4-2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         {{ gitStore.isCommitting ? t('git.committing') : t('git.commit') }}
       </button>
+      <button
+        v-if="gitStore.commits.length >= 2"
+        class="commit-btn undo"
+        :disabled="!gitStore.hasProject || gitStore.isCommitting"
+        :title="t('git.undoCommit')"
+        @click="handleUndoCommit"
+      >
+        {{ t('git.undoCommit') }}
+      </button>
     </div>
-    <div v-if="feedback" class="commit-feedback" :class="{ error: feedback.includes('fail') || feedback.includes('error') }">
+    <div v-if="feedback" class="commit-feedback" :class="{ error: isError }">
       {{ feedback }}
     </div>
   </div>
@@ -268,15 +294,16 @@ async function handleFetch() {
 }
 
 .commit-actions {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
   margin-top: 10px;
-  flex-wrap: wrap;
 }
 
 .commit-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 6px 10px;
   border: none;
@@ -326,12 +353,23 @@ async function handleFetch() {
 .commit-btn.commit {
   background: var(--accent-muted);
   color: var(--accent);
-  margin-left: auto;
+  grid-column: 1 / -1;
 }
 
 .commit-btn.commit:hover:not(:disabled) {
   background: var(--accent);
   color: #fff;
+}
+
+.commit-btn.undo {
+  background: var(--bg-glass);
+  color: var(--danger, #ef4444);
+  grid-column: 1 / -1;
+}
+
+.commit-btn.undo:hover:not(:disabled) {
+  background: var(--danger-muted, rgba(239, 68, 68, 0.15));
+  color: var(--danger, #ef4444);
 }
 
 .spinner {

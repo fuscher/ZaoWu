@@ -8,7 +8,7 @@ const emit = defineEmits<{ close: []; select: [project: Project] }>()
 const { t } = useI18n()
 const projectsStore = useProjectsStore()
 
-const projects = computed(() => projectsStore.activeProjects)
+const projects = computed(() => projectsStore.activeProjects.filter(p => !p.virtual))
 </script>
 
 <template>

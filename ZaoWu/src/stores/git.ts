@@ -21,7 +21,9 @@ export const useGitStore = defineStore('git', () => {
   const currentBranch = ref('')
   const branches = ref<GitBranch[]>([])
   const untrackedChanges = ref<GitChange[]>([])
+  const unstagedChanges = ref<GitChange[]>([])
   const stagedChanges = ref<GitChange[]>([])
+  const conflictChanges = ref<GitChange[]>([])
   const commits = ref<GitCommit[]>([])
   const commitsOffset = ref(0)
   const commitsHasMore = ref(false)
@@ -71,7 +73,9 @@ export const useGitStore = defineStore('git', () => {
     currentBranch.value = ''
     branches.value = []
     untrackedChanges.value = []
+    unstagedChanges.value = []
     stagedChanges.value = []
+    conflictChanges.value = []
     commits.value = []
     commitsOffset.value = 0
     commitsHasMore.value = false
@@ -80,7 +84,7 @@ export const useGitStore = defineStore('git', () => {
     stashList.value = []
 
     const res = await _api<{ ok?: boolean; hasRepo?: boolean; branch?: string; changes?: GitChange[]; error?: string }>('/status')
-    if (res.error) return
+    if (res.error) return { error: res.error }
 
     if (!res.hasRepo) {
       hasRepo.value = false
@@ -90,8 +94,10 @@ export const useGitStore = defineStore('git', () => {
     hasRepo.value = true
     currentBranch.value = res.branch || ''
     const changes = res.changes || []
-    untrackedChanges.value = changes.filter(c => c.status === 'unstaged')
+    untrackedChanges.value = changes.filter(c => c.status === 'untracked')
+    unstagedChanges.value = changes.filter(c => c.status === 'unstaged')
     stagedChanges.value = changes.filter(c => c.status === 'staged')
+    conflictChanges.value = changes.filter(c => c.status === 'conflict')
   }
 
   async function fetchBranches() {
@@ -135,6 +141,7 @@ export const useGitStore = defineStore('git', () => {
       commits.value = [...commits.value, ...(res.commits || [])]
       commitsOffset.value = nextOffset
       commitsHasMore.value = res.hasMore || false
+      commitCount.value = commits.value.length
     }
   }
 
@@ -148,8 +155,10 @@ export const useGitStore = defineStore('git', () => {
     if (res.ok) {
       currentBranch.value = res.branch || ''
       const changes = res.changes || []
-      untrackedChanges.value = changes.filter(c => c.status === 'unstaged')
+      untrackedChanges.value = changes.filter(c => c.status === 'untracked')
+      unstagedChanges.value = changes.filter(c => c.status === 'unstaged')
       stagedChanges.value = changes.filter(c => c.status === 'staged')
+      conflictChanges.value = changes.filter(c => c.status === 'conflict')
     }
   }
 
@@ -174,6 +183,13 @@ export const useGitStore = defineStore('git', () => {
   async function stageFiles(files: string[]): Promise<{ ok: boolean; error?: string }> {
     if (!selectedProject.value) return { ok: false }
     const res = await _api<{ ok?: boolean; error?: string }>('/stage', { files })
+    if (res.ok) await fetchChanges()
+    return { ok: !!res.ok, error: res.error }
+  }
+
+  async function unstageFiles(files: string[]): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/unstage', { files })
     if (res.ok) await fetchChanges()
     return { ok: !!res.ok, error: res.error }
   }
@@ -258,27 +274,30 @@ export const useGitStore = defineStore('git', () => {
     if (res.ok) {
       await fetchChanges()
       await reloadCommits()
+      await fetchStashes()
     }
     return { ok: !!res.ok, error: res.error }
   }
 
-  async function stashPop(index = 0): Promise<{ ok: boolean; error?: string }> {
+  async function stashPop(index = 0): Promise<{ ok: boolean; error?: string; hasConflicts?: boolean }> {
     if (!selectedProject.value) return { ok: false }
-    const res = await _api<{ ok?: boolean; error?: string }>('/stash-pop', { index })
-    if (res.ok) {
+    const res = await _api<{ ok?: boolean; error?: string; hasConflicts?: boolean }>('/stash-pop', { index })
+    if (res.ok || res.hasConflicts) {
       await fetchChanges()
       await reloadCommits()
+      await fetchStashes()
     }
-    return { ok: !!res.ok, error: res.error }
+    return { ok: !!res.ok, error: res.error, hasConflicts: res.hasConflicts }
   }
 
-  async function stashApply(index = 0): Promise<{ ok: boolean; error?: string }> {
+  async function stashApply(index = 0): Promise<{ ok: boolean; error?: string; hasConflicts?: boolean }> {
     if (!selectedProject.value) return { ok: false }
-    const res = await _api<{ ok?: boolean; error?: string }>('/stash-apply', { index })
-    if (res.ok) {
+    const res = await _api<{ ok?: boolean; error?: string; hasConflicts?: boolean }>('/stash-apply', { index })
+    if (res.ok || res.hasConflicts) {
       await fetchChanges()
+      await fetchStashes()
     }
-    return { ok: !!res.ok, error: res.error }
+    return { ok: !!res.ok, error: res.error, hasConflicts: res.hasConflicts }
   }
 
   async function stashDrop(index: number): Promise<{ ok: boolean; error?: string }> {
@@ -318,6 +337,20 @@ export const useGitStore = defineStore('git', () => {
     return { ok: !!res.ok, error: res.error, protected: res.protected }
   }
 
+  async function resolveAcceptOurs(files: string[]): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/resolve-accept-ours', { files })
+    if (res.ok) await fetchChanges()
+    return { ok: !!res.ok, error: res.error }
+  }
+
+  async function resolveAcceptTheirs(files: string[]): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/resolve-accept-theirs', { files })
+    if (res.ok) await fetchChanges()
+    return { ok: !!res.ok, error: res.error }
+  }
+
   async function execTerminalCmd(command: string): Promise<string> {
     try {
       const res = await fetch(apiPath('/terminal/exec'), {
@@ -338,7 +371,9 @@ export const useGitStore = defineStore('git', () => {
     currentBranch.value = ''
     branches.value = []
     untrackedChanges.value = []
+    unstagedChanges.value = []
     stagedChanges.value = []
+    conflictChanges.value = []
     commits.value = []
     commitsOffset.value = 0
     commitsHasMore.value = false
@@ -349,13 +384,56 @@ export const useGitStore = defineStore('git', () => {
     stashList.value = []
   }
 
+  async function getFileDiff(file?: string, staged = false): Promise<{ ok: boolean; diff?: string; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; diff?: string; error?: string }>('/diff', { file, staged })
+    return { ok: !!res.ok, diff: res.diff, error: res.error }
+  }
+
+  async function fetchRemotes(): Promise<{ ok: boolean; remotes?: Array<{name: string; url: string; type: string}>; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; remotes?: Array<{name: string; url: string; type: string}>; error?: string }>('/remote-list')
+    return { ok: !!res.ok, remotes: res.remotes, error: res.error }
+  }
+
+  async function addRemote(name: string, url: string): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/remote-add', { name, url })
+    return { ok: !!res.ok, error: res.error }
+  }
+
+  async function removeRemote(name: string): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/remote-remove', { name })
+    return { ok: !!res.ok, error: res.error }
+  }
+
+  async function fetchTags(): Promise<{ ok: boolean; tags?: string[]; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; tags?: string[]; error?: string }>('/tags')
+    return { ok: !!res.ok, tags: res.tags, error: res.error }
+  }
+
+  async function createTag(name: string, message?: string): Promise<{ ok: boolean; error?: string }> {
+    if (!selectedProject.value) return { ok: false }
+    const res = await _api<{ ok?: boolean; error?: string }>('/create-tag', { name, message })
+    return { ok: !!res.ok, error: res.error }
+  }
+
+  async function cloneRepository(url: string, dest: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+    const res = await _api<{ ok?: boolean; path?: string; error?: string }>('/clone', { url, dest })
+    return { ok: !!res.ok, path: res.path, error: res.error }
+  }
+
   return {
     gitAvailable,
     selectedProject,
     currentBranch,
     branches,
     untrackedChanges,
+    unstagedChanges,
     stagedChanges,
+    conflictChanges,
     commits,
     commitsOffset,
     commitsHasMore,
@@ -380,6 +458,7 @@ export const useGitStore = defineStore('git', () => {
     fetchChanges,
     fetchRemote,
     stageFiles,
+    unstageFiles,
     stageAll,
     discardFiles,
     commit,
@@ -395,6 +474,15 @@ export const useGitStore = defineStore('git', () => {
     fetchStashes,
     createBranch,
     deleteBranch,
+    resolveAcceptOurs,
+    resolveAcceptTheirs,
+    getFileDiff,
+    fetchRemotes,
+    addRemote,
+    removeRemote,
+    fetchTags,
+    createTag,
+    cloneRepository,
     execTerminalCmd,
     clearProject,
   }

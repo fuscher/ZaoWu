@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '@/i18n'
 import type { GitCommit } from '@/types'
 
@@ -11,14 +11,27 @@ const props = defineProps<{
 const emit = defineEmits<{ loadMore: [] }>()
 const { t } = useI18n()
 const containerRef = ref<HTMLElement | null>(null)
+const svgWidth = ref(280)
 const NODE_RADIUS = 5
 const LINE_HEIGHT = 48
 const PADDING_LEFT = 14
 const PADDING_TOP = 16
 
-const locals = computed(() =>
-  props.commits.filter(c => c.isLocalTip)
-)
+let resizeObserver: ResizeObserver | null = null
+onMounted(() => {
+  if (containerRef.value) {
+    svgWidth.value = containerRef.value.clientWidth || 280
+    resizeObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        svgWidth.value = entry.contentRect.width || 280
+      }
+    })
+    resizeObserver.observe(containerRef.value)
+  }
+})
+onUnmounted(() => {
+  resizeObserver?.disconnect()
+})
 
 const hasContent = computed(() => props.commits.length > 0)
 
@@ -38,7 +51,7 @@ function copyHash(hash: string) {
   <div v-if="!hasContent" class="graph-empty">{{ t('git.commitCount', { count: 0 }) }}</div>
   <div v-else ref="containerRef" class="graph-container" @scroll="onScroll">
     <svg
-      :width="280"
+      :width="svgWidth"
       :height="commits.length * LINE_HEIGHT + PADDING_TOP + 16"
       class="graph-svg"
     >
@@ -72,7 +85,7 @@ function copyHash(hash: string) {
           @click="copyHash(c.hash)"
         >
           <tspan fill="var(--text-tertiary)" font-size="10">{{ c.shortHash }} </tspan>
-          {{ c.message }}
+          {{ c.message.length > 60 ? c.message.slice(0, 60) + '…' : c.message }}
         </text>
         <text
           v-if="c.isLocalTip"
@@ -91,14 +104,14 @@ function copyHash(hash: string) {
       </g>
     </svg>
     <div v-if="hasMore" class="graph-more" @click="emit('loadMore')">
-      {{ t('git.commitCount', { count: '...' }).replace('...', '') }}...
+      {{ t('git.loadMoreCommits') }}
     </div>
   </div>
 </template>
 
 <style scoped>
 .graph-container {
-  max-height: 360px;
+  max-height: 50vh;
   overflow-y: auto;
   padding: 4px 0;
 }

@@ -226,9 +226,9 @@ export interface FilenameMatch {
 
 export type GitAvailability = 'unchecked' | 'available' | 'unavailable'
 
-export type GitChangeType = 'untracked' | 'modified' | 'added' | 'deleted' | 'renamed'
+export type GitChangeType = 'untracked' | 'modified' | 'added' | 'deleted' | 'renamed' | 'conflict'
 
-export type GitChangeStatus = 'unstaged' | 'staged'
+export type GitChangeStatus = 'untracked' | 'unstaged' | 'staged' | 'conflict'
 
 export interface GitChange {
   path: string

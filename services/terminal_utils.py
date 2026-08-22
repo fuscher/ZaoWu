@@ -3,7 +3,7 @@ import os
 import shlex
 import asyncio
 
-from routes.terminal import (
+from services.command_policy import (
     validate_terminal_path, BLOCKED_PATTERNS, ALLOWED_COMMANDS, _SHELL_OPERATORS,
     build_terminal_args,
 )
@@ -53,19 +53,45 @@ def agent_is_command_safe(command: str) -> tuple:
     return True, ''
 
 
-async def execute_command(command: str, cwd: str) -> dict:
+def _validate_output_path(args: list[str], cwd: str) -> tuple[bool, str]:
+    """检查 curl/wget 的 -o/--output 参数是否在项目内"""
+    import os
+    for i, arg in enumerate(args):
+        if arg in ('-o', '--output') and i + 1 < len(args):
+            target = args[i + 1]
+            if target.startswith('-'):
+                continue
+            real_cwd = os.path.realpath(cwd)
+            real_target = os.path.normcase(os.path.realpath(os.path.join(real_cwd, target)))
+            real_base = os.path.normcase(real_cwd)
+            if not real_target.startswith(real_base + os.sep) and real_target != real_base:
+                return False, f'output path escapes project: {target}'
+    return True, ''
+
+
+async def execute_command(command: str, cwd: str, *, safe_checker=None) -> dict:
     """执行终端命令（异步，纯函数）
 
-    复用 routes/terminal.py 的 validate_terminal_path 进行路径验证，
-    使用 agent_is_command_safe（扩展白名单 + 管道检测）。
+    复用 services/command_policy 的 validate_terminal_path 进行路径验证。
+    safe_checker: 命令安全校验函数，默认 agent_is_command_safe（扩展白名单）。
+    GUI 终端应传入 is_command_safe（窄白名单）。
     """
+    if safe_checker is None:
+        safe_checker = agent_is_command_safe
+
     path_error = validate_terminal_path(cwd)
     if path_error:
         return {'ok': False, 'error': path_error}
 
-    safe, err_msg = agent_is_command_safe(command)
+    safe, err_msg = safe_checker(command)
     if not safe:
         return {'ok': False, 'error': err_msg}
+
+    cmd_parts = shlex.split(command)
+    if cmd_parts[0] in ('curl', 'wget'):
+        ok, err = _validate_output_path(cmd_parts[1:], cwd)
+        if not ok:
+            return {'ok': False, 'error': err}
 
     exec_args, build_err = build_terminal_args(command)
     if exec_args is None:

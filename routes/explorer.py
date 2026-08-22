@@ -569,8 +569,11 @@ def is_path_in_projects(target_path):
     projects = read_projects()
     for p in projects:
         real_root = os.path.realpath(p['path'])
-        if real_target == real_root or real_target.startswith(real_root + os.sep):
-            return True
+        try:
+            if os.path.commonpath([real_target, real_root]) == real_root:
+                return True
+        except ValueError:
+            continue
     return False
 
 

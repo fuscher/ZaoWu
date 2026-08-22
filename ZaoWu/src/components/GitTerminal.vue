@@ -12,6 +12,18 @@ const historyIndex = ref(-1)
 const outputContainer = ref<HTMLElement | null>(null)
 const inputRef = ref<HTMLInputElement | null>(null)
 
+function resolvePath(base: string, target: string): string {
+  const isAbsolute = target.startsWith('/') || /^[A-Z]:\\/i.test(target)
+  const raw = isAbsolute ? target : base + '/' + target
+  const parts = raw.replace(/\\/g, '/').split('/').filter(Boolean)
+  const resolved: string[] = []
+  for (const s of parts) {
+    if (s === '..') { if (resolved.length > 1) resolved.pop() }
+    else if (s !== '.') resolved.push(s)
+  }
+  return resolved.join('/')
+}
+
 async function exec() {
   const cmd = command.value.trim()
   if (!cmd) return
@@ -20,6 +32,28 @@ async function exec() {
   history.value.unshift(cmd)
   historyIndex.value = -1
   output.value.push('> ' + cmd)
+
+  // cd 前端短路
+  if (cmd.startsWith('cd ') || cmd === 'cd') {
+    const target = cmd === 'cd' ? '' : cmd.slice(3).trim()
+    if (!target) {
+      output.value.push(gitStore.selectedProject?.path || '')
+      await nextTick()
+      if (outputContainer.value) outputContainer.value.scrollTop = outputContainer.value.scrollHeight
+      return
+    }
+    const basePath = gitStore.terminalCwd || gitStore.selectedProject?.path || ''
+    const newPath = resolvePath(basePath, target)
+    const projectPath = gitStore.selectedProject?.path?.replace(/\\/g, '/') || ''
+    if (!newPath.startsWith(projectPath)) {
+      output.value.push('cd: permission denied (outside project)')
+    } else {
+      gitStore.terminalCwd = newPath.replace(/\//g, '\\')
+    }
+    await nextTick()
+    if (outputContainer.value) outputContainer.value.scrollTop = outputContainer.value.scrollHeight
+    return
+  }
 
   const result = await gitStore.execTerminalCmd(cmd)
   output.value.push(result || '(no output)')
@@ -55,6 +89,12 @@ function handleKeydown(e: KeyboardEvent) {
 function focusInput() {
   inputRef.value?.focus()
 }
+
+watch(() => gitStore.selectedProject?.id, () => {
+  output.value = []
+  history.value = []
+  historyIndex.value = -1
+})
 </script>
 
 <template>

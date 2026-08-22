@@ -91,7 +91,7 @@ open()
             >
               <svg class="dialog-item-icon" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 2v5l3 3 3-3V2H3z" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
               <span class="dialog-item-name">{{ b.name }}</span>
-              <span v-if="b.isCurrent" class="dialog-item-badge">{{ t('git.currentBranch', { name: '' }).replace(': ', '') }}</span>
+              <span v-if="b.isCurrent" class="dialog-item-badge">{{ t('git.currentBranchBadge') }}</span>
               <span v-if="isProtected(b.name)" class="dialog-item-badge protected">{{ t('git.protectedBranch') }}</span>
               <button
                 v-if="!b.isCurrent && !isProtected(b.name)"
@@ -328,13 +328,12 @@ open()
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
-  opacity: 0;
   transition: all var(--transition);
   flex-shrink: 0;
 }
 
 .dialog-item:hover .dialog-item-delete {
-  opacity: 1;
+  color: var(--text-secondary);
 }
 
 .dialog-item-delete:hover {

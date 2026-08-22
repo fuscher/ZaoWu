@@ -36,18 +36,18 @@ import GitTerminal from './GitTerminal.vue'
 }
 
 .git-top-left {
-  flex: 1;
+  flex: 7;
   min-width: 0;
   border-right: 1px solid var(--border-glass);
 }
 
 .git-top-right {
-  flex: 1;
+  flex: 3;
   min-width: 0;
 }
 
 .git-bottom {
-  flex: 3;
-  min-height: 0;
+  flex: 2;
+  min-height: clamp(120px, 20vh, 280px);
 }
 </style>
