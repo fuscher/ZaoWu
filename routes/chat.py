@@ -41,6 +41,19 @@ def _read_json(filepath, default):
         return default
 
 
+def _migrate_providers(data) -> dict:
+    """惰性迁移 providers.json（按 schemaVersion 递增升级）。
+
+    当前 schemaVersion=1 为空操作；未来结构变更时在此显式迁移，
+    避免旧数据（无 schemaVersion 字段）在新版本下静默误行为。
+    """
+    if not isinstance(data, dict) or not isinstance(data.get('providers'), list):
+        return {'schemaVersion': 1, 'providers': []}
+    if not data.get('schemaVersion'):
+        data['schemaVersion'] = 1
+    return data
+
+
 # OpenAI 兼容服务上下文窗口字段名清单：不同服务字段名不一，
 # 取第一个可解析为 int 的字段值（如 131072 / "131072" / "128K"）。
 _CONTEXT_LENGTH_KEYS = (
@@ -73,7 +86,7 @@ def _write_json(filepath, data):
 
 def _init_data_files():
     if not os.path.exists(PROVIDERS_FILE):
-        _write_json(PROVIDERS_FILE, {'providers': []})
+        _write_json(PROVIDERS_FILE, {'schemaVersion': 1, 'providers': []})
     if not os.path.exists(CONFIG_FILE):
         _write_json(CONFIG_FILE, {
             'defaultProviderId': '',
@@ -144,7 +157,11 @@ def validate_api_base(api_base: str) -> tuple[bool, str]:
     """校验 apiBase 是否指向可公开访问的 HTTP/HTTPS URL，防止 SSRF。
 
     拒绝私网、链路本地及元数据地址；允许回环地址以支持本地模型服务；
-    DNS 解析失败则拒绝。
+    DNS 解析失败则拒绝。空串返回 (True, '')，由调用方自行判空。
+
+    已知局限（决策：本地优先桌面应用风险可接受，维持现状）：本函数解析后
+    由 requests/httpx 在请求时再次解析，存在 DNS-rebinding 毫秒级窗口；
+    调用方应在每次请求前即时调用本函数以缩小窗口。
     """
     if not isinstance(api_base, str) or not api_base.strip():
         return True, ''
@@ -304,22 +321,48 @@ def _models_url_for(api_base: str, protocol: str) -> str:
 
 
 def _auth_headers(api_key: str, auth_type: str, protocol: str) -> dict:
-    """按鉴权方式构造请求头。auth_type: bearer | x-api-key | none"""
+    """按鉴权方式构造请求头。auth_type: bearer | x-api-key | none
+
+    注意：anthropic-version 是 Anthropic Messages 协议要求的版本头，与鉴权方式
+    无关——protocol=anthropic 时无条件携带，避免 authType 非 x-api-key 时
+    拉取/聊天被 400 拒绝。
+    """
     headers = {'Content-Type': 'application/json'}
     key = (api_key or '').strip()
+    if protocol == 'anthropic':
+        headers['anthropic-version'] = '2023-06-01'
     if auth_type == 'x-api-key':
         headers['x-api-key'] = key
-        if protocol == 'anthropic':
-            headers['anthropic-version'] = '2023-06-01'
     elif auth_type != 'none' and key:
         headers['Authorization'] = f'Bearer {key}'
     return headers
 
 
+def _normalize_anthropic_messages(messages: list) -> list:
+    """Anthropic Messages API 要求 user/assistant 交替且首条为 user。
+
+    合并连续同角色、剔除空 content/非法 role、丢弃前导 assistant；
+    返回空列表表示无可发送消息（由调用方决定回退策略）。
+    """
+    out = []
+    for msg in messages:
+        role, content = msg.get('role'), msg.get('content')
+        if role not in ('user', 'assistant') or not content:
+            continue
+        if (out and out[-1]['role'] == role
+                and isinstance(out[-1]['content'], str)
+                and isinstance(content, str)):
+            out[-1]['content'] += '\n' + content
+        else:
+            out.append({'role': role, 'content': content})
+    while out and out[0]['role'] != 'user':
+        out.pop(0)
+    return out
+
+
 def _parse_models_response(raw) -> list:
     """结构容错解析模型列表响应：兼容 {data:[...]} 与裸数组两种形态。"""
-    result = raw if isinstance(raw, dict) else {}
-    raw_list = result.get('data') if isinstance(result, dict) else raw
+    raw_list = raw.get('data') if isinstance(raw, dict) else raw
     models = []
     for m in raw_list or []:
         if not isinstance(m, dict):
@@ -346,7 +389,7 @@ def get_provider_presets():
 
 @chat_bp.route('/providers', methods=['GET'])
 def get_providers():
-    data = _read_json(PROVIDERS_FILE, {'providers': []})
+    data = _migrate_providers(_read_json(PROVIDERS_FILE, {'providers': []}))
     return jsonify({'ok': True, 'providers': data.get('providers', [])})
 
 
@@ -394,7 +437,7 @@ async def save_providers():
             return jsonify({'ok': False, 'error': f'provider {pid}: authType must be bearer, x-api-key or none'}), 400
         validated.append(p)
 
-    _write_json(PROVIDERS_FILE, {'providers': validated})
+    _write_json(PROVIDERS_FILE, {'schemaVersion': 1, 'providers': validated})
     return jsonify({'ok': True})
 
 
@@ -454,7 +497,7 @@ async def fetch_models_by_config():
 
 @chat_bp.route('/models/<provider_id>', methods=['GET'])
 def get_models(provider_id):
-    data = _read_json(PROVIDERS_FILE, {'providers': []})
+    data = _migrate_providers(_read_json(PROVIDERS_FILE, {'providers': []}))
     provider = next((p for p in (data.get('providers') or []) if p['id'] == provider_id), None)
     if not provider:
         return jsonify({'ok': False, 'error': 'provider not found'}), 404
@@ -472,9 +515,23 @@ def get_models(provider_id):
 
     ok, err, models = _fetch_models_sync(api_base, api_key, protocol, auth_type)
     if ok:
-        provider['models'] = models
+        # 合并语义：保留用户手动添加的模型与编辑过的显示名，仅补充 API 新增项
+        # 并刷新 API 侧字段（与 ProviderDialog 批量导入 importSelected 一致），
+        # 避免「刷新模型列表」静默丢弃手动项/改名。
+        existing = {m.get('id'): m for m in provider.get('models', [])}
+        merged, api_ids = [], set()
+        for m in models:
+            mid = m.get('id')
+            api_ids.add(mid)
+            old = existing.get(mid)
+            if old is not None:
+                merged.append({**old, **{k: v for k, v in m.items() if k != 'name'}})
+            else:
+                merged.append(m)
+        merged.extend(old for mid, old in existing.items() if mid not in api_ids)
+        provider['models'] = merged
         _write_json(PROVIDERS_FILE, data)
-        return jsonify({'ok': True, 'models': models})
+        return jsonify({'ok': True, 'models': merged})
     # 拉取失败（网络/鉴权等）：回退本地已存模型，避免前端报错
     _log.warning('get_models provider=%s fetch failed: %s', provider_id, err)
     return jsonify({'ok': True, 'models': provider.get('models', [])})
@@ -746,6 +803,11 @@ async def send_message(conv_id):
                         system_text = msg.get('content') or ''
                     else:
                         anthropic_messages.append(msg)
+                # B2：归一化角色序列（合并连续同角色、剔除空/非法、去前导 assistant），
+                # 避免分支编辑/异常历史触发 Anthropic 400；空结果回退原样。
+                normalized = _normalize_anthropic_messages(anthropic_messages)
+                if normalized:
+                    anthropic_messages = normalized
                 payload = {
                     'model': model_id,
                     'system': system_text,

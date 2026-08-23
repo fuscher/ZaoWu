@@ -458,6 +458,19 @@ def scenario_bootstrap(workdir, port, sources):
     with open(os.path.join(workdir, 'data', 'seed.txt'), 'w', encoding='utf-8') as f:
         f.write('legacy user data')
 
+    # 模拟真实旧构建：运行期 JSON 实际写入 _internal（早期 BASE_DIR 解析到
+    # _internal）。首启 bootstrap 后应迁移到部署根，API Key 不得丢失。
+    legacy_providers = {
+        'providers': [{
+            'id': 'legacy-openai',
+            'name': 'Legacy OpenAI',
+            'apiBase': 'https://api.openai.com/v1',
+            'apiKey': 'sk-legacy-secret-123',
+            'models': [{'id': 'gpt-4', 'name': 'gpt-4'}],
+        }]
+    }
+    write_json(os.path.join(workdir, '_internal', 'providers.json'), legacy_providers)
+
     env = os.environ.copy()
     env.update({
         'ZAOWU_SIM_ROOT': workdir,
@@ -475,6 +488,14 @@ def scenario_bootstrap(workdir, port, sources):
     check('bootstrap：versions.json current=v0', cfg.get('current') == 'v0')
     check('bootstrap：运行期数据原样保留',
           open(os.path.join(workdir, 'data', 'seed.txt'), encoding='utf-8').read() == 'legacy user data')
+    # C1：providers.json 迁移到部署根且 API Key 保留（旧文件仍在 _internal 内，复制非移动）
+    migrated = read_json(os.path.join(workdir, 'providers.json'))
+    check('bootstrap：providers.json 迁移到部署根',
+          migrated.get('providers', [])[0].get('id') == 'legacy-openai')
+    check('bootstrap：providers.json API Key 保留',
+          migrated.get('providers', [])[0].get('apiKey') == 'sk-legacy-secret-123')
+    check('bootstrap：迁移为复制非移动（旧文件仍在 _internal）',
+          os.path.isfile(os.path.join(workdir, 'versions', 'v0', '_internal', 'providers.json')))
 
     assert wait_health(port, 30), 'bootstrap 后 v0 应用未启动'
     check('bootstrap 首启：用户数据迁出（skills/user_skill）',
