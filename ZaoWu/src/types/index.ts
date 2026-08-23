@@ -124,18 +124,46 @@ export interface Conversation {
   agentConfig?: AgentConfig
 }
 
+export type ProviderProtocol = 'openai' | 'anthropic'
+
+export type ProviderAuthType = 'bearer' | 'x-api-key' | 'none'
+
 export interface LLMProvider {
   id: string
   name: string
   apiBase: string
   apiKey: string
   models: LLMModel[]
+  /** 预设来源标记（'custom' 表示自定义供应商） */
+  presetId?: string
+  /** 请求协议：openai=OpenAI 兼容 /chat/completions；anthropic=Messages API */
+  protocol?: ProviderProtocol
+  /** 鉴权方式：bearer（默认）/ x-api-key / none */
+  authType?: ProviderAuthType
+  /** 自定义请求路径（含协议内路径），默认按协议推导 */
+  chatPath?: string
 }
 
 export interface LLMModel {
+  /** 请求 ID：实际调用时写入 payload.model */
   id: string
+  /** 显示名称：界面展示用；缺省回退 id */
   name: string
   contextLength?: number
+}
+
+/** 内置主流供应商预设（后端 /chat/provider-presets 下发） */
+export interface LLMProviderPreset {
+  id: string
+  name: string
+  apiBase: string
+  protocol?: ProviderProtocol
+  authType?: ProviderAuthType
+  chatPath?: string
+  /** 获取 API Key 的官方地址 */
+  docsUrl?: string
+  /** 常见模型提示 */
+  modelHint?: string[]
 }
 
 export interface LLMConfig {

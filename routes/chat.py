@@ -170,6 +170,178 @@ def validate_api_base(api_base: str) -> tuple[bool, str]:
     return True, ''
 
 
+# ── Provider Presets ─────────────────────────────────────────
+
+# 内置主流供应商预设：用户仅需填入 API Key 即可完成快捷配置。
+# protocol: openai=OpenAI 兼容 /chat/completions；anthropic=Messages API。
+# authType: bearer=Authorization: Bearer；x-api-key=请求头 x-api-key；none=无需鉴权。
+PROVIDER_PRESETS = [
+    {
+        'id': 'openai',
+        'name': 'OpenAI',
+        'apiBase': 'https://api.openai.com/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://platform.openai.com/api-keys',
+        'modelHint': ['gpt-5.5', 'gpt-5.4-mini'],
+    },
+    {
+        'id': 'deepseek',
+        'name': 'DeepSeek',
+        'apiBase': 'https://api.deepseek.com/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://platform.deepseek.com/api_keys',
+        'modelHint': ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp'],
+    },
+    {
+        'id': 'zhipu',
+        'name': '智谱 AI (GLM)',
+        'apiBase': 'https://open.bigmodel.cn/api/paas/v4',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://open.bigmodel.cn/usercenter/apikeys',
+        'modelHint': ['glm-5.1', 'glm-5.2', 'glm-5.3'],
+    },
+    {
+        'id': 'qwen',
+        'name': '通义千问 (DashScope)',
+        'apiBase': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://bailian.console.aliyun.com/',
+        'modelHint': ['qwen-max', 'qwen-plus', 'qwen-turbo'],
+    },
+    {
+        'id': 'moonshot',
+        'name': 'Kimi (Moonshot)',
+        'apiBase': 'https://api.moonshot.cn/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://platform.moonshot.cn/console/api-keys',
+        'modelHint': ['kimi-k2.7-code', 'kimi-k3', 'kimi-k2.6'],
+    },
+    {
+        'id': 'gemini',
+        'name': 'Google Gemini',
+        'apiBase': 'https://generativelanguage.googleapis.com/v1beta/openai',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://aistudio.google.com/apikey',
+        'modelHint': ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    },
+    {
+        'id': 'anthropic',
+        'name': 'Anthropic Claude',
+        'apiBase': 'https://api.anthropic.com',
+        'protocol': 'anthropic',
+        'authType': 'x-api-key',
+        'chatPath': '/v1/messages',
+        'docsUrl': 'https://console.anthropic.com/settings/keys',
+        'modelHint': ['claude-sonnet-4.6', 'claude-opus-4.8', 'claude-haiku-4.5'],
+    },
+    {
+        'id': 'Xiaomi MiMo',
+        'name': '小米MiMo',
+        'apiBase': 'https://platform.xiaomimimo.com/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://mimo.mi.com',
+        'modelHint': ['mimo-v2.5-pro', 'mimo-v2.5'],
+    },
+    {
+        'id': 'Xiaomi MiMo Token Plan',
+        'name': '小米MiMo Token Plan',
+        'apiBase': 'https://token-plan-cn.xiaomimimo.com/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://mimo.mi.com',
+        'modelHint': ['mimo-v2.5-pro', 'mimo-v2.5'],
+    },
+    {
+        'id': 'openrouter',
+        'name': 'OpenRouter',
+        'apiBase': 'https://openrouter.ai/api/v1',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://openrouter.ai/keys',
+        'modelHint': [],
+    },
+    {
+        'id': 'ollama',
+        'name': 'Ollama（本地）',
+        'apiBase': 'http://localhost:11434/v1',
+        'protocol': 'openai',
+        'authType': 'none',
+        'docsUrl': 'https://ollama.com/',
+        'modelHint': [],
+    },
+    {
+        'id': 'qianfan',
+        'name': '百度千帆',
+        'apiBase': 'https://qianfan.baidubce.com/v2',
+        'protocol': 'openai',
+        'authType': 'bearer',
+        'docsUrl': 'https://console.bce.baidu.com/qianfan/',
+        'modelHint': ['qianfan-code-latest'],
+    },
+]
+
+# 预设备份：按 id 索引
+_PRESET_BY_ID = {p['id']: p for p in PROVIDER_PRESETS}
+
+
+def _models_url_for(api_base: str, protocol: str) -> str:
+    """按协议推导模型列表端点。
+
+    openai 兼容：{apiBase}/models（apiBase 通常已含 /v1）；
+    anthropic：{apiBase}/v1/models（官方 Messages API 的模型端点）。
+    """
+    base = api_base.rstrip('/')
+    if protocol == 'anthropic':
+        return f'{base}/v1/models'
+    return f'{base}/models'
+
+
+def _auth_headers(api_key: str, auth_type: str, protocol: str) -> dict:
+    """按鉴权方式构造请求头。auth_type: bearer | x-api-key | none"""
+    headers = {'Content-Type': 'application/json'}
+    key = (api_key or '').strip()
+    if auth_type == 'x-api-key':
+        headers['x-api-key'] = key
+        if protocol == 'anthropic':
+            headers['anthropic-version'] = '2023-06-01'
+    elif auth_type != 'none' and key:
+        headers['Authorization'] = f'Bearer {key}'
+    return headers
+
+
+def _parse_models_response(raw) -> list:
+    """结构容错解析模型列表响应：兼容 {data:[...]} 与裸数组两种形态。"""
+    result = raw if isinstance(raw, dict) else {}
+    raw_list = result.get('data') if isinstance(result, dict) else raw
+    models = []
+    for m in raw_list or []:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get('id', '')
+        if not mid:
+            continue
+        models.append({
+            'id': mid,
+            # 显示名称：anthropic 用 display_name；openai 兼容服务用 id 兜底
+            'name': m.get('display_name') or m.get('name') or mid,
+            # 字段名兜底：不同 OpenAI 兼容服务上下文窗口字段名不一
+            'contextLength': _pick_context_length(m),
+        })
+    return models
+
+
+@chat_bp.route('/provider-presets', methods=['GET'])
+def get_provider_presets():
+    return jsonify({'ok': True, 'presets': PROVIDER_PRESETS})
+
+
 # ── Providers ──────────────────────────────────────────────
 
 @chat_bp.route('/providers', methods=['GET'])
@@ -211,6 +383,15 @@ async def save_providers():
         api_key = p.get('apiKey', '')
         if not isinstance(api_key, str):
             return jsonify({'ok': False, 'error': f'provider {pid}: apiKey must be a string'}), 400
+        # 可选字段类型校验（预设标记 / 协议 / 鉴权 / 自定义路径），向后兼容旧数据
+        for field in ('presetId', 'protocol', 'authType', 'chatPath'):
+            v = p.get(field)
+            if v is not None and not isinstance(v, str):
+                return jsonify({'ok': False, 'error': f'provider {pid}: {field} must be a string'}), 400
+        if p.get('protocol') not in (None, 'openai', 'anthropic'):
+            return jsonify({'ok': False, 'error': f'provider {pid}: protocol must be openai or anthropic'}), 400
+        if p.get('authType') not in (None, 'bearer', 'x-api-key', 'none'):
+            return jsonify({'ok': False, 'error': f'provider {pid}: authType must be bearer, x-api-key or none'}), 400
         validated.append(p)
 
     _write_json(PROVIDERS_FILE, {'providers': validated})
@@ -218,6 +399,58 @@ async def save_providers():
 
 
 # ── Models (proxy to provider API) ────────────────────────
+
+def _fetch_models_sync(api_base: str, api_key: str, protocol: str = 'openai',
+                       auth_type: str = 'bearer') -> tuple[bool, str, list]:
+    """按协议/鉴权方式拉取供应商模型列表（同步阻塞，仅用于模型管理接口）。
+
+    返回 (ok, error, models)：ok=False 时 error 为失败原因，models 为空。
+    """
+    valid, err = validate_api_base(api_base)
+    if not valid:
+        return False, err, []
+    try:
+        headers = _auth_headers(api_key, auth_type, protocol)
+        resp = requests.get(
+            _models_url_for(api_base, protocol), headers=headers, timeout=10
+        )
+        if resp.status_code != 200:
+            return False, f'HTTP {resp.status_code}: {resp.text[:200]}', []
+        try:
+            result = resp.json()
+        except ValueError:
+            return False, '响应不是合法 JSON', []
+        return True, '', _parse_models_response(result)
+    except requests.RequestException as e:
+        return False, f'网络错误: {e}', []
+
+
+@chat_bp.route('/models/fetch', methods=['POST'])
+async def fetch_models_by_config():
+    """临时拉取模型列表（不落盘）：供设置弹窗在保存供应商前预览/导入。
+
+    body: {apiBase, apiKey?, protocol?, authType?, chatPath?}
+    与 GET /models/<provider_id> 复用同一协议感知逻辑，但配置来自请求体。
+    """
+    body = await request.get_json(silent=True)
+    if not body or not isinstance(body.get('apiBase'), str) or not body['apiBase'].strip():
+        return jsonify({'ok': False, 'error': 'apiBase is required'}), 400
+    api_base = body['apiBase'].strip()
+    api_key = body.get('apiKey', '')
+    if not isinstance(api_key, str):
+        return jsonify({'ok': False, 'error': 'apiKey must be a string'}), 400
+    protocol = body.get('protocol') or 'openai'
+    if protocol not in ('openai', 'anthropic'):
+        return jsonify({'ok': False, 'error': 'protocol must be openai or anthropic'}), 400
+    auth_type = body.get('authType') or 'bearer'
+    if auth_type not in ('bearer', 'x-api-key', 'none'):
+        return jsonify({'ok': False, 'error': 'authType must be bearer, x-api-key or none'}), 400
+
+    ok, err, models = _fetch_models_sync(api_base, api_key, protocol, auth_type)
+    if not ok:
+        return jsonify({'ok': False, 'error': f'拉取模型失败: {err}'}), 502
+    return jsonify({'ok': True, 'models': models})
+
 
 @chat_bp.route('/models/<provider_id>', methods=['GET'])
 def get_models(provider_id):
@@ -228,38 +461,23 @@ def get_models(provider_id):
 
     api_base = provider.get('apiBase', '').rstrip('/')
     api_key = provider.get('apiKey', '')
+    protocol = provider.get('protocol') or 'openai'
+    auth_type = provider.get('authType') or 'bearer'
 
-    if not api_base or not api_key:
-        return jsonify({'ok': True, 'models': [m for m in provider.get('models', [])]})
-
-    valid, err = validate_api_base(api_base)
-    if not valid:
-        return jsonify({'ok': False, 'error': err}), 400
-
-    try:
-        headers = {'Authorization': f'Bearer {api_key}'}
-        resp = requests.get(f'{api_base}/models', headers=headers, timeout=10)
-        if resp.status_code == 200:
-            result = resp.json()
-            models = []
-            # 结构容错：兼容 {data:[...]} 与裸数组两种响应形态
-            raw = result.get('data') if isinstance(result, dict) else result
-            for m in raw or []:
-                if not isinstance(m, dict):
-                    continue
-                models.append({
-                    'id': m.get('id', ''),
-                    'name': m.get('id', ''),
-                    # 字段名兜底：不同 OpenAI 兼容服务上下文窗口字段名不一
-                    'contextLength': _pick_context_length(m),
-                })
-            provider['models'] = models
-            _write_json(PROVIDERS_FILE, data)
-            return jsonify({'ok': True, 'models': models})
-        else:
-            return jsonify({'ok': True, 'models': provider.get('models', [])})
-    except Exception:
+    if not api_base:
         return jsonify({'ok': True, 'models': provider.get('models', [])})
+    # 无鉴权且未填 Key 的协议（如 Ollama）允许直接拉取；否则 Key 缺失则回退本地列表
+    if auth_type not in ('none',) and not api_key:
+        return jsonify({'ok': True, 'models': provider.get('models', [])})
+
+    ok, err, models = _fetch_models_sync(api_base, api_key, protocol, auth_type)
+    if ok:
+        provider['models'] = models
+        _write_json(PROVIDERS_FILE, data)
+        return jsonify({'ok': True, 'models': models})
+    # 拉取失败（网络/鉴权等）：回退本地已存模型，避免前端报错
+    _log.warning('get_models provider=%s fetch failed: %s', provider_id, err)
+    return jsonify({'ok': True, 'models': provider.get('models', [])})
 
 
 # ── Conversations ──────────────────────────────────────────
@@ -467,10 +685,23 @@ async def send_message(conv_id):
 
             api_base = provider.get('apiBase', '').rstrip('/')
             api_key = provider.get('apiKey', '')
+            protocol = provider.get('protocol') or 'openai'
+            auth_type = provider.get('authType') or 'bearer'
+            # 自定义请求路径：预设/自定义供应商可覆盖；默认按协议推导
+            chat_path = provider.get('chatPath') or (
+                '/v1/messages' if protocol == 'anthropic' else '/chat/completions'
+            )
             model_id = conv.get('modelId', provider.get('models', [{}])[0].get('id', '') if provider.get('models') else '')
 
-            if not api_base or not api_key:
-                error_text = 'Provider API 配置不完整，请检查 apiBase 和 apiKey。'
+            if not api_base:
+                error_text = 'Provider API 配置不完整，请检查 apiBase。'
+                yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
+                full_content = error_text
+                return
+
+            # 鉴权方式为 none（如 Ollama）时允许缺 Key；其余协议 Key 必填
+            if auth_type != 'none' and not api_key:
+                error_text = 'Provider API 配置不完整，请检查 apiKey。'
                 yield _sse({"id": assistant_msg_id, "delta": error_text, "done": False})
                 full_content = error_text
                 return
@@ -498,30 +729,50 @@ async def send_message(conv_id):
 
             temperature = body.get('temperature', config.get('temperature', 0.7))
             # maxTokens 作为压缩预算可配置到 1M；作为 LLM 生成参数需钳制到 API 上限
-            # （实测 opencode 等 API 拒绝 >131072 的 max_tokens）
-            max_tokens = min(body.get('maxTokens', config.get('maxTokens', 4096)), 131072)
+            # （实测 opencode 等 API 拒绝 >131072 的 max_tokens；Anthropic 上限更低）
+            max_tokens = min(
+                body.get('maxTokens', config.get('maxTokens', 4096)),
+                64000 if protocol == 'anthropic' else 131072,
+            )
             top_p = body.get('topP', config.get('topP', 1.0))
 
-            payload = {
-                'model': model_id,
-                'messages': messages,
-                'temperature': temperature,
-                'max_tokens': max_tokens,
-                'top_p': top_p,
-                'stream': True,
-            }
+            if protocol == 'anthropic':
+                # Anthropic Messages API：system 独立字段，messages 剔除 system role；
+                # max_tokens 必填。SSE 事件为 content_block_delta → delta.text。
+                system_text = ''
+                anthropic_messages = []
+                for msg in messages:
+                    if msg.get('role') == 'system':
+                        system_text = msg.get('content') or ''
+                    else:
+                        anthropic_messages.append(msg)
+                payload = {
+                    'model': model_id,
+                    'system': system_text,
+                    'messages': anthropic_messages,
+                    'max_tokens': max_tokens,
+                    'temperature': temperature,
+                    'stream': True,
+                }
+            else:
+                payload = {
+                    'model': model_id,
+                    'messages': messages,
+                    'temperature': temperature,
+                    'max_tokens': max_tokens,
+                    'top_p': top_p,
+                    'stream': True,
+                }
 
-            headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-            }
+            headers = _auth_headers(api_key, auth_type, protocol)
+            url = f'{api_base}{chat_path}'
 
             # F14: 迁移到 httpx.AsyncClient 异步流式调用（与 Agent 模式保持一致），
             # 消除 async 路由内同步 requests.post 阻塞事件循环的问题。
             async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
                 async with client.stream(
                     'POST',
-                    f'{api_base}/chat/completions',
+                    url,
                     json=payload,
                     headers=headers,
                 ) as resp:
@@ -547,8 +798,13 @@ async def send_message(conv_id):
                                 break
                             try:
                                 chunk = json.loads(payload_str)
-                                delta = chunk.get('choices', [{}])[0].get('delta', {})
-                                content = delta.get('content', '')
+                                if protocol == 'anthropic':
+                                    # 仅取文本增量；message_start / message_delta 等事件返回空
+                                    delta_obj = chunk.get('delta') or {}
+                                    content = delta_obj.get('text', '') if chunk.get('type') == 'content_block_delta' else ''
+                                else:
+                                    delta = chunk.get('choices', [{}])[0].get('delta', {})
+                                    content = delta.get('content', '')
                                 if content:
                                     full_content += content
                                     yield _sse({"id": assistant_msg_id, "delta": content, "done": False})
@@ -775,6 +1031,15 @@ async def send_agent_message(conv_id):
 
     if not provider:
         return jsonify({'ok': False, 'error': 'provider not configured'}), 400
+
+    # Agent 链路（llm_stream）仅支持 OpenAI 兼容协议：Anthropic 供应商在此明确拒绝，
+    # 避免 401/404 模糊报错（普通聊天路径已适配 anthropic，不受影响）。
+    if provider.get('protocol') == 'anthropic':
+        return jsonify({
+            'ok': False,
+            'error': 'Agent 模式暂不支持 Anthropic 协议，请切换到 OpenAI 兼容供应商',
+            'code': 'PROTOCOL_UNSUPPORTED',
+        }), 400
 
     api_base = provider.get('apiBase', '').rstrip('/')
     valid, err = validate_api_base(api_base)

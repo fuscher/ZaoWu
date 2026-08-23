@@ -36,9 +36,22 @@ const currentProvider = computed(() =>
   chatStore.providers.find((p) => p.id === props.modelValue.providerId),
 )
 
+// 工作流 LLM 节点走 llm_stream（仅 OpenAI 兼容协议）：
+// Anthropic 供应商不可用，直接过滤，避免选中后 401/404 模糊报错
 const providerOptions = computed(() =>
-  chatStore.providers.map((p) => ({ value: p.id, label: p.name })),
+  chatStore.providers
+    .filter((p) => p.protocol !== 'anthropic')
+    .map((p) => ({ value: p.id, label: p.name })),
 )
+
+/** 历史工作流节点已选中 Anthropic 供应商时的名称（用于占位提示） */
+const unsupportedProviderName = computed(() => {
+  if (props.modelValue.providerId) {
+    const p = chatStore.providers.find((x) => x.id === props.modelValue.providerId)
+    if (p?.protocol === 'anthropic') return p.name
+  }
+  return ''
+})
 
 function onProviderChange(providerId: string) {
   const provider = chatStore.providers.find((p) => p.id === providerId)
@@ -120,15 +133,21 @@ function onTemperatureInput(v: number | undefined) {
       <!-- Provider -->
       <label class="field-label">{{ t('workflow.config.providerId') }}</label>
       <select
-        :value="modelValue.providerId"
+        :value="unsupportedProviderName ? '' : modelValue.providerId"
         class="field-input"
         @change="onProviderChange(($event.target as HTMLSelectElement).value)"
       >
+        <option v-if="unsupportedProviderName" value="" disabled>
+          {{ unsupportedProviderName }}（{{ t('workflow.config.anthropicUnsupportedTag') }}）
+        </option>
         <option value="" disabled>{{ t('workflow.config.selectProvider') }}</option>
         <option v-for="opt in providerOptions" :key="opt.value" :value="opt.value">
           {{ opt.label }}
         </option>
       </select>
+      <p v-if="unsupportedProviderName" class="hint-warning">
+        {{ t('workflow.config.anthropicUnsupported', { name: unsupportedProviderName }) }}
+      </p>
 
       <!-- Model -->
       <label class="field-label">{{ t('workflow.config.modelId') }}</label>

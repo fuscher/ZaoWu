@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { Palette, Bot, Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Server, Users, Puzzle, Sparkles, Download, RefreshCw } from '@lucide/vue'
+import { Palette, Bot, Plus, Pencil, Trash2, Server, Users, Puzzle, Sparkles, Download, RefreshCw } from '@lucide/vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
 import { usePluginsStore } from '@/stores/plugins'
@@ -11,6 +11,7 @@ import { useI18n } from '@/i18n'
 import { useUpdate } from '@/composables/useUpdate'
 import NumberInput from './NumberInput.vue'
 import ErrorToast from './ErrorToast.vue'
+import ProviderDialog from './ProviderDialog.vue'
 import type { Theme, LLMProvider, ViewType } from '@/types'
 
 const props = defineProps<{ theme: Theme; highlightSection?: string | null }>()
@@ -39,11 +40,10 @@ watch(() => props.highlightSection, (val) => {
   }
 })
 
-// ── Provider editing state ────────────────────────────────
-const editingProvider = ref<LLMProvider | null>(null)
-const isNewProvider = ref(false)
-const showApiKey = ref(false)
-const newModelId = ref('')
+// ── Provider dialog state ─────────────────────────────────
+const providerDialogOpen = ref(false)
+const dialogProvider = ref<LLMProvider | null>(null)
+const dialogIsNew = ref(false)
 const showDeleteConfirm = ref<string | null>(null)
 const skillFileInput = ref<HTMLInputElement | null>(null)
 const isImportingSkill = ref(false)
@@ -66,56 +66,26 @@ const {
 } = useUpdate()
 
 function openAddProvider() {
-  editingProvider.value = {
-    id: '',
-    name: '',
-    apiBase: '',
-    apiKey: '',
-    models: [],
-  }
-  isNewProvider.value = true
-  showApiKey.value = true
+  dialogProvider.value = null
+  dialogIsNew.value = true
+  providerDialogOpen.value = true
 }
 
 function openEditProvider(provider: LLMProvider) {
-  editingProvider.value = { ...provider, models: [...provider.models] }
-  isNewProvider.value = false
-  showApiKey.value = false
+  dialogProvider.value = provider
+  dialogIsNew.value = false
+  providerDialogOpen.value = true
 }
 
-function cancelEdit() {
-  editingProvider.value = null
-  newModelId.value = ''
-}
-
-function addModel() {
-  if (!newModelId.value.trim() || !editingProvider.value) return
-  const exists = editingProvider.value.models.some((m) => m.id === newModelId.value.trim())
-  if (exists) return
-  editingProvider.value.models.push({ id: newModelId.value.trim(), name: newModelId.value.trim() })
-  newModelId.value = ''
-}
-
-function removeModel(index: number) {
-  editingProvider.value?.models.splice(index, 1)
-}
-
-async function saveProvider() {
-  if (!editingProvider.value) return
-  const p = editingProvider.value
-  if (!p.name.trim() || !p.apiBase.trim()) return
-
-  if (isNewProvider.value) {
-    p.id = `provider-${Date.now()}`
-    chatStore.providers.push(p)
+async function handleProviderSaved(saved: LLMProvider) {
+  if (dialogIsNew.value) {
+    chatStore.providers.push(saved)
   } else {
-    const idx = chatStore.providers.findIndex((x) => x.id === p.id)
-    if (idx !== -1) chatStore.providers[idx] = p
+    const idx = chatStore.providers.findIndex((x) => x.id === saved.id)
+    if (idx !== -1) chatStore.providers[idx] = saved
   }
-
   await saveProviders(chatStore.providers)
-  editingProvider.value = null
-  newModelId.value = ''
+  providerDialogOpen.value = false
 }
 
 async function deleteProvider(id: string) {
@@ -128,6 +98,13 @@ function maskApiKey(key: string) {
   if (!key) return ''
   if (key.length <= 8) return '••••••••'
   return key.slice(0, 4) + '••••••••' + key.slice(-4)
+}
+
+/** 协议徽标文案：anthropic=Anthropic Messages；其余=OpenAI 兼容 */
+function protocolLabel(provider: LLMProvider): string {
+  return provider.protocol === 'anthropic'
+    ? t('settings.protocolAnthropic')
+    : t('settings.protocolOpenai')
 }
 
 const IMPORT_MAX_BYTES = 512 * 1024
@@ -302,7 +279,7 @@ onMounted(() => {
         </div>
 
         <!-- Empty state -->
-        <div v-if="chatStore.providers.length === 0 && !editingProvider" class="empty-state">
+        <div v-if="chatStore.providers.length === 0" class="empty-state">
           <Server :size="36" class="empty-icon" />
           <p class="empty-title">{{ t('settings.noProviders') }}</p>
           <p class="empty-desc">{{ t('settings.noProvidersDesc') }}</p>
@@ -310,155 +287,53 @@ onMounted(() => {
 
         <!-- Provider cards -->
         <div v-for="provider in chatStore.providers" :key="provider.id" class="provider-card">
-          <template v-if="editingProvider?.id !== provider.id">
-            <div class="provider-header">
-              <div class="provider-info">
+          <div class="provider-header">
+            <div class="provider-info">
+              <div class="provider-name-row">
                 <span class="provider-name">{{ provider.name }}</span>
-                <span class="provider-base">{{ provider.apiBase }}</span>
+                <span class="protocol-tag">{{ protocolLabel(provider) }}</span>
               </div>
-              <div class="provider-actions">
-                <button class="icon-btn" :title="t('settings.editProvider')" @click="openEditProvider(provider)">
-                  <Pencil :size="14" />
-                </button>
-                <button class="icon-btn danger" :title="t('settings.delete')" @click="showDeleteConfirm = provider.id">
-                  <Trash2 :size="14" />
-                </button>
-              </div>
+              <span class="provider-base">{{ provider.apiBase }}</span>
             </div>
-            <div class="provider-meta">
-              <span class="meta-tag" :class="{ ok: provider.apiKey }">
-                {{ provider.apiKey ? t('settings.apiKeyMasked') : t('settings.apiKeyNotSet') }}
-              </span>
-              <span class="meta-tag">{{ provider.models.length }} {{ t('settings.models') }}</span>
-            </div>
-            <!-- Delete confirmation -->
-            <div v-if="showDeleteConfirm === provider.id" class="delete-confirm">
-              <span>{{ t('settings.confirmDeleteProvider', { name: provider.name }) }}</span>
-              <div class="confirm-actions">
-                <button class="btn-sm danger" @click="deleteProvider(provider.id)">{{ t('settings.delete') }}</button>
-                <button class="btn-sm" @click="showDeleteConfirm = null">{{ t('settings.cancel') }}</button>
-              </div>
-            </div>
-          </template>
-
-          <!-- Inline edit form -->
-          <template v-else>
-            <div class="edit-form">
-              <div class="form-field">
-                <label>{{ t('settings.providerName') }}</label>
-                <input v-model="editingProvider.name" :placeholder="t('settings.providerNamePlaceholder')" class="form-input" />
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.apiBase') }}</label>
-                <input v-model="editingProvider.apiBase" :placeholder="t('settings.apiBasePlaceholder')" class="form-input" />
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.apiKey') }}</label>
-                <div class="apikey-row">
-                  <input
-                    v-model="editingProvider.apiKey"
-                    :type="showApiKey ? 'text' : 'password'"
-                    :placeholder="t('settings.apiKeyPlaceholder')"
-                    class="form-input"
-                  />
-                  <button class="icon-btn" @click="showApiKey = !showApiKey">
-                    <Eye v-if="showApiKey" :size="14" />
-                    <EyeOff v-else :size="14" />
-                  </button>
-                </div>
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.models') }}</label>
-                <div class="model-list-edit">
-                  <div v-for="(model, idx) in editingProvider.models" :key="model.id" class="model-chip">
-                    <span>{{ model.id }}</span>
-                    <button class="chip-remove" @click="removeModel(idx)">×</button>
-                  </div>
-                </div>
-                <div class="add-model-row">
-                  <input
-                    v-model="newModelId"
-                    :placeholder="t('settings.modelIdPlaceholder')"
-                    class="form-input compact"
-                    @keydown.enter="addModel"
-                  />
-                  <button class="btn-sm accent" @click="addModel">{{ t('settings.addModel') }}</button>
-                </div>
-              </div>
-              <div class="form-actions">
-                <button class="btn-sm accent" @click="saveProvider">
-                  <Check :size="12" /> {{ t('settings.save') }}
-                </button>
-                <button class="btn-sm" @click="cancelEdit">
-                  <X :size="12" /> {{ t('settings.cancel') }}
-                </button>
-              </div>
-            </div>
-          </template>
-        </div>
-
-        <!-- Add Provider (shown as form if editing new) -->
-        <template v-if="editingProvider && isNewProvider">
-          <div class="provider-card new">
-            <div class="edit-form">
-              <div class="form-field">
-                <label>{{ t('settings.providerName') }}</label>
-                <input v-model="editingProvider.name" :placeholder="t('settings.providerNamePlaceholder')" class="form-input" />
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.apiBase') }}</label>
-                <input v-model="editingProvider.apiBase" :placeholder="t('settings.apiBasePlaceholder')" class="form-input" />
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.apiKey') }}</label>
-                <div class="apikey-row">
-                  <input
-                    v-model="editingProvider.apiKey"
-                    :type="showApiKey ? 'text' : 'password'"
-                    :placeholder="t('settings.apiKeyPlaceholder')"
-                    class="form-input"
-                  />
-                  <button class="icon-btn" @click="showApiKey = !showApiKey">
-                    <Eye v-if="showApiKey" :size="14" />
-                    <EyeOff v-else :size="14" />
-                  </button>
-                </div>
-              </div>
-              <div class="form-field">
-                <label>{{ t('settings.models') }}</label>
-                <div class="model-list-edit">
-                  <div v-for="(model, idx) in editingProvider.models" :key="model.id" class="model-chip">
-                    <span>{{ model.id }}</span>
-                    <button class="chip-remove" @click="removeModel(idx)">×</button>
-                  </div>
-                </div>
-                <div class="add-model-row">
-                  <input
-                    v-model="newModelId"
-                    :placeholder="t('settings.modelIdPlaceholder')"
-                    class="form-input compact"
-                    @keydown.enter="addModel"
-                  />
-                  <button class="btn-sm accent" @click="addModel">{{ t('settings.addModel') }}</button>
-                </div>
-              </div>
-              <div class="form-actions">
-                <button class="btn-sm accent" @click="saveProvider">
-                  <Check :size="12" /> {{ t('settings.save') }}
-                </button>
-                <button class="btn-sm" @click="cancelEdit">
-                  <X :size="12" /> {{ t('settings.cancel') }}
-                </button>
-              </div>
+            <div class="provider-actions">
+              <button class="icon-btn" :title="t('settings.editProvider')" @click="openEditProvider(provider)">
+                <Pencil :size="14" />
+              </button>
+              <button class="icon-btn danger" :title="t('settings.delete')" @click="showDeleteConfirm = provider.id">
+                <Trash2 :size="14" />
+              </button>
             </div>
           </div>
-        </template>
+          <div class="provider-meta">
+            <span class="meta-tag" :class="{ ok: provider.apiKey }">
+              {{ provider.apiKey ? t('settings.apiKeyMasked') : t('settings.apiKeyNotSet') }}
+            </span>
+            <span class="meta-tag">{{ provider.models.length }} {{ t('settings.models') }}</span>
+            <span v-if="provider.authType === 'none'" class="meta-tag">{{ t('settings.authNone') }}</span>
+          </div>
+          <!-- Delete confirmation -->
+          <div v-if="showDeleteConfirm === provider.id" class="delete-confirm">
+            <span>{{ t('settings.confirmDeleteProvider', { name: provider.name }) }}</span>
+            <div class="confirm-actions">
+              <button class="btn-sm danger" @click="deleteProvider(provider.id)">{{ t('settings.delete') }}</button>
+              <button class="btn-sm" @click="showDeleteConfirm = null">{{ t('settings.cancel') }}</button>
+            </div>
+          </div>
+        </div>
 
         <!-- Add button -->
-        <button v-if="!editingProvider" class="add-provider-btn" @click="openAddProvider">
+        <button class="add-provider-btn" @click="openAddProvider">
           <Plus :size="14" />
           {{ t('settings.addProvider') }}
         </button>
+
+        <!-- Provider edit/create dialog -->
+        <ProviderDialog
+          v-model="providerDialogOpen"
+          :provider="dialogProvider"
+          :is-new="dialogIsNew"
+          @saved="handleProviderSaved"
+        />
       </section>
 
       <!-- ── Community Section ───────────────────────────── -->
@@ -945,6 +820,21 @@ onMounted(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.provider-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.protocol-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-muted);
+  color: var(--accent);
+  white-space: nowrap;
 }
 
 .provider-base {

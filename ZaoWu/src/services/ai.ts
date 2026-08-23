@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMModel, LLMConfig, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill } from '@/types'
+import type { LLMProvider, LLMModel, LLMConfig, LLMProviderPreset, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill, ProviderProtocol, ProviderAuthType } from '@/types'
 import { apiPath } from '@/utils/api'
 
 const BASE = apiPath('/chat')
@@ -35,6 +35,27 @@ export async function saveProviders(providers: LLMProvider[]): Promise<void> {
 export async function fetchModels(providerId: string): Promise<LLMModel[]> {
   const data = await request<{ models: LLMModel[] }>(`${BASE}/models/${providerId}`)
   return data.models
+}
+
+export interface ModelFetchConfig {
+  apiBase: string
+  apiKey?: string
+  protocol?: ProviderProtocol
+  authType?: ProviderAuthType
+}
+
+/** 拉取供应商模型列表（使用请求体中的临时配置，不落盘，供设置弹窗保存前预览/导入） */
+export async function fetchModelsByConfig(cfg: ModelFetchConfig): Promise<LLMModel[]> {
+  const data = await request<{ models: LLMModel[] }>(`${BASE}/models/fetch`, {
+    method: 'POST',
+    body: JSON.stringify(cfg),
+  })
+  return data.models
+}
+
+export async function fetchProviderPresets(): Promise<LLMProviderPreset[]> {
+  const data = await request<{ presets: LLMProviderPreset[] }>(`${BASE}/provider-presets`)
+  return data.presets
 }
 
 // ── Conversations ─────────────────────────────────────────
