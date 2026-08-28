@@ -254,4 +254,32 @@ describe('S13-P2-1: sendAgentMessageStream SSE 事件解析', () => {
     expect(controller).toBeInstanceOf(AbortController)
     expect(cb.onError).toHaveBeenCalled()
   })
+
+  it('S14-P0-2: files 参数透传进请求体（[{projectId, path}]）', async () => {
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(makeSSE([{ id: 'm1', type: 'done', content: 'ok', done: true }]))
+        )
+        controller.close()
+      },
+    })
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: stream,
+      json: async () => ({}),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const cb = makeCallbacks()
+    await sendAgentMessageStream('conv-1', 'hi', cb, {
+      files: [{ projectId: 'proj-1', path: 'src/main.py' }],
+    })
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toContain('/agent-messages')
+    const body = JSON.parse(String(init.body))
+    expect(body.content).toBe('hi')
+    expect(body.files).toEqual([{ projectId: 'proj-1', path: 'src/main.py' }])
+  })
 })

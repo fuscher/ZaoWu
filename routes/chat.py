@@ -650,6 +650,11 @@ async def update_conversation(conv_id):
         sp = agent_config.get('systemPrompt')
         if sp is not None and not isinstance(sp, str):
             return jsonify({'ok': False, 'error': 'agentConfig.systemPrompt must be a string'}), 400
+        # S14 (G2): agentConfig.projectPath 必须为字符串（绑定项目路径；''=未绑定）。
+        # 非字符串会破坏 _get_project_paths 的 os.path.isdir 判断与前端展示，必须拒绝。
+        pp = agent_config.get('projectPath')
+        if pp is not None and not isinstance(pp, str):
+            return jsonify({'ok': False, 'error': 'agentConfig.projectPath must be a string'}), 400
         # selectedSkill 字段废弃（技能改为「全部启用即生效」）：
         # 若客户端仍传，静默忽略（不校验、不存储）。skillConfig 仍按 per-skill 透传。
         agent_config.pop('selectedSkill', None)
@@ -1071,6 +1076,23 @@ async def send_agent_message(conv_id):
     if not body['content'] or not body['content'].strip():
         return jsonify({'ok': False, 'error': 'content is empty'}), 400
 
+    # S14-P0-2: @ 引用结构校验 — files: [{projectId, path}]，path 为项目内相对路径。
+    # 仅做结构/虚拟项目校验；解析（白名单/归档/读取）在 AgentService 预检（下方 400）。
+    files = body.get('files')
+    if files is not None:
+        if not isinstance(files, list):
+            return jsonify({'ok': False, 'error': 'files must be an array'}), 400
+        for ref in files:
+            if not isinstance(ref, dict):
+                return jsonify({'ok': False, 'error': 'each file reference must be an object'}), 400
+            if not isinstance(ref.get('projectId'), str) or not ref['projectId']:
+                return jsonify({'ok': False, 'error': 'file reference projectId must be a non-empty string'}), 400
+            if not isinstance(ref.get('path'), str) or not ref['path']:
+                return jsonify({'ok': False, 'error': 'file reference path must be a non-empty string'}), 400
+            # G1: 虚拟项目为远端协作房间，无本地白名单语义（防绕过）
+            if ref['projectId'].startswith('virtual-'):
+                return jsonify({'ok': False, 'error': 'virtual projects cannot be referenced'}), 400
+
     store = _get_store()
     conv = await store.get(conv_id)
     if not conv:
@@ -1177,11 +1199,24 @@ async def send_agent_message(conv_id):
     agent = AgentService(registry, display_path, model_id=model_id,
                          stop_event=stop_event,
                          limit_path=limit_path)
+    # S14-P0-2: 引用同步预检（HTTP 400 出口）。_resolve_references 覆盖
+    # 项目存在/归档/白名单/读取/截断全链路；预算用大值仅做预检，实际截断
+    # 由 process_message 内以真实 context_budget 重算（G7 每轮重读，双读可接受）。
+    if files:
+        try:
+            agent._resolve_references(files, context_budget=10_000_000)
+        except ValueError as e:
+            # 预检失败：清理 stop_event，避免注册泄漏（F16 语义：注册与清理对称）
+            await agent.close()
+            agent_stop_store.pop(conv_id)
+            return jsonify({'ok': False, 'error': str(e)}), 400
     active_agent_store.set(conv_id, agent)
 
     async def generate():
         try:
-            async for event_str in agent.process_message(conv_id, body['content']):
+            async for event_str in agent.process_message(
+                conv_id, body['content'], files=files,
+            ):
                 yield event_str.encode('utf-8')
         finally:
             await agent.close()

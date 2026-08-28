@@ -1,4 +1,4 @@
-import type { LLMProvider, LLMModel, LLMConfig, LLMProviderPreset, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill, ProviderProtocol, ProviderAuthType } from '@/types'
+import type { LLMProvider, LLMModel, LLMConfig, LLMProviderPreset, Conversation, Message, AgentStreamCallbacks, SSEEvent, Skill, ProviderProtocol, ProviderAuthType, ReferenceFile } from '@/types'
 import { apiPath } from '@/utils/api'
 
 const BASE = apiPath('/chat')
@@ -192,7 +192,7 @@ export async function sendAgentMessageStream(
   conversationId: string,
   content: string,
   callbacks: AgentStreamCallbacks,
-  params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
+  params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number; files?: ReferenceFile[] }
 ): Promise<AbortController> {
   const controller = new AbortController()
 

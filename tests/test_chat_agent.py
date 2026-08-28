@@ -195,7 +195,7 @@ async def test_f07_agent_enabled_passes_guard(chat_env, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -227,7 +227,7 @@ async def test_agent_sse_response_has_charset_utf8(chat_env, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             # 含中文的 notice 事件：同时验证头 charset 与体中文不转义
             yield 'data: {"id":"system","type":"notice","code":"compacted","message":"已压缩早期对话"}\n\n'
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok","quality":"success"}\n\n'
@@ -460,6 +460,44 @@ async def test_patch_conversations_persists_max_tokens(chat_env):
         assert stored['maxTokens'] == 1024
 
 
+@pytest.mark.parametrize('bad', [True, 1, [], {}])
+async def test_patch_conversations_rejects_invalid_project_path(chat_env, bad):
+    """S14 (G2): agentConfig.projectPath 非字符串 → 400（写入侧类型校验）。
+    null 与 systemPrompt 惯例一致视为"未设置"，由后端 or '' 兜底为多项目白名单。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': {'enabled': True, 'projectPath': bad}},
+        )
+        assert resp.status_code == 400
+        assert 'projectPath' in (await resp.get_json()).get('error', '')
+        # 会话未被污染
+        stored = await store.get('conv-1')
+        assert stored['agentConfig'].get('projectPath') is None
+
+
+async def test_patch_conversations_accepts_string_project_path(chat_env):
+    """S14: agentConfig.projectPath 字符串（含 '' 解绑）→ 200 且持久化。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': {'enabled': True, 'projectPath': 'D:/x/app'}},
+        )
+        assert resp.status_code == 200
+        stored = await store.get('conv-1')
+        assert stored['agentConfig']['projectPath'] == 'D:/x/app'
+        # 解绑：空字符串合法
+        resp2 = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'agentConfig': {'enabled': True, 'projectPath': ''}},
+        )
+        assert resp2.status_code == 200
+        stored2 = await store.get('conv-1')
+        assert stored2['agentConfig']['projectPath'] == ''
+
+
 @pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
 async def test_agent_messages_rejects_invalid_max_tokens(chat_env, monkeypatch, bad):
     """POST /agent-messages 非法 maxTokens 应返回 400（在进入 Agent 前拦截）。"""
@@ -470,7 +508,7 @@ async def test_agent_messages_rejects_invalid_max_tokens(chat_env, monkeypatch, 
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -498,7 +536,7 @@ async def test_agent_messages_persists_max_tokens(chat_env, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -528,7 +566,7 @@ async def test_agent_messages_without_max_tokens_keeps_conv_value(chat_env, monk
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -572,7 +610,7 @@ async def test_agent_messages_persists_max_iterations(chat_env, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -601,7 +639,7 @@ async def test_agent_messages_without_max_iterations_keeps_conv_value(chat_env, 
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_message(self, conv_id, content):
+        async def process_message(self, conv_id, content, files=None):
             yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
 
         async def close(self):
@@ -619,6 +657,133 @@ async def test_agent_messages_without_max_iterations_keeps_conv_value(chat_env, 
         assert resp.status_code == 200
     stored = await store.get('conv-1')
     assert stored['agentConfig']['maxIterations'] == 5
+
+
+# ── S14-P0-2: /agent-messages files 引用校验（HTTP 400）──────────
+
+async def test_agent_messages_files_rejects_non_list(chat_env):
+    """files 非数组 → 400"""
+    app, _ = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do', 'files': {'projectId': 'p1', 'path': 'a.py'}},
+        )
+        assert resp.status_code == 400
+        assert 'array' in (await resp.get_json()).get('error', '')
+
+
+async def test_agent_messages_files_rejects_invalid_shape(chat_env):
+    """files 项缺 projectId/path 或类型错误 → 400"""
+    app, _ = chat_env
+    async with app.test_client() as client:
+        for bad in (
+            [{'path': 'a.py'}],
+            [{'projectId': 'p1'}],
+            [{'projectId': 1, 'path': 'a.py'}],
+            [{'projectId': 'p1', 'path': 1}],
+            ['not-a-dict'],
+            [{'projectId': '', 'path': 'a.py'}],
+        ):
+            resp = await client.post(
+                '/api/chat/conversations/conv-1/agent-messages',
+                json={'content': 'do', 'files': bad},
+            )
+            assert resp.status_code == 400, bad
+
+
+async def test_agent_messages_files_rejects_virtual_prefix(chat_env):
+    """G1: projectId 以 virtual- 开头 → 400（防绕过）"""
+    app, _ = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do', 'files': [{'projectId': 'virtual-room1', 'path': 'a.py'}]},
+        )
+        assert resp.status_code == 400
+        assert 'virtual' in (await resp.get_json()).get('error', '')
+
+
+async def test_agent_messages_files_passes_preflight_and_streams(chat_env, monkeypatch, tmp_path):
+    """合法引用 → 预检通过 → 200 流式；process_message 收到 files"""
+    app, _ = chat_env
+    import routes.chat as chat
+    from agent_modules.agent_core.agent_service import AgentService
+
+    # 注册一个临时项目
+    import routes.explorer as explorer
+    project_path = str(tmp_path / 'proj')
+    project_path_dir = tmp_path / 'proj'
+    project_path_dir.mkdir()
+    (project_path_dir / 'a.py').write_text('print(1)', encoding='utf-8')
+    project = {'id': 'proj-valid', 'path': project_path}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    # 隔离 .zaowu：归档检查读取项目目录 .zaowu，不存在即视为未归档
+    monkeypatch.setattr(
+        'routes.explorer.PROJECTS_FILE', str(tmp_path / 'projects.json'),
+    )
+
+    received = {}
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def _resolve_references(self, files, context_budget=4096):
+            # 预检路径：放行（真实解析逻辑已由 agent_service 单测覆盖）
+            return [], 0
+
+        async def process_message(self, conv_id, content, files=None):
+            received['files'] = files
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do', 'files': [{'projectId': 'proj-valid', 'path': 'a.py'}]},
+        )
+        assert resp.status_code == 200
+        assert received['files'] == [{'projectId': 'proj-valid', 'path': 'a.py'}]
+
+
+async def test_agent_messages_files_preflight_unknown_project_400(chat_env, monkeypatch):
+    """G8: 预检项目不存在 → HTTP 400（进程内 error_v2 为竞态兜底）"""
+    app, _ = chat_env
+    import routes.chat as chat
+    import routes.explorer as explorer
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [])
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def _resolve_references(self, files, context_budget=4096):
+            raise ValueError('引用的项目不存在或已卸载，无法引用')
+
+        async def process_message(self, conv_id, content, files=None):
+            raise AssertionError('should not be called')
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do', 'files': [{'projectId': 'nope', 'path': 'a.py'}]},
+        )
+        assert resp.status_code == 400
+        assert '不存在' in (await resp.get_json()).get('error', '')
 
 
 # ── _pick_context_length 字段名兜底 + /config maxTokensAuto ──────

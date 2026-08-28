@@ -988,7 +988,8 @@ def test_context_overflow_triggers_compaction_retry(agent_service, monkeypatch):
             'messages': [{'role': 'user', 'content': 'x'}],
         }
 
-    async def mock_compact(self, conv, system_prompt, max_tokens, provider):
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider,
+                           ref_tokens=0):
         compact_calls[0] += 1
         if compact_calls[0] == 1:
             # 主动压缩：未超预算 → 不压缩
@@ -1077,7 +1078,8 @@ def test_context_overflow_twice_does_not_loop_forever(agent_service, monkeypatch
 
     compact_calls = [0]
 
-    async def mock_compact(self, conv, system_prompt, max_tokens, provider):
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider,
+                           ref_tokens=0):
         compact_calls[0] += 1
         if compact_calls[0] == 1:
             return None, None  # 主动不压缩
@@ -3027,4 +3029,206 @@ def test_p01_sequential_tools_stay_serial(agent_service, monkeypatch):
     assert starts[1][0] == 'edit_file'
     # 第二个 start 应在第一个 end 之后（串行）
     assert starts[1][1] >= ends[0][1], 'sequential tools should not overlap'
+
+
+# ── S14-P0-2: @ 引用解析与注入 ────────────────────────────────
+
+
+def _make_project_ref(project_id='proj-1', relpath='src/main.py'):
+    return {'projectId': project_id, 'path': relpath}
+
+
+def test_resolve_references_empty_returns_empty():
+    service = AgentService(ToolRegistry.get_instance(), stop_event=asyncio.Event())
+    try:
+        segments, tokens = service._resolve_references([], 4096)
+        assert segments == [] and tokens == 0
+    finally:
+        service.skill_registry.clear()
+
+
+def test_resolve_references_virtual_project_rejected(agent_service):
+    with pytest.raises(ValueError, match='虚拟项目'):
+        agent_service._resolve_references(
+            [_make_project_ref('virtual-room1', 'a.py')], 4096,
+        )
+
+
+def test_resolve_references_invalid_shape(agent_service):
+    with pytest.raises(ValueError, match='projectId'):
+        agent_service._resolve_references([{'path': 'a.py'}], 4096)
+    with pytest.raises(ValueError, match='path'):
+        agent_service._resolve_references([{'projectId': 'p1'}], 4096)
+
+
+def test_resolve_references_unknown_project(agent_service, monkeypatch):
+    from routes import explorer
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [])
+    with pytest.raises(ValueError, match='不存在'):
+        agent_service._resolve_references(
+            [_make_project_ref('missing-1', 'a.py')], 4096,
+        )
+
+
+def test_resolve_references_out_of_whitelist(agent_service, monkeypatch, tmp_path):
+    """项目已注册但其路径不在 executor 白名单（未绑定 + 非注册路径）→ 越界拒绝"""
+    from routes import explorer
+    project = {'id': 'proj-out', 'path': str(tmp_path)}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    # agent_service 的 executor 白名单是 cwd/~/.ZaoWu，不含 tmp_path → 越界
+    with pytest.raises(ValueError, match='范围'):
+        agent_service._resolve_references(
+            [_make_project_ref('proj-out', 'a.py')], 4096,
+        )
+
+
+def test_resolve_references_archived_project(agent_service, monkeypatch, tmp_path):
+    from routes import explorer
+    (tmp_path / '.zaowu').write_text(
+        json.dumps({'archived': True}), encoding='utf-8',
+    )
+    project = {'id': 'proj-arc', 'path': str(tmp_path)}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    # limit_path=tmp_path → 白名单仅该项目；但已归档 → 明确文案
+    service = AgentService(
+        ToolRegistry.get_instance(), stop_event=asyncio.Event(),
+        limit_path=str(tmp_path),
+    )
+    try:
+        with pytest.raises(ValueError, match='归档'):
+            service._resolve_references(
+                [_make_project_ref('proj-arc', 'a.py')], 4096,
+            )
+    finally:
+        service.skill_registry.clear()
+
+
+def test_resolve_references_valid_and_same_name_distinguish(
+    agent_service, monkeypatch, tmp_path,
+):
+    """同名项目按 projectId 精确区分；命中白名单的文件内容被读取"""
+    from routes import explorer
+    (tmp_path / 'src').mkdir()
+    (tmp_path / 'src' / 'main.py').write_text(
+        'print("hello")\n', encoding='utf-8',
+    )
+    project = {'id': 'proj-1', 'path': str(tmp_path)}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    service = AgentService(
+        ToolRegistry.get_instance(), stop_event=asyncio.Event(),
+        limit_path=str(tmp_path),
+    )
+    try:
+        segments, tokens = service._resolve_references(
+            [_make_project_ref('proj-1', 'src/main.py')], 4096,
+        )
+        from services.context_service import estimate_tokens
+        assert len(segments) == 1
+        assert 'print("hello")' in segments[0]['content']
+        assert segments[0]['truncated'] is False
+        assert tokens == estimate_tokens(segments[0]['content'])
+    finally:
+        service.skill_registry.clear()
+
+
+def test_resolve_references_truncation(agent_service, monkeypatch, tmp_path):
+    from routes import explorer
+    big = 'x' * 5000
+    (tmp_path / 'big.txt').write_text(big, encoding='utf-8')
+    project = {'id': 'proj-big', 'path': str(tmp_path)}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    service = AgentService(
+        ToolRegistry.get_instance(), stop_event=asyncio.Event(),
+        limit_path=str(tmp_path),
+    )
+    try:
+        # context_budget=100 → 预算 20 = 20 token → 截断
+        segments, tokens = service._resolve_references(
+            [_make_project_ref('proj-big', 'big.txt')], 100,
+        )
+        assert len(segments) == 1
+        assert segments[0]['truncated'] is True
+        from services.context_service import estimate_tokens
+        assert estimate_tokens(segments[0]['content']) <= 20
+        assert 0 < segments[0]['chars'] < 5000
+    finally:
+        service.skill_registry.clear()
+
+
+def test_resolve_references_binary_rejected(agent_service, monkeypatch, tmp_path):
+    from routes import explorer
+    (tmp_path / 'bin.dat').write_bytes(b'\x00\x01\x02binary')
+    project = {'id': 'proj-bin', 'path': str(tmp_path)}
+    monkeypatch.setattr(explorer, 'read_projects', lambda: [project])
+    service = AgentService(
+        ToolRegistry.get_instance(), stop_event=asyncio.Event(),
+        limit_path=str(tmp_path),
+    )
+    try:
+        with pytest.raises(ValueError, match='文本'):
+            service._resolve_references(
+                [_make_project_ref('proj-bin', 'bin.dat')], 4096,
+            )
+    finally:
+        service.skill_registry.clear()
+
+
+def test_build_messages_injects_ref_before_current_user_message():
+    """S14-P0-2: 引用段作为 user 消息注入到当前用户消息之前"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    service = AgentService(ToolRegistry.get_instance(), stop_event=asyncio.Event())
+    try:
+        conv = {
+            'messages': [
+                {'role': 'user', 'content': 'early'},
+                {'role': 'assistant', 'content': 'ok'},
+                {'role': 'user', 'content': '当前消息'},
+            ],
+        }
+        segments = [
+            {'display': '@/Proj/src/main.py', 'content': 'CODE', 'truncated': False, 'chars': 4},
+        ]
+        messages = loop.run_until_complete(
+            service._build_messages(conv, '当前消息', ref_segments=segments)
+        )
+        roles = [m['role'] for m in messages]
+        assert roles[-2:] == ['user', 'user']
+        assert messages[-2]['content'].startswith('[文件引用]')
+        assert 'CODE' in messages[-2]['content']
+        assert messages[-1]['content'] == '当前消息'
+        # 无引用时不注入
+        messages2 = loop.run_until_complete(
+            service._build_messages(conv, '当前消息')
+        )
+        assert len(messages2) == len(messages) - 1
+        assert messages2[-1]['content'] == '当前消息'
+    finally:
+        service.skill_registry.clear()
+        loop.close()
+
+
+def test_insert_ref_segment_reinjects_after_compaction():
+    """S14-P0-2: 主动压缩重建消息列表后，引用段重新注入（不丢失引用上下文）。"""
+    segments = [
+        {'display': '@/Proj/a.py', 'content': 'CODE', 'truncated': False, 'chars': 4},
+    ]
+    # 模拟 compact_if_needed 返回的结构：[system, 摘要 system, ...recent 含当前 user]
+    messages = [
+        {'role': 'system', 'content': 'sys'},
+        {'role': 'system', 'content': '历史摘要：\n...'},
+        {'role': 'user', 'content': '当前消息'},
+    ]
+    AgentService._insert_ref_segment(messages, segments)
+    roles = [m['role'] for m in messages]
+    assert roles == ['system', 'system', 'user', 'user']
+    assert messages[-2]['content'].startswith('[文件引用]')
+    assert messages[-1]['content'] == '当前消息'
+
+
+def test_telemetry_defaults_register_ref_fields():
+    from services.agent_telemetry import _DEFAULTS
+    assert 'ref_files_count' in _DEFAULTS
+    assert 'ref_tokens' in _DEFAULTS
+
 

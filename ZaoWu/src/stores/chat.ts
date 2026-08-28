@@ -1,7 +1,9 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload, RecoveryAction } from '@/types'
+import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload, RecoveryAction, ReferenceFile, Project } from '@/types'
 import * as ai from '@/services/ai'
+import { extractReferences, referenceMarker } from '@/utils/refs'
+import { useProjectsStore } from '@/stores/projects'
 
 export const useChatStore = defineStore('chat', () => {
   // ── State ──────────────────────────────────────────────
@@ -24,6 +26,79 @@ export const useChatStore = defineStore('chat', () => {
   const streamingMessageId = ref<string | null>(null)
   const error = ref('')
   let abortController: AbortController | null = null
+
+  // ── S14: 输入草稿（跨组件共享：ChatInput 绑定，FileTree/浮层插入）──
+  // 输入框内容提升到 store，使 insertReference（FileTree「引用到对话」）可在
+  // 任意组件触发插入；focusRequestId 递增触发 ChatInput 聚焦（计数器语义）。
+  const draft = ref('')
+  const focusRequestId = ref(0)
+  // G2/G8 (NEW-1): 绑定失效检测标志 — 指示器读到失效回退显示并 toast 一次
+  const sandboxInvalidated = ref(false)
+
+  // S14-P0-1: 对话↔项目绑定（沙箱限缩）。持久化到 agentConfig.projectPath。
+  // setter 只接受 activeProjects 中已注册、未归档、非虚拟的候选（G1）；
+  // getter 读到失效路径（删除/改名/归档）→ 回退 null（显示「全部文件夹」），
+  // 并置 sandboxInvalidated 供 ProjectIndicator toast（禁止静默保留"已指定"）。
+  const sandboxProject = computed<Project | null>({
+    get: () => {
+      const conv = currentConversation.value
+      const pid = conv?.agentConfig?.projectPath
+      if (!pid) return null
+      const projectsStore = useProjectsStore()
+      const found = projectsStore.activeProjects.find((p) => p.path === pid && !p.virtual)
+      if (!found) {
+        if (!sandboxInvalidated.value) sandboxInvalidated.value = true
+        return null
+      }
+      return found
+    },
+    set: async (project: Project | null) => {
+      let conv = currentConversation.value
+      if (!conv) {
+        conv = await createNewConversation()
+        if (!conv) return
+      }
+      // 候选即合法来源：已注册、未归档、非虚拟（activeProjects 已过滤归档）
+      const projectsStore = useProjectsStore()
+      const valid =
+        project === null ||
+        (!!project &&
+          !project.virtual &&
+          !project.archived &&
+          projectsStore.activeProjects.some((p) => p.id === project.id))
+      if (!valid) return
+      const nextPath = project ? project.path : ''
+      const nextConfig = { ...(conv.agentConfig || {}), projectPath: nextPath }
+      conv.agentConfig = nextConfig
+      try {
+        await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      } catch {
+        // 失败时回退本地状态
+        conv.agentConfig = { ...(conv.agentConfig || {}), projectPath: project ? '' : nextPath }
+      }
+    },
+  })
+
+  function ackSandboxInvalidation() {
+    sandboxInvalidated.value = false
+  }
+
+  // S14-P2-2: 统一引用插入（@ 浮层与 FileTree 均调用此单一实现）
+  function insertReference(projectId: string, relpath: string, focus = true) {
+    const marker = referenceMarker(projectId, relpath)
+    let text = draft.value
+    // 若草稿末尾存在未完成的 @<projectId>:<filter> token（第二层导航中），
+    // 就地替换为完整标记，避免残留半成品 token
+    const tokenIdx = text.lastIndexOf(`@${projectId}:`)
+    if (tokenIdx >= 0 && /^@[^\s:@]+:[\w./\\-]*$/.test(text.slice(tokenIdx))) {
+      text = text.slice(0, tokenIdx) + marker
+    } else {
+      text = text.trimEnd()
+      text = (text ? text + ' ' : '') + marker
+    }
+    draft.value = text + ' '
+    if (focus) focusRequestId.value++
+  }
 
   // ── Agent state (Stage 8) ────────────────────────────────
   // agentMode 与当前对话的 agentConfig.enabled 绑定，切换时自动持久化。
@@ -416,9 +491,11 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ── Agent message sending (Stage 8) ──────────────────────
+  // S14-P0-2: 发送时从 content 提取 @ 引用 → files 数组透传后端；
+  // content 保留原文标记（后端禁止从 content 解析，前端负责契约边界）。
   async function sendAgentMessage(
     content: string,
-    params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number }
+    params?: { temperature?: number; maxTokens?: number; contextBudget?: number; maxGenerationTokens?: number; topP?: number; files?: ReferenceFile[] }
   ) {
     if (!content.trim() || isStreaming.value) return
 
@@ -459,6 +536,8 @@ export const useChatStore = defineStore('chat', () => {
     phaseHistoryByMessage.value.set(mid, [])
     toolPartsByMessage.value.set(mid, new Map())
     lastError.value = null
+
+    const files = extractReferences(content)
 
     abortController = await ai.sendAgentMessageStream(
       conv.id,
@@ -559,7 +638,7 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
       },
-      params
+      { ...params, files: files.length ? files : undefined }
     )
 
     loadConversations()
@@ -596,6 +675,13 @@ export const useChatStore = defineStore('chat', () => {
     sendMessage,
     stopStreaming,
     init,
+    // S14: 草稿/引用/项目绑定
+    draft,
+    focusRequestId,
+    insertReference,
+    sandboxProject,
+    sandboxInvalidated,
+    ackSandboxInvalidation,
     // Agent mode
     agentMode,
     autoApproveWrites,

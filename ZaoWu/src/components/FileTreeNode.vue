@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { Folder, FolderOpen, File } from '@lucide/vue'
+import { Folder, FolderOpen, File, AtSign } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useEditorStore } from '@/stores/editor'
 import { useProjectsStore } from '@/stores/projects'
+import { useChatStore } from '@/stores/chat'
 import { apiPathForProject } from '@/utils/api'
+import { toRelPath } from '@/utils/refs'
 import type { TreeNode, Project } from '@/types'
 
 const props = defineProps<{
@@ -19,6 +21,7 @@ const emit = defineEmits<{ 'load-children': [path: string] }>()
 const { t } = useI18n()
 const editorStore = useEditorStore()
 const projectsStore = useProjectsStore()
+const chatStore = useChatStore()
 
 /** Resolve the project that owns this node (for remote/ local API selection). */
 const nodeProject = computed<Project | null>(() => {
@@ -155,6 +158,16 @@ function handleClickOutside() {
   if (showMenu.value) closeMenu()
 }
 
+// ── S14-P2-2: 「引用到对话」（鼠标流兜底，复用 insertReference）──
+// G1: 虚拟项目节点不显示该操作；G4: 非 agent 模式禁用并提示。
+function sendToChat() {
+  const p = nodeProject.value
+  if (!p || p.virtual) return
+  if (!chatStore.agentMode) return
+  const rel = toRelPath(props.node.path, p.path)
+  chatStore.insertReference(p.id, rel)
+}
+
 onMounted(() => {
   document.addEventListener('click', handleClickOutside)
 })
@@ -193,6 +206,16 @@ onUnmounted(() => {
         @keyup.escape="cancelRename"
         @blur="commitRename"
       />
+      <!-- S14-P2-2: 引用到对话（非虚拟项目文件节点；非 agent 模式禁用） -->
+      <button
+        v-if="!isVirtualProject && node.type === 'file' && !isRenaming"
+        class="ref-btn"
+        :class="{ disabled: !chatStore.agentMode }"
+        :title="chatStore.agentMode ? t('fileTree.referenceToChat') : t('agent.mention.agentOnly')"
+        @click.stop="sendToChat"
+      >
+        <AtSign :size="12" />
+      </button>
       <span v-if="loading" class="node-loading">
         <svg width="12" height="12" viewBox="0 0 12 12" class="spin">
           <circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-dasharray="20 12"/>
@@ -296,6 +319,40 @@ onUnmounted(() => {
 
 .node-loading {
   flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+/* S14-P2-2: 引用到对话按钮 — 悬停显示 */
+.ref-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.node-row:hover .ref-btn {
+  display: flex;
+}
+
+.ref-btn:hover {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.ref-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ref-btn.disabled:hover {
+  background: none;
   color: var(--text-tertiary);
 }
 

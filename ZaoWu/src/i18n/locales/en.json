@@ -389,7 +389,8 @@
     "rename": "Rename",
     "delete": "Delete",
     "newFileNamePrompt": "Enter file name:",
-    "confirmDelete": "Are you sure you want to delete {name}?"
+    "confirmDelete": "Are you sure you want to delete {name}?",
+    "referenceToChat": "Reference in chat"
   },
   "projectCard": {
     "lastModified": "Last modified: {time}",
@@ -640,7 +641,24 @@
         "truncated": "Output truncated — response exceeded generation limit, auto-retrying"
       }
     },
-    "presetSwitchFailed": "Mode switch failed, please retry"
+    "presetSwitchFailed": "Mode switch failed, please retry",
+    "sandbox": {
+      "all": "All folders",
+      "bound": "Bound",
+      "empty": "No projects loaded",
+      "bindHint": "Click to choose the project this conversation operates on",
+      "unbind": "Restore default (all folders)",
+      "invalid": "The previously bound project is no longer valid; restored to default"
+    },
+    "mention": {
+      "firstTime": "@ Reference files in a project: pick a project, then a file",
+      "noProjects": "No projects loaded; add one in the Explorer →",
+      "agentOnly": "Enable Agent mode to reference files"
+    },
+    "ref": {
+      "truncated": "File too large; injected first {n} chars ({p}% of reference budget)",
+      "archived": "This project has been archived and cannot be referenced"
+    }
   },
   "workflow": {
     "run": "Run",

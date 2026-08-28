@@ -27,6 +27,7 @@ vi.mock('@/services/ai', () => ({
 
 import * as ai from '@/services/ai'
 import { useChatStore } from '@/stores/chat'
+import { useProjectsStore } from '@/stores/projects'
 import type { ToolCall, ToolResult } from '@/types'
 
 describe('F02: messageId 两级索引工具 Map', () => {
@@ -461,6 +462,163 @@ describe('F02: messageId 两级索引工具 Map', () => {
       const arg = vi.mocked(ai.createConversation).mock.calls[0][0] as Record<string, unknown>
       // JSON.stringify 序列化时丢弃 undefined，后端收不到该字段
       expect(arg.maxTokens).toBeUndefined()
+    })
+  })
+
+  // ── S14-P0-1: sandboxProject 绑定（对话级 projectPath）──────
+  describe('S14: sandboxProject 对话↔项目绑定', () => {
+    let store: ReturnType<typeof useChatStore>
+
+    beforeEach(() => {
+      setActivePinia(createPinia())
+      store = useChatStore()
+      store.currentConversation = {
+        id: 'conv-sandbox',
+        title: 'T',
+        providerId: 'p1',
+        modelId: 'm1',
+        systemPrompt: '',
+        messages: [],
+        createdAt: '',
+        updatedAt: '',
+        agentConfig: { enabled: true },
+      } as any
+    })
+
+    function seedProjects() {
+      const projectsStore = useProjectsStore()
+      projectsStore.projects = [
+        { id: 'proj-a', path: 'D:/x/app', name: 'AppA', addedAt: '', archived: false, lastModified: null },
+        { id: 'proj-b', path: 'D:/y/app', name: 'AppB', addedAt: '', archived: false, lastModified: null },
+      ] as any
+      projectsStore.virtualProjects = [
+        {
+          id: 'virtual-room1', path: 'Z:/remote', name: 'Remote', addedAt: '',
+          archived: false, lastModified: null, virtual: true, roomId: 'room1',
+        } as any,
+      ]
+      return useProjectsStore()
+    }
+
+    it('绑定合法候选 → 写 agentConfig.projectPath 并持久化', async () => {
+      seedProjects()
+      const ai = await import('@/services/ai')
+      vi.mocked(ai.updateConversation).mockClear()
+      store.sandboxProject = { id: 'proj-a', path: 'D:/x/app', name: 'AppA' } as any
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation!.agentConfig!.projectPath).toBe('D:/x/app')
+      expect(ai.updateConversation).toHaveBeenCalledWith(
+        'conv-sandbox',
+        expect.objectContaining({ agentConfig: expect.objectContaining({ projectPath: 'D:/x/app' }) })
+      )
+    })
+
+    it('虚拟项目候选被拒绝（G1）', async () => {
+      seedProjects()
+      const before = store.currentConversation!.agentConfig!.projectPath
+      store.sandboxProject = {
+        id: 'virtual-room1', path: 'Z:/remote', name: 'Remote',
+        virtual: true, roomId: 'room1',
+      } as any
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation!.agentConfig!.projectPath).toBe(before)
+    })
+
+    it('未注册/归档候选被拒绝', async () => {
+      seedProjects()
+      // 归档：activeProjects 已过滤（projects 含 archived 项）
+      store.sandboxProject = {
+        id: 'proj-a', path: 'D:/x/app', name: 'AppA', archived: true,
+      } as any
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation!.agentConfig!.projectPath).toBeUndefined()
+      // 未注册
+      store.sandboxProject = { id: 'ghost', path: 'D:/z', name: 'Ghost' } as any
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation!.agentConfig!.projectPath).toBeUndefined()
+    })
+
+    it('解绑（null）→ projectPath 清空', async () => {
+      seedProjects()
+      store.currentConversation!.agentConfig!.projectPath = 'D:/x/app'
+      store.sandboxProject = null
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation!.agentConfig!.projectPath).toBe('')
+    })
+
+    it('无当前对话时先创建再绑定', async () => {
+      seedProjects()
+      store.currentConversation = null
+      const ai = await import('@/services/ai')
+      vi.mocked(ai.createConversation).mockResolvedValueOnce({
+        id: 'new-conv', title: '新对话', providerId: '', modelId: '',
+        systemPrompt: '', messages: [], createdAt: '', updatedAt: '',
+        agentConfig: {},
+      } as any)
+      store.sandboxProject = { id: 'proj-a', path: 'D:/x/app', name: 'AppA' } as any
+      await new Promise((r) => setTimeout(r, 0))
+      expect(store.currentConversation).toBeTruthy()
+      expect(store.currentConversation!.agentConfig!.projectPath).toBe('D:/x/app')
+    })
+
+    it('getter 绑定失效（路径不在 activeProjects）→ null + sandboxInvalidated', () => {
+      seedProjects()
+      store.currentConversation!.agentConfig!.projectPath = 'D:/gone/old'
+      expect(store.sandboxProject).toBeNull()
+      expect(store.sandboxInvalidated).toBe(true)
+      store.ackSandboxInvalidation()
+      expect(store.sandboxInvalidated).toBe(false)
+    })
+
+    it('getter 绑定有效 → 返回项目对象（排除虚拟同名路径）', () => {
+      seedProjects()
+      store.currentConversation!.agentConfig!.projectPath = 'D:/x/app'
+      expect(store.sandboxProject?.id).toBe('proj-a')
+    })
+  })
+
+  // ── S14: insertReference 统一插入 + 引用提取 ─────────────────
+  describe('S14: insertReference / extractReferences', () => {
+    let store: ReturnType<typeof useChatStore>
+
+    beforeEach(() => {
+      setActivePinia(createPinia())
+      store = useChatStore()
+    })
+
+    it('追加模式：draft 末尾追加内部标记 @{projectId}:relpath', () => {
+      store.draft = '帮我看看'
+      store.insertReference('proj-1', 'src/main.py')
+      expect(store.draft).toBe('帮我看看 @proj-1:src/main.py ')
+    })
+
+    it('空草稿直接插入', () => {
+      store.insertReference('proj-1', 'a.py')
+      expect(store.draft).toBe('@proj-1:a.py ')
+    })
+
+    it('替换未完成的 @<id>:<filter> token（第二层导航残留）', () => {
+      store.draft = '请查看 @proj-1:sr'
+      store.insertReference('proj-1', 'src/main.py')
+      expect(store.draft).toBe('请查看 @proj-1:src/main.py ')
+    })
+
+    it('insertReference 递增 focusRequestId（触发输入框聚焦）', () => {
+      store.draft = ''
+      const before = store.focusRequestId
+      store.insertReference('proj-1', 'a.py')
+      expect(store.focusRequestId).toBe(before + 1)
+    })
+
+    it('extractReferences 从文本提取 files（content 原文保留）', async () => {
+      const { extractReferences } = await import('@/utils/refs')
+      const files = extractReferences('看看 @proj-1:src/main.py 和 @proj-2:readme.md')
+      expect(files).toEqual([
+        { projectId: 'proj-1', path: 'src/main.py' },
+        { projectId: 'proj-2', path: 'readme.md' },
+      ])
+      // 普通邮箱/装饰器 @ 不误提取
+      expect(extractReferences('user@x.com 和 @click')).toEqual([])
     })
   })
 })

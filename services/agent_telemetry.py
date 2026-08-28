@@ -38,6 +38,8 @@ _DEFAULTS: Dict[str, Any] = {
     'tool_count': 0, 'iterations': 0,
     'quality': None, 'error_code': None,
     'duration_ms': None,
+    # S14-P0-2: @ 引用统计（必须登记，否则 record_agent_run 遍历 _DEFAULTS 时丢弃）
+    'ref_files_count': None, 'ref_tokens': None,
 }
 
 

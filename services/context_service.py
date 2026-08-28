@@ -164,12 +164,16 @@ class ContextService:
 
     async def compact_if_needed(
         self, conv: dict, system_prompt: str, max_tokens: int, provider: dict,
+        ref_tokens: int = 0,
     ) -> Tuple[Optional[List[dict]], Optional[str]]:
         """主动压缩（预算触发）。
 
         在 conv['messages']（携带 seq）上工作：估算 system+历史 token，超 0.8*max_tokens
         时把早期消息摘要化。摘要落 ``conversations.compaction_summary``（M2 修复），
         由 ``_build_messages`` 主动注入；messages 表的 [compaction] 标记仅作审计。
+
+        S14-P0-2: ``ref_tokens`` 为 @ 引用注入 token 数，计入总预算估算
+        （引用内容参与压缩决策，避免压缩滞后导致实际上下文超限）。
 
         返回 ``(new_messages, summary)``：需要压缩时 new_messages 为新 LLM 消息列表、
         summary 为摘要文本；无需压缩时两者均为 None（调用方保持原 messages）。
@@ -189,7 +193,7 @@ class ContextService:
 
         total = estimate_tokens(system_prompt) + sum(
             estimate_message_tokens(m) for m in history
-        )
+        ) + int(ref_tokens or 0)
         if total <= int(max_tokens * 0.8):
             return None, None  # 未超预算
 

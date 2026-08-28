@@ -19,7 +19,7 @@ from typing import AsyncGenerator, Dict, List, Any, Optional
 from services.tool_registry import ToolRegistry
 from services.tool_executor import ToolExecutor
 from services.skill_registry import SkillDefinition
-from services.context_service import ContextService
+from services.context_service import ContextService, estimate_tokens
 from services.tool_approval import (
     ApprovalRule, evaluate, derive_resource,
     build_default_rules, build_auto_approve_writes_rules,
@@ -95,6 +95,8 @@ class AgentService:
 
     LOOP_THRESHOLD = 3  # 同一工具+参数连续调用达到此次数时自动中断
     CONFIRMATION_TIMEOUT = 60  # F11: 用户确认等待超时（秒），从 300 缩短到 60
+    # S14-P0-2: @ 引用截断预算比例 — 单条引用内容最多占 contextBudget 的 20%
+    REF_BUDGET_RATIO = 0.2
     # 阶段三 6.1：原 REQUIRES_APPROVAL_TOOLS 硬编码已删除，改由审批引擎
     # build_default_rules 从 ToolDefinition.requires_approval 元数据生成默认 ask 规则。
 
@@ -131,8 +133,14 @@ class AgentService:
             self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0))
         return self._http_client
 
-    async def process_message(self, conv_id: str, content: str) -> AsyncGenerator[str, None]:
-        """处理消息，执行智能体循环，yield SSE 事件字符串"""
+    async def process_message(self, conv_id: str, content: str,
+                              files: Optional[list] = None) -> AsyncGenerator[str, None]:
+        """处理消息，执行智能体循环，yield SSE 事件字符串
+
+        S14-P0-2: ``files`` 为 @ 引用数组 ``[{projectId, path}]``（path 为项目内相对路径）。
+        解析失败（虚拟项目/白名单外/归档等）时走结构化 error 事件（error_v2），
+        路由层已有同步预检负责 HTTP 400，此处为竞态兜底。
+        """
         # S13-P1-2: 遥测聚合 — duration_ms 以入口为起点（wall-clock，含 LLM+工具+审批等待）
         _start_ms = time.monotonic()
         _quality: Optional[str] = None
@@ -141,6 +149,8 @@ class AgentService:
         self._tokens_out = 0
         self._iteration_count = 0
         self._tool_count = 0
+        self._ref_files_count = 0
+        self._ref_tokens = 0
         try:
             conv = await self._get_conversation(conv_id)
             if not conv:
@@ -179,7 +189,6 @@ class AgentService:
                 iter(provider.get('models') or [{}]), {}
             ).get('id', '')
 
-            messages = await self._build_messages(conv, content)
             agent_config = conv.get('agentConfig') or {}
             # 阶段三 6.1：构建审批规则集（默认 + 持久化 always + autoApproveWrites + preset deny）。
             # autoApproveWrites 转为会话级 allow 规则（N2-M3：仅本会话内存，不持久化、不跨会话）。
@@ -219,6 +228,32 @@ class AgentService:
                 or 4096
             )
 
+            # S14-P0-2: @ 引用解析（G9: contextBudget 走 conv/global 回退链，非请求体透传）
+            # 每轮消息重读磁盘当前内容（G7：注入点逐轮重建，不缓存首轮快照）。
+            ref_segments: List[dict] = []
+            ref_tokens = 0
+            if files:
+                try:
+                    ref_segments, ref_tokens = self._resolve_references(
+                        files, context_budget,
+                    )
+                except ValueError as e:
+                    # 路由层已同步预检（HTTP 400）；此处为竞态兜底（文件在预检后变动）。
+                    _quality = 'error_fallback'
+                    _error_code = 'internal'
+                    yield self._error_event_v2(
+                        'agent-ref-error', code='internal',
+                        message=str(e), kind='reference_resolve',
+                        recovery=None, trace_id=f'agent-ref-{_now_ts()}',
+                    )
+                    return
+            self._ref_files_count = len(files or [])
+            self._ref_tokens = ref_tokens
+
+            messages = await self._build_messages(
+                conv, content, ref_segments=ref_segments,
+            )
+
             # full_text 在循环外初始化，跨迭代累加，保留中间推理过程
             full_text = ''
             # 跨迭代累计实际执行过的工具名（含各轮），供无正文时生成执行摘要
@@ -237,12 +272,17 @@ class AgentService:
 
             # 5.2 主动压缩（预算触发）：system+历史超 0.8*context_budget 时摘要化早期对话。
             # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
+            # S14-P0-2: 引用 token 纳入压缩预算（ref_tokens 计入 total 估算）。
             compacted_once = False
             proactive_msgs, _ = await self._context.compact_if_needed(
                 conv, messages[0]['content'], context_budget, provider,
+                ref_tokens=ref_tokens,
             )
             if proactive_msgs is not None:
                 messages = proactive_msgs
+                # S14-P0-2: 压缩重建消息列表后重新注入引用段（不丢失引用上下文）
+                if ref_segments:
+                    self._insert_ref_segment(messages, ref_segments)
                 compacted_once = True
                 yield self._notice_event(
                     'info', 'compacted',
@@ -780,6 +820,9 @@ class AgentService:
                     quality=_quality,
                     error_code=_error_code,
                     duration_ms=int((time.monotonic() - _start_ms) * 1000),
+                    # S14-P0-2: @ 引用遥测（字段已登记 _DEFAULTS，G5）
+                    ref_files_count=getattr(self, '_ref_files_count', 0),
+                    ref_tokens=getattr(self, '_ref_tokens', 0),
                 )
             except Exception:
                 logger.warning(
@@ -983,12 +1026,15 @@ class AgentService:
         except Exception:
             return {}
 
-    async def _build_messages(self, conv: dict, user_content: str) -> List[Dict[str, Any]]:
+    async def _build_messages(self, conv: dict, user_content: str,
+                              ref_segments: Optional[list] = None) -> List[Dict[str, Any]]:
         """构建消息列表：系统提示词 + （历史摘要）+ 历史（含 tool_calls/tool 角色）
 
         M2 修复：历史摘要来自 conversations.compaction_summary，主动注入为第二条
         system 消息（messages 表的 [compaction] 标记是 role=system 会被下方 skip）。
         compactedUntilSeq：跳过已被压缩的早期消息，避免摘要与原文同时出现。
+
+        S14-P0-2: ``ref_segments`` 非空时注入一条 user 引用消息（位于当前用户消息之前）。
         """
         messages = []
 
@@ -1022,7 +1068,134 @@ class AgentService:
         # 用户消息已在路由层写入 conversations.json，此处不再追加
         # 避免用户消息在 LLM 上下文中重复出现
 
+        # S14-P0-2: @ 引用注入 — 引用段作为 user 消息前置到当前用户消息之前
+        if ref_segments:
+            self._insert_ref_segment(messages, ref_segments)
+
         return messages
+
+    @staticmethod
+    def _insert_ref_segment(messages: list, ref_segments: list) -> None:
+        """把引用段 user 消息插入到当前用户消息（历史最后一条 user）之前。
+
+        主动压缩会整体重建消息列表（system + 摘要 + 近期窗口），压缩后需重新调用。
+        """
+        ref_msg = {'role': 'user', 'content': AgentService._format_reference_block(ref_segments)}
+        last_user_idx = -1
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get('role') == 'user':
+                last_user_idx = i
+                break
+        if last_user_idx >= 0:
+            messages.insert(last_user_idx, ref_msg)
+        else:
+            messages.append(ref_msg)
+
+    # ── @ 引用解析（S14-P0-2）────────────────────────────────
+
+    def _resolve_references(self, files: list, context_budget: int) -> tuple:
+        """解析 @ 引用数组 → ``(引用内容段列表, 注入 token 数)``。
+
+        契约（§0.3）：
+        - **只消费** ``files`` 数组（``[{projectId, path}]``），禁止从 content 正则解析
+        - projectId 以 ``virtual-`` 开头 → ValueError（G1 防绕过）
+        - 项目不存在/路径失效/已归档 → ValueError（G8 明确文案）
+        - 路径白名单外 → ValueError（沙箱锚定：能引用 = 能读取，G2/G10）
+        - 单条超限按 ``20% × context_budget`` 截断，记录 truncated 标记
+        - 每轮重读磁盘当前内容（G7，注入点逐轮重建，非首轮快照）
+
+        路由层以本方法做同步预检（失败 → HTTP 400）；process_message 内再次调用
+        为竞态兜底（失败 → error_v2 事件）。
+        """
+        if not files:
+            return [], 0
+        budget = max(1, int(context_budget * self.REF_BUDGET_RATIO))
+
+        from routes.explorer import read_projects
+        projects = {p['id']: p for p in read_projects()}
+
+        segments = []
+        total_tokens = 0
+        for ref in files:
+            project_id = ref.get('projectId') if isinstance(ref, dict) else None
+            relpath = ref.get('path') if isinstance(ref, dict) else None
+            if not isinstance(project_id, str) or not project_id:
+                raise ValueError('引用格式无效：需要 projectId')
+            if not isinstance(relpath, str) or not relpath:
+                raise ValueError('引用格式无效：需要 path（项目内相对路径）')
+            if project_id.startswith('virtual-'):
+                # G1: 虚拟项目为远端协作房间，无本地白名单语义
+                raise ValueError('虚拟项目不支持文件引用')
+            project = projects.get(project_id)
+            if not project:
+                raise ValueError('引用的项目不存在或已卸载，无法引用')
+            base = project.get('path', '')
+            if not base or not os.path.isdir(base):
+                raise ValueError('引用的项目路径已失效，无法引用')
+            # G8: 归档项目白名单已跳过，引用须明确报错
+            zaowu_path = os.path.join(base, '.zaowu')
+            if os.path.exists(zaowu_path):
+                try:
+                    with open(zaowu_path, 'r', encoding='utf-8') as f:
+                        if json.load(f).get('archived', False):
+                            raise ValueError('该项目已归档，无法引用')
+                except ValueError:
+                    raise
+                except (json.JSONDecodeError, IOError):
+                    pass
+            # G10: os.path.join + realpath；`..` 穿越由 validate_path 的 commonpath 拦截
+            real = os.path.realpath(os.path.join(base, relpath))
+            if not self.executor.validate_path(real):
+                raise ValueError(f'引用路径不在当前可用项目范围内: {relpath}')
+            if not os.path.isfile(real):
+                raise ValueError(f'引用文件不存在: {relpath}')
+            try:
+                from services.file_utils import is_binary_file
+                if is_binary_file(real):
+                    raise ValueError(f'引用文件不是文本文件: {relpath}')
+                with open(real, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except ValueError:
+                raise
+            except UnicodeDecodeError:
+                raise ValueError(f'引用文件不是文本文件（编码错误）: {relpath}')
+            except (OSError, IOError) as e:
+                raise ValueError(f'读取引用文件失败: {relpath}（{e}）')
+
+            truncated = False
+            if estimate_tokens(content) > budget:
+                lo, hi = 0, len(content)
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if estimate_tokens(content[:mid]) <= budget:
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                content = content[:lo]
+                truncated = True
+
+            display = f'@/{os.path.basename(base)}/{relpath}'
+            segments.append({
+                'display': display,
+                'content': content,
+                'truncated': truncated,
+                'chars': len(content),
+            })
+            total_tokens += estimate_tokens(content)
+        return segments, total_tokens
+
+    @staticmethod
+    def _format_reference_block(segments: list) -> str:
+        """把引用内容段拼装为注入 LLM 的 user 消息文本。"""
+        lines = ['[文件引用] 用户在本次消息中引用了以下文件，请优先参考其内容：']
+        for seg in segments:
+            lines.append(f'=== {seg["display"]} ===')
+            lines.append(seg['content'])
+            if seg.get('truncated'):
+                lines.append(
+                    f'（文件过大，已注入前 {seg["chars"]} 字符，超出部分已截断）'
+                )
+        return '\n'.join(lines)
 
     def _resolve_merged_skill_config(self, conv: dict) -> Dict[str, Any]:
         """合并所有已启用技能的最终配置。

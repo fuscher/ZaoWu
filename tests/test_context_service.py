@@ -237,6 +237,47 @@ async def test_compact_returns_none_when_under_budget(ctx):
     assert summary is None
 
 
+async def test_compact_counts_ref_tokens_into_budget(ctx, monkeypatch, tmp_path):
+    """S14-P0-2: @ 引用 token 计入压缩预算 — 仅凭 ref_tokens 即可触发压缩。"""
+    from services.conversation_store import ConversationStore
+    import server_quart
+
+    store = ConversationStore(str(tmp_path / 'test.db'))
+    await store.ensure_tables()
+    await store.create({
+        'id': 'c1', 'title': 't', 'providerId': 'p', 'modelId': 'm',
+        'systemPrompt': '', 'createdAt': '', 'updatedAt': '',
+        'agentConfig': {},
+    })
+    # 历史 3 条 ASCII 长消息（字符数跨过 PRUNE_MINIMUM=20000，token≈6250）：
+    # 预算 8000 → 0.8*8000=6400；不带 ref_tokens 6250≤6400 不压缩，
+    # 带 ref_tokens=300 → 6550>6400 触发压缩（引用内容参与压缩决策）。
+    for i, chars in enumerate((1000, 12000, 12000)):
+        await store.append_message('c1', {
+            'id': f'm{i}', 'role': 'user', 'content': 'a' * chars,
+            'timestamp': i,
+        })
+    monkeypatch.setattr(server_quart, 'get_conversation_store', lambda: store)
+
+    async def fake_llm_stream(**kwargs):
+        yield {'type': 'delta', 'delta': '摘要'}
+    import agent_modules.agent_core.llm_stream as ls_mod
+    monkeypatch.setattr(ls_mod, 'llm_stream', fake_llm_stream)
+
+    conv = await store.get('c1')
+
+    # 不带 ref_tokens：预算充足 → 不压缩
+    new_msgs, _ = await ctx.compact_if_needed(conv, 'sys prompt', 8000, {'apiBase': 'x'})
+    assert new_msgs is None
+
+    # 带 ref_tokens=300：计入后超预算 → 触发压缩
+    new_msgs2, summary = await ctx.compact_if_needed(
+        conv, 'sys prompt', 8000, {'apiBase': 'x'}, ref_tokens=300,
+    )
+    assert new_msgs2 is not None
+    assert summary == '摘要'
+
+
 async def test_compact_triggers_when_over_budget(ctx, monkeypatch, tmp_path):
     """超预算 → 压缩：mock llm_stream 返回摘要，验证持久化与返回结构。"""
     from services.conversation_store import ConversationStore

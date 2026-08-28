@@ -389,7 +389,8 @@
     "rename": "重命名",
     "delete": "删除",
     "newFileNamePrompt": "请输入文件名：",
-    "confirmDelete": "确定要删除 {name} 吗？"
+    "confirmDelete": "确定要删除 {name} 吗？",
+    "referenceToChat": "引用到对话"
   },
   "projectCard": {
     "lastModified": "最后修改：{time}",
@@ -640,7 +641,24 @@
         "truncated": "输出被截断 — 响应超出生成上限，已自动重试"
       }
     },
-    "presetSwitchFailed": "切换模式失败，请重试"
+    "presetSwitchFailed": "切换模式失败，请重试",
+    "sandbox": {
+      "all": "全部文件夹",
+      "bound": "已指定",
+      "empty": "未加载项目",
+      "bindHint": "点击选择对话操作的项目",
+      "unbind": "恢复默认（全部文件夹）",
+      "invalid": "原绑定项目已失效，已恢复默认"
+    },
+    "mention": {
+      "firstTime": "@ 引用项目内文件：先选项目，再选文件",
+      "noProjects": "未加载任何项目，去资源管理器添加 →",
+      "agentOnly": "请开启 Agent 模式以引用文件"
+    },
+    "ref": {
+      "truncated": "文件过大，已注入前 {n} 字符（占引用预算 {p}%）",
+      "archived": "该项目已归档，无法引用"
+    }
   },
   "workflow": {
     "run": "运行",

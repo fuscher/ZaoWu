@@ -88,6 +88,13 @@ export interface CollaborationChatMessage {
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
+/** S14-P0-2: @ 引用请求体字段（POST /agent-messages 的 files 数组元素） */
+export interface ReferenceFile {
+  projectId: string
+  /** 项目内相对路径（正斜杠） */
+  path: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant' | 'system' | 'tool'

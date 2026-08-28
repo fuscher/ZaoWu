@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { User, Bot, Copy, Check, AlertTriangle } from '@lucide/vue'
+import { User, Bot, Copy, Check, AlertTriangle, AtSign } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import { useCommunityStore } from '@/stores/community'
 import { useChatStore } from '@/stores/chat'
+import { useProjectsStore } from '@/stores/projects'
+import { REFERENCE_TOKEN_RE } from '@/utils/refs'
 import { runRecoveryActions } from '@/utils/recoveryActions'
 import type { Message, ToolCall, ToolResult, MessageQuality, ErrorPayload, PhaseNode, PhaseName } from '@/types'
 import ToolCallCard from './ToolCallCard.vue'
@@ -20,6 +22,7 @@ const props = defineProps<{
 
 const communityStore = useCommunityStore()
 const chatStore = useChatStore()
+const projectsStore = useProjectsStore()
 const { t } = useI18n()
 
 /** 复制渲染后的纯文本（与拖选语义一致），pywebview 环境下作为整条复制的快捷入口 */
@@ -57,6 +60,52 @@ const renderedContent = computed(() => {
   if (!props.message.content) return ''
   return md.render(props.message.content)
 })
+
+// ── S14-P2-1: @ 引用标记 chip 渲染（仅用户消息）───────────────
+// 内部格式 @{projectId}:relpath → 视觉前缀 @/name/relpath（id→name 走 projectsStore）。
+// 普通文本中的 @（邮箱/装饰器）不受影响（正则要求完整标记形态）。
+interface ContentPart {
+  type: 'text' | 'chip'
+  text?: string
+  refText?: string
+  label?: string
+  archived?: boolean
+}
+
+const userContentParts = computed<ContentPart[]>(() => {
+  const content = props.message.content || ''
+  if (props.message.role !== 'user') return [{ type: 'text', text: content }]
+  const parts: ContentPart[] = []
+  const re = new RegExp(REFERENCE_TOKEN_RE.source, 'g')
+  let m: RegExpExecArray | null
+  let last = 0
+  while ((m = re.exec(content)) !== null) {
+    if (m.index > last) parts.push({ type: 'text', text: content.slice(last, m.index) })
+    const token = m[0]
+    const body = token.slice(1)
+    const sep = body.indexOf(':')
+    const projectId = body.slice(0, sep)
+    const relpath = body.slice(sep + 1)
+    const project =
+      projectsStore.activeProjects.find((p) => p.id === projectId) ||
+      projectsStore.archivedProjects.find((p) => p.id === projectId)
+    parts.push({
+      type: 'chip',
+      refText: token,
+      label: `@/${project?.name ?? projectId}/${relpath}`,
+      archived: !!project?.archived,
+    })
+    last = m.index + token.length
+  }
+  if (last < content.length) parts.push({ type: 'text', text: content.slice(last) })
+  return parts
+})
+
+/** chip 交互：点击 → 整段移除该引用标记（编辑 = 删除后重新触发 @） */
+function removeReference(refText: string) {
+  if (!props.message.content) return
+  props.message.content = props.message.content.replace(refText, '').replace(/\s{2,}/g, ' ')
+}
 
 /**
  * Stage 9: 从已持久化的消息中配对还原工具调用+结果卡片。
@@ -291,7 +340,22 @@ function handleRecoveryAction(action: string) {
         :phases="phasesForStrip"
         :is-streaming="isStreaming"
       />
-      <div v-if="isUser" class="content-text">{{ message.content }}</div>
+      <div v-if="isUser" class="content-text">
+        <template v-for="(part, i) in userContentParts" :key="i">
+          <span
+            v-if="part.type === 'chip'"
+            class="ref-chip"
+            :class="{ archived: part.archived }"
+            :title="part.refText"
+            @click="removeReference(part.refText || '')"
+          >
+            <AtSign :size="11" />
+            <span class="chip-label">{{ part.label }}</span>
+            <span v-if="part.archived" class="chip-archived">{{ t('agent.ref.archived') }}</span>
+          </span>
+          <span v-else class="part-text">{{ part.text }}</span>
+        </template>
+      </div>
       <!-- F09: tool 角色消息的 content 不再通过 Markdown 渲染，结果仅通过配对卡片显示 -->
       <div v-else-if="message.role === 'tool'" class="content-text tool-result-text" />
       <!-- 阶段 C7: error_fallback 挂 ErrorCard（替代正文）；无结构化 payload 的历史错误保留原文 -->
@@ -476,6 +540,52 @@ function handleRecoveryAction(action: string) {
   word-break: break-word;
   user-select: text;
   -webkit-user-select: text;
+}
+
+/* S14-P2-1: 引用 chip — 高亮可读，点击整段移除 */
+.ref-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  margin: 0 2px;
+  border-radius: 8px;
+  background: var(--accent-muted);
+  border: 1px solid var(--accent-border, var(--accent-muted));
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  vertical-align: middle;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.ref-chip:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.ref-chip.archived {
+  background: var(--bg-glass);
+  border-color: var(--warning-border, var(--border-glass));
+  color: var(--warning);
+  cursor: default;
+}
+
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.chip-archived {
+  font-size: 10px;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.part-text {
+  white-space: pre-wrap;
 }
 
 .content-md {

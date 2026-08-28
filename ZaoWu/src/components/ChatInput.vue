@@ -1,17 +1,29 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { Send, Square, Bot, Sparkles, Hammer, ClipboardList } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
+import { useProjectsStore } from '@/stores/projects'
 import { useI18n } from '@/i18n'
+import { apiPathForProject } from '@/utils/api'
+import { toRelPath } from '@/utils/refs'
+import type { Project, TreeNode } from '@/types'
 import ModelSwitcher from './ModelSwitcher.vue'
 import ParameterPanel from './ParameterPanel.vue'
 import ErrorToast from './ErrorToast.vue'
+import ProjectIndicator from './ProjectIndicator.vue'
+import MentionPopup from './MentionPopup.vue'
 
 const chatStore = useChatStore()
+const projectsStore = useProjectsStore()
 const { t } = useI18n()
-const input = ref('')
 const isComposing = ref(false)
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+
+// S14: 草稿提升到 store（FileTree「引用到对话」与 @ 浮层共用插入逻辑）
+const input = computed<string>({
+  get: () => chatStore.draft,
+  set: (v) => (chatStore.draft = v),
+})
 
 // 阶段 C8: 模式切换 toast（plan↔build 切换时提示约束变化）
 const toastMessage = ref('')
@@ -48,6 +60,7 @@ function autoResize() {
 
 function handleSend() {
   if (!input.value.trim() || isComposing.value) return
+  closeMention()
   if (chatStore.agentMode) {
     chatStore.sendAgentMessage(input.value.trim())
   } else {
@@ -60,6 +73,7 @@ function handleSend() {
 function onInput() {
   isComposing.value = false
   autoResize()
+  checkMention()
 }
 
 function handleStop() {
@@ -90,12 +104,339 @@ onMounted(() => {
   chatStore.loadSkills()
 })
 
+// ── S14-P1-1/P1-2: @ 引用浮层状态机 ───────────────────────────
+// 第一层：项目列表（过滤虚拟项目 G1）；第二层：项目内文件树（get-tree 懒加载 G6）。
+const MENTION_HINT_KEY = 'zaowu.mention.hintSeen'
+const mentionOpen = ref(false)
+const mentionLevel = ref<1 | 2>(1)
+const mentionSelectedProject = ref<Project | null>(null)
+const mentionFilter = ref('')       // 第二层过滤词（@<id>: 后的输入）
+const mentionQuery = ref('')        // 已生效的过滤词（debounce 后）
+const mentionTree = ref<TreeNode[]>([])
+const mentionExpanded = ref<Set<string>>(new Set())
+const mentionIndex = ref(0)
+const mentionHintSeen = ref(false)
+const mentionLoading = ref(false)
+let mentionFilterTimer: number | undefined
+
+const candidates = computed(() =>
+  projectsStore.activeProjects.filter((p) => !p.virtual && !p.archived)
+)
+
+interface FlatNode {
+  node: TreeNode
+  depth: number
+}
+
+function flattenVisible(nodes: TreeNode[], expanded: Set<string>, depth = 0, out: FlatNode[] = []): FlatNode[] {
+  for (const n of nodes) {
+    out.push({ node: n, depth })
+    if (n.type === 'directory' && n.children && expanded.has(n.path)) {
+      flattenVisible(n.children, expanded, depth + 1, out)
+    }
+  }
+  return out
+}
+
+function flattenAll(nodes: TreeNode[], depth = 0, out: FlatNode[] = []): FlatNode[] {
+  for (const n of nodes) {
+    out.push({ node: n, depth })
+    if (n.type === 'directory' && n.children) {
+      flattenAll(n.children, depth + 1, out)
+    }
+  }
+  return out
+}
+
+/** 客户端树过滤（按名称包含，保留目录结构） */
+function filterTree(nodes: TreeNode[], q: string): TreeNode[] {
+  const out: TreeNode[] = []
+  for (const n of nodes) {
+    if (n.type === 'file') {
+      if (n.name.toLowerCase().includes(q)) out.push(n)
+    } else {
+      const children = n.children ? filterTree(n.children, q) : []
+      if (children.length || n.name.toLowerCase().includes(q)) {
+        out.push({ ...n, children: children.length ? children : undefined })
+      }
+    }
+  }
+  return out
+}
+
+const mentionNodes = computed<FlatNode[]>(() => {
+  if (!mentionSelectedProject.value) return []
+  if (mentionQuery.value) return flattenAll(mentionTree.value).slice(0, 100)
+  return flattenVisible(mentionTree.value, mentionExpanded.value)
+})
+
+const highlightIndex = computed(() => {
+  const count = mentionLevel.value === 1 ? candidates.value.length : mentionNodes.value.length
+  if (count === 0) return -1
+  return Math.min(mentionIndex.value, count - 1)
+})
+
+/** 触发检测（G4: 仅 agent 模式；3.3: 行首/空白/标点后的 @ 才触发） */
+function checkMention() {
+  if (!chatStore.agentMode) {
+    if (mentionOpen.value) closeMention()
+    return
+  }
+  const el = textareaRef.value
+  const caret = el ? el.selectionStart : input.value.length
+  const before = input.value.slice(0, caret)
+
+  // 第二层：@<id>: 后继续输入 = 项目内路径过滤（保持打开）
+  if (mentionOpen.value && mentionLevel.value === 2 && mentionSelectedProject.value) {
+    const prefix = `@${mentionSelectedProject.value.id}:`
+    const idx = before.lastIndexOf(prefix)
+    if (idx !== -1) {
+      mentionFilter.value = before.slice(idx + prefix.length)
+      return
+    }
+    closeMention()
+    return
+  }
+
+  const triggered = /(?:^|[\s,.;:!?、。，；：！？])@$/.test(before)
+  if (triggered) {
+    if (!mentionOpen.value) {
+      // S14-P0-1 联动: 绑定有效 → @ 跳过项目层直接第二层（3.2 单项目状态）
+      const bound = chatStore.sandboxProject
+      mentionOpen.value = true
+      mentionLevel.value = bound ? 2 : 1
+      mentionSelectedProject.value = bound
+      mentionFilter.value = ''
+      mentionQuery.value = ''
+      mentionTree.value = []
+      mentionExpanded.value = new Set()
+      mentionIndex.value = 0
+      if (bound) {
+        replaceAtTokenWith(`@${bound.id}:`)
+        loadTreeLevel2()
+      }
+      if (!localStorage.getItem(MENTION_HINT_KEY)) {
+        mentionHintSeen.value = true
+        localStorage.setItem(MENTION_HINT_KEY, '1')
+      }
+    }
+  } else if (mentionOpen.value) {
+    closeMention()
+  }
+}
+
+function closeMention() {
+  mentionOpen.value = false
+  mentionLevel.value = 1
+  mentionSelectedProject.value = null
+  mentionFilter.value = ''
+  mentionQuery.value = ''
+  mentionTree.value = []
+  mentionExpanded.value = new Set()
+  mentionIndex.value = 0
+  // 引导行仅首次触发展示（localStorage 已标记），关闭后重置避免残留
+  mentionHintSeen.value = false
+  if (mentionFilterTimer) {
+    clearTimeout(mentionFilterTimer)
+    mentionFilterTimer = undefined
+  }
+}
+
+/** 把光标处未完成的 @ token 替换为指定文本（选中项目 → @<id>: 前缀） */
+function replaceAtTokenWith(replacement: string) {
+  const el = textareaRef.value
+  const caret = el ? el.selectionStart : input.value.length
+  const before = input.value.slice(0, caret)
+  const m = /(?:^|[\s,.;:!?、。，；：！？])@$/.exec(before)
+  const tokenStart = m ? m.index + (m[0].length - 1) : caret
+  input.value = input.value.slice(0, tokenStart) + replacement + input.value.slice(caret)
+  nextTick(() => {
+    const ta = textareaRef.value
+    if (ta) {
+      ta.focus()
+      const pos = tokenStart + replacement.length
+      ta.setSelectionRange(pos, pos)
+    }
+  })
+}
+
+async function fetchTree(path: string, depth: number): Promise<TreeNode[]> {
+  const p = mentionSelectedProject.value
+  if (!p) return []
+  try {
+    const res = await fetch(apiPathForProject(p, '/explorer/get-tree'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, depth }),
+    })
+    const data = await res.json()
+    return data.ok ? data.tree || [] : []
+  } catch {
+    return []
+  }
+}
+
+/** 第二层：加载项目根树（depth=1，G6 显式逐层懒加载） */
+async function loadTreeLevel2() {
+  const p = mentionSelectedProject.value
+  if (!p) return
+  mentionLoading.value = true
+  mentionTree.value = await fetchTree(p.path, 1)
+  mentionLoading.value = false
+}
+
+/** 过滤模式：depth=3 + 客户端按名称过滤（限量 100） */
+async function loadFilteredTree(q: string) {
+  const p = mentionSelectedProject.value
+  if (!p) return
+  mentionLoading.value = true
+  const raw = await fetchTree(p.path, 3)
+  mentionTree.value = filterTree(raw, q.toLowerCase())
+  mentionLoading.value = false
+}
+
+// 过滤 debounce 150ms（P1-2）
+watch(mentionFilter, (q) => {
+  mentionQuery.value = q
+  if (mentionFilterTimer) clearTimeout(mentionFilterTimer)
+  mentionFilterTimer = setTimeout(() => {
+    if (mentionLevel.value !== 2) return
+    if (q) loadFilteredTree(q)
+    else loadTreeLevel2()
+  }, 150)
+})
+
+/** 选中项目 → 进入第二层（@<id>: 前缀替换 @ token，不隐式绑定） */
+function selectProject(p: Project) {
+  mentionSelectedProject.value = p
+  mentionLevel.value = 2
+  mentionFilter.value = ''
+  mentionQuery.value = ''
+  mentionTree.value = []
+  mentionExpanded.value = new Set()
+  mentionIndex.value = 0
+  replaceAtTokenWith(`@${p.id}:`)
+  loadTreeLevel2()
+}
+
+/** 展开目录：未加载 → 懒加载子层；已加载 → 折叠/展开 */
+async function expandDir(node: TreeNode) {
+  if (node.children !== undefined) {
+    if (mentionExpanded.value.has(node.path)) mentionExpanded.value.delete(node.path)
+    else mentionExpanded.value.add(node.path)
+    return
+  }
+  mentionLoading.value = true
+  const children = await fetchTree(node.path, 1)
+  node.children = children
+  mentionExpanded.value.add(node.path)
+  mentionLoading.value = false
+}
+
+/** 选中文件 → 插入内部标记 @{projectId}:relpath（统一 insertReference 实现） */
+function selectFile(node: TreeNode) {
+  const p = mentionSelectedProject.value
+  if (!p) return
+  const rel = toRelPath(node.path, p.path)
+  chatStore.insertReference(p.id, rel)
+  closeMention()
+}
+
+/** 回退第一层（Backspace/ESC/返回按钮） */
+function goBack() {
+  if (mentionLevel.value === 2 && mentionSelectedProject.value) {
+    const el = textareaRef.value
+    const caret = el ? el.selectionStart : input.value.length
+    const before = input.value.slice(0, caret)
+    const prefix = `@${mentionSelectedProject.value.id}:`
+    const idx = before.lastIndexOf(prefix)
+    if (idx !== -1) {
+      input.value = input.value.slice(0, idx) + '@' + input.value.slice(idx + prefix.length)
+      nextTick(() => {
+        const ta = textareaRef.value
+        if (ta) {
+          ta.focus()
+          ta.setSelectionRange(idx + 1, idx + 1)
+        }
+      })
+    }
+  }
+  mentionLevel.value = 1
+  mentionSelectedProject.value = null
+  mentionFilter.value = ''
+  mentionQuery.value = ''
+  mentionTree.value = []
+  mentionExpanded.value = new Set()
+  mentionIndex.value = 0
+}
+
+// G3: 浮层打开期间 handleKeydown 吞掉 Enter（禁止误发消息）
 function handleKeydown(e: KeyboardEvent) {
+  if (mentionOpen.value) {
+    const count = mentionLevel.value === 1 ? candidates.value.length : mentionNodes.value.length
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      mentionIndex.value = count > 0 ? (mentionIndex.value + 1) % count : 0
+      return
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      mentionIndex.value = count > 0 ? (mentionIndex.value - 1 + count) % count : 0
+      return
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !isComposing.value) {
+      e.preventDefault()
+      const hi = highlightIndex.value
+      if (hi < 0) return
+      if (mentionLevel.value === 1) {
+        const p = candidates.value[hi]
+        if (p) selectProject(p)
+      } else {
+        const item = mentionNodes.value[hi]
+        if (item) {
+          if (item.node.type === 'directory') expandDir(item.node)
+          else selectFile(item.node)
+        }
+      }
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeMention()
+      return
+    }
+    if (e.key === 'Backspace') {
+      // 第二层且 @<id>: 前缀后无输入 → 回退第一层；否则默认退格
+      if (mentionLevel.value === 2 && mentionSelectedProject.value) {
+        const el = textareaRef.value
+        const caret = el ? el.selectionStart : input.value.length
+        const before = input.value.slice(0, caret)
+        const prefix = `@${mentionSelectedProject.value.id}:`
+        if (before.endsWith(prefix)) {
+          e.preventDefault()
+          goBack()
+        }
+      }
+      return
+    }
+    return
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     handleSend()
   }
 }
+
+// 外部插入（FileTree「引用到对话」）→ 聚焦输入框
+watch(
+  () => chatStore.focusRequestId,
+  () => {
+    nextTick(() => {
+      textareaRef.value?.focus()
+      autoResize()
+    })
+  }
+)
 </script>
 
 <template>
@@ -123,6 +464,23 @@ function handleKeydown(e: KeyboardEvent) {
         <Send :size="16" />
       </button>
     </div>
+    <!-- S14-P1-1: @ 引用浮层（固定定位，MVP 不做光标跟随） -->
+    <MentionPopup
+      v-if="mentionOpen"
+      :level="mentionLevel"
+      :projects="candidates"
+      :nodes="mentionNodes"
+      :loading="mentionLoading"
+      :hint="mentionHintSeen"
+      :query="mentionQuery"
+      :highlight="highlightIndex"
+      :selected-project="mentionSelectedProject"
+      @select-project="selectProject"
+      @select-file="selectFile"
+      @expand-dir="expandDir"
+      @back="goBack"
+      @close="closeMention"
+    />
     <div class="input-footer">
       <div class="footer-left">
         <ModelSwitcher />
@@ -191,9 +549,13 @@ function handleKeydown(e: KeyboardEvent) {
           <span class="toggle-label">{{ t('agent.autoApproveWrites') }}</span>
         </label>
       </div>
-      <span v-if="chatStore.isStreaming || !chatStore.agentMode" class="hint">
-        {{ chatStore.isStreaming ? t('agent.agentThinking') : t('chat.shortcutHint') }}
-      </span>
+      <div class="footer-right">
+        <!-- S14-P0-1: 项目指示器（仅 agent 模式显示） -->
+        <ProjectIndicator v-if="chatStore.agentMode" />
+        <span v-if="chatStore.isStreaming || !chatStore.agentMode" class="hint">
+          {{ chatStore.isStreaming ? t('agent.agentThinking') : t('chat.shortcutHint') }}
+        </span>
+      </div>
     </div>
     <!-- 阶段 C8: 模式切换 toast（固定定位已由 ErrorToast 自含） -->
     <ErrorToast v-if="toastMessage" :message="toastMessage" :type="toastType" @close="toastMessage = ''" />
@@ -205,6 +567,7 @@ function handleKeydown(e: KeyboardEvent) {
   padding: 12px 16px;
   border-top: 1px solid var(--border-subtle);
   flex-shrink: 0;
+  position: relative;
 }
 
 .input-wrapper {
@@ -301,6 +664,16 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 8px;
 }
 
 .hint {
