@@ -1046,14 +1046,17 @@ def delete_preset(preset_id):
 
 from typing import Dict, Any
 
-# 智能体停止事件字典（convId 键 + asyncio.Event，独立于 _stop_events）
-# 注意：停止/确认依赖这两个进程内字典，仅适用于单 worker 部署（当前 onedir 单进程打包）。
+# 智能体停止事件存储（convId 键 + asyncio.Event，独立于 _stop_events）
+# 注意：停止/确认依赖这两个进程内存储，仅适用于单 worker 部署（当前 onedir 单进程打包）。
 # 多 worker（如 uvicorn --workers >1）下 SSE 流与停止/确认请求可能落到不同进程导致失效；
-# 如需多 worker，应改用共享存储（如 Redis）分发停止/确认事件。
-agent_stop_events: Dict[str, asyncio.Event] = {}
+# 如需多 worker，应替换为共享存储实现（见 services/agent_runtime_store.py 的 Redis 改造点）。
+# S13-P1-1: 模块级 dict 改走接口实例，单进程行为零变化。
+from services.agent_runtime_store import MemoryStopStore, MemoryActiveAgentStore
+
+agent_stop_store = MemoryStopStore()
 
 # 当前活跃的智能体服务实例（convId -> AgentService），供确认端点查找
-active_agents: Dict[str, Any] = {}
+active_agent_store = MemoryActiveAgentStore()
 
 
 @chat_bp.route('/conversations/<conv_id>/agent-messages', methods=['POST'])
@@ -1087,6 +1090,18 @@ async def send_agent_message(conv_id):
         if not (1 <= v <= 1000000):
             return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
         conv['maxTokens'] = v
+
+    # S13-P0-2: maxIterations 类型/范围校验（仿 maxTokens 模式：int、拒绝 bool、1~100）。
+    # 消除无钳制循环：非 int/越界直接 400；通过后写入 agentConfig 随本次消息落库。
+    if 'maxIterations' in body:
+        v = body['maxIterations']
+        if not isinstance(v, int) or isinstance(v, bool):
+            return jsonify({'ok': False, 'error': 'maxIterations must be an integer'}), 400
+        if not (1 <= v <= 100):
+            return jsonify({'ok': False, 'error': 'maxIterations must be between 1 and 100'}), 400
+        agent_config = conv.get('agentConfig') or {}
+        agent_config['maxIterations'] = v
+        conv['agentConfig'] = agent_config
 
     providers = _read_json(PROVIDERS_FILE, {'providers': []}).get('providers') or []
     provider = next((p for p in providers if p['id'] == conv.get('providerId')), None)
@@ -1125,6 +1140,10 @@ async def send_agent_message(conv_id):
     # maxTokens 随本次消息显式落库（AgentService 内部 _get_conversation 重读时生效）
     if 'maxTokens' in body:
         update_fields['maxTokens'] = conv['maxTokens']
+    # S13-P0-2: maxIterations 属 agentConfig，随 agentConfig 整体落库
+    # （AgentService 内部 _get_conversation 重读时生效）
+    if 'maxIterations' in body:
+        update_fields['agentConfig'] = conv['agentConfig']
     if len(update_fields) > 1:
         await store.update(conv_id, update_fields)
 
@@ -1145,19 +1164,20 @@ async def send_agent_message(conv_id):
 
     # F03/F16: 并发检查 + 原子注册。检查与注册之间不得插入 await，避免并发空窗。
     # 所有提前返回路径（provider not found、enabled 校验失败等）均在此注册之前，
-    # 因此不会出现 agent_stop_events / active_agents 残留泄漏。
-    if conv_id in active_agents:
+    # 因此不会出现 agent_stop_store / active_agent_store 残留泄漏。
+    if active_agent_store.contains(conv_id):
         return jsonify({
             'ok': False,
             'error': 'agent is already running for this conversation',
             'code': 'AGENT_BUSY',
         }), 409
 
-    agent_stop_events[conv_id] = asyncio.Event()
+    stop_event = asyncio.Event()
+    agent_stop_store.set(conv_id, stop_event)
     agent = AgentService(registry, display_path, model_id=model_id,
-                         stop_event=agent_stop_events[conv_id],
+                         stop_event=stop_event,
                          limit_path=limit_path)
-    active_agents[conv_id] = agent
+    active_agent_store.set(conv_id, agent)
 
     async def generate():
         try:
@@ -1165,8 +1185,8 @@ async def send_agent_message(conv_id):
                 yield event_str.encode('utf-8')
         finally:
             await agent.close()
-            agent_stop_events.pop(conv_id, None)
-            active_agents.pop(conv_id, None)
+            agent_stop_store.pop(conv_id)
+            active_agent_store.pop(conv_id)
 
     return Response(
         generate(),
@@ -1214,13 +1234,13 @@ async def agent_stop():
         return jsonify({'ok': False, 'error': 'missing convId'}), 400
 
     # F11: 设置停止事件，立即中断 Agent 循环与确认等待
-    stop_event = agent_stop_events.get(body['convId'])
+    stop_event = agent_stop_store.get(body['convId'])
     if stop_event:
         stop_event.set()
 
     # F11: 同时拒绝所有待确认操作，立即释放确认等待（防御 stop_event 传播失败的场景）。
     # 遍历 _pending_confirmation_ids（F12 权威待确认集合），覆盖 event 尚未创建的竞态。
-    agent = active_agents.get(body['convId'])
+    agent = active_agent_store.get(body['convId'])
     if agent:
         for request_id in list(agent._pending_confirmation_ids):
             agent.submit_confirmation(request_id, False)
@@ -1252,7 +1272,7 @@ async def confirm_tool(conv_id):
     if scope not in ('once', 'always'):
         return jsonify({'ok': False, 'error': "scope must be 'once' or 'always'"}), 400
 
-    agent = active_agents.get(conv_id)
+    agent = active_agent_store.get(conv_id)
     if not agent:
         return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
 

@@ -540,6 +540,7 @@
     "title": "Agent",
     "agentMode": "Agent Mode",
     "agentModeDesc": "AI can read files, search code, execute commands",
+    "agentModeAnthropicUnsupported": "Agent mode does not support Anthropic providers yet; switch to an OpenAI-compatible provider",
     "agentThinking": "Agent thinking...",
     "skillsEnabledHint": "Enabled skills apply to all agent conversations",
     "skillsUnit": "skills",

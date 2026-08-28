@@ -14,6 +14,7 @@ import ToolCallCard from '@/components/ToolCallCard.vue'
 import ErrorCard from '@/components/ErrorCard.vue'
 import MessageBubble from '@/components/MessageBubble.vue'
 import PhaseStrip from '@/components/PhaseStrip.vue'
+import ChatInput from '@/components/ChatInput.vue'
 import { useChatStore } from '@/stores/chat'
 
 vi.mock('@/services/ai', () => ({
@@ -29,6 +30,7 @@ vi.mock('@/services/ai', () => ({
   loadProviders: vi.fn().mockResolvedValue({ ok: true, providers: [] }),
   loadConfig: vi.fn().mockResolvedValue({ ok: true, config: {} }),
   getSkills: vi.fn().mockResolvedValue({ ok: true, skills: [] }),
+  fetchSkills: vi.fn().mockResolvedValue([]),
 }))
 
 describe('阶段 C 组件测试', () => {
@@ -262,5 +264,86 @@ describe('阶段 C 组件测试', () => {
       expect(wrapper.text()).toContain('上下文较长，已自动压缩早期对话')
       expect(wrapper.text()).not.toContain('已压缩')
     })
+  })
+})
+
+// ── S13-P0-3: Anthropic 供应商禁用 Agent 开关 ──────────────────
+
+const _chatInputStubs = {
+  ModelSwitcher: true,
+  ParameterPanel: true,
+  ErrorToast: true,
+  // lucide 图标在测试环境无全局注册，stub 为占位
+  Send: true,
+  Square: true,
+  Bot: true,
+  Sparkles: true,
+  Hammer: true,
+  ClipboardList: true,
+}
+
+function _mountChatInput() {
+  return mount(ChatInput, { global: { stubs: _chatInputStubs } })
+}
+
+describe('S13-P0-3: Agent 开关 Anthropic 禁用态', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    const settings = useSettingsStore()
+    settings.background.language = 'zh-CN'
+  })
+
+  function setupProvider(protocol: string, convId: string) {
+    const chat = useChatStore()
+    chat.providers = [
+      {
+        id: `${protocol}-1`,
+        name: protocol,
+        protocol,
+        apiBase: `https://api.${protocol}.com`,
+        models: [{ id: `${protocol}-m1` }],
+      } as any,
+    ]
+    chat.currentConversation = {
+      id: convId,
+      title: 'T',
+      providerId: `${protocol}-1`,
+      modelId: `${protocol}-m1`,
+      systemPrompt: '',
+      messages: [],
+      createdAt: '',
+      updatedAt: '',
+      agentConfig: { enabled: false },
+    } as any
+  }
+
+  it('Anthropic 供应商 → 开关 disabled + title 提示', async () => {
+    setupProvider('anthropic', 'conv-anth')
+    const wrapper = _mountChatInput()
+    await nextTick()
+    const btn = wrapper.find('.agent-toggle')
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.attributes('title')).toContain('Anthropic')
+  })
+
+  it('Anthropic 供应商 → 点击不切换 agentMode', async () => {
+    setupProvider('anthropic', 'conv-anth-2')
+    const wrapper = _mountChatInput()
+    await nextTick()
+    const chat = useChatStore()
+    expect(chat.agentMode).toBe(false)
+    await wrapper.find('.agent-toggle').trigger('click')
+    expect(chat.agentMode).toBe(false)
+  })
+
+  it('OpenAI 兼容供应商 → 开关可点且切换成功', async () => {
+    setupProvider('openai', 'conv-oa')
+    const wrapper = _mountChatInput()
+    await nextTick()
+    const btn = wrapper.find('.agent-toggle')
+    expect(btn.attributes('disabled')).toBeUndefined()
+    const chat = useChatStore()
+    await btn.trigger('click')
+    expect(chat.agentMode).toBe(true)
   })
 })

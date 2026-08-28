@@ -540,6 +540,7 @@
     "title": "智能体",
     "agentMode": "智能体模式",
     "agentModeDesc": "AI 可读取文件、搜索代码、执行命令",
+    "agentModeAnthropicUnsupported": "Agent 模式暂不支持 Anthropic 供应商，请切换到 OpenAI 兼容供应商",
     "agentThinking": "智能体正在思考...",
     "skillsEnabledHint": "已启用的技能将对所有智能体对话生效",
     "skillsUnit": "个技能",

@@ -438,6 +438,241 @@ def test_f05_alternating_ababa_no_false_positive(agent_service, monkeypatch):
     assert not any('连续重复调用' in c for c in system_deltas), 'A-B-A-B-A should NOT trigger loop detection'
 
 
+# ── S13-P0-2: maxIterations 读取处兜底钳制（防御历史脏数据） ─────
+
+@pytest.mark.parametrize('configured, expected', [
+    (0, 1),       # 脏数据 0 → 钳制到下限 1（max(1, min(100, 0))）
+    ('abc', 10),  # 脏数据非 int → 回退默认 10
+    (True, 10),   # bool（int 子类）→ 回退默认 10
+    (200, 100),   # 越界 → 钳制上限 100
+    (5, 5),       # 合法 → 原样
+])
+def test_max_iterations_clamped_read(agent_service, monkeypatch, configured, expected):
+    """S13-P0-2: maxIterations 读取处兜底钳制（防御历史脏数据），
+    每轮均产出工具调用使循环持续到 for 耗尽 → notice 声明实际循环上限。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    counter = {'n': 0}
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 每轮返回不同参数的工具调用（避免 F05 streak 误判），持续循环到 for 耗尽
+        n = counter['n']
+        counter['n'] += 1
+        yield {
+            'type': 'tool_call_part',
+            'tool_call': _make_tool_call(
+                'read_file', {'path': f'/tmp/t{n}.txt'}, f'call_{n}'
+            ),
+        }
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id,
+            'providerId': 'test-provider',
+            'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': configured},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-maxit', 'test'):
+            events.append(event)
+        return events
+
+    events = loop.run_until_complete(run())
+    # 每轮都有工具 → for 耗尽 → quality=incomplete，notice 声明实际循环上限
+    notices = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'notice'
+    ]
+    reached = next(
+        (n for n in notices if n.get('code') == 'max_iterations_reached'), None
+    )
+    assert reached is not None, 'expect max_iterations_reached notice'
+    assert f'（{expected}）' in reached.get('message', ''), \
+        f'expected clamped cap {expected}, got {reached.get("message")}'
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events and done_events[-1].get('quality') == 'incomplete'
+
+
+# ── S13-P1-2: 遥测聚合（usage/tool_count/iterations/quality/duration） ─────
+
+def test_telemetry_records_aggregated_fields(agent_service, monkeypatch):
+    """S13-P1-2: process_message 收尾调用 record_agent_run，
+    usage 累计、工具/轮次计数、quality、duration_ms 字段齐全。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    counter = {'n': 0}
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 模拟真实 _stream_llm 的 usage 拦截累计（测试聚焦聚合路径）
+        n = counter['n']
+        counter['n'] += 1
+        service._tokens_in += 100
+        service._tokens_out += 50
+        yield {
+            'type': 'tool_call_part',
+            'tool_call': _make_tool_call(
+                'read_file', {'path': f'/tmp/t{n}.txt'}, f'call_{n}'
+            ),
+        }
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id,
+            'providerId': 'test-provider',
+            'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 10},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    import services.agent_telemetry as telemetry
+    calls = []
+    monkeypatch.setattr(
+        telemetry, 'record_agent_run',
+        lambda **fields: calls.append(fields),
+    )
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-telemetry', 'test'):
+            events.append(event)
+        return events
+
+    loop.run_until_complete(run())
+
+    assert len(calls) == 1, 'expect exactly one telemetry record'
+    rec = calls[0]
+    assert rec['conv_id'] == 'conv-telemetry'
+    assert rec['model'] == 'test-model'
+    assert rec['tokens_in'] == 100 * 10, f"got {rec['tokens_in']}"
+    assert rec['tokens_out'] == 50 * 10, f"got {rec['tokens_out']}"
+    assert rec['tool_count'] == 10, f"got {rec['tool_count']}"
+    assert rec['iterations'] == 10, f"got {rec['iterations']}"
+    assert rec['quality'] == 'incomplete', f"got {rec['quality']}"
+    assert rec['error_code'] is None
+    assert isinstance(rec['duration_ms'], int) and rec['duration_ms'] >= 0
+
+
+def test_telemetry_write_failure_does_not_break(agent_service, monkeypatch):
+    """S13-P1-2: record_agent_run 抛异常不阻断 process_message 主流程。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 空响应：IdleDetector 重试一次后终态 empty（不再有更多 LLM 调用）
+        if False:
+            yield  # pragma: no cover — 空生成器，永不产出事件
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id,
+            'providerId': 'test-provider',
+            'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'maxIterations': 10},
+            'messages': [],
+        }
+
+    async def mock_append_message(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append_message)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'test-model'}]
+    })
+
+    import services.agent_telemetry as telemetry
+
+    def _boom(**fields):
+        raise RuntimeError('disk full')
+
+    monkeypatch.setattr(telemetry, 'record_agent_run', _boom)
+
+    async def run():
+        events = []
+        async for event in service.process_message('conv-telemetry-fail', 'test'):
+            events.append(event)
+        return events
+
+    # 主流程不抛异常
+    events = loop.run_until_complete(run())
+    done_events = [
+        json.loads(ev[6:]) for ev in events
+        if json.loads(ev[6:]).get('type') == 'done'
+    ]
+    assert done_events, 'process_message should still complete normally'
+
+
 def test_stop_event_prevents_tool_execution_after_stream(agent_service, monkeypatch):
     """3.1 回归：流式期间用户点停止，llm_stream 仍 yield 已积累的 tool_call_part，
     回到 process_message 后 collected_tool_calls 非空但 stop_event 已置位，

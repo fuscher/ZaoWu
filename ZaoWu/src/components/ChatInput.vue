@@ -67,11 +67,19 @@ function handleStop() {
 }
 
 async function toggleAgentMode() {
+  // S13-P0-3: Anthropic 供应商不支持 Agent 模式（Agent 链路仅 OpenAI 兼容协议），
+  // 开关禁用时阻止切换，避免配置后发消息才报 PROTOCOL_UNSUPPORTED 的认知落差。
+  if (agentUnsupported.value) return
   if (!chatStore.currentConversation) {
     await chatStore.createNewConversation()
   }
   chatStore.agentMode = !chatStore.agentMode
 }
+
+// S13-P0-3: 当前供应商为 Anthropic 时禁用 Agent 开关（currentProvider 由 chat.ts:584 导出）
+const agentUnsupported = computed(
+  () => chatStore.currentProvider?.protocol === 'anthropic'
+)
 
 // 技能改为「全部启用即生效」：仅展示当前已启用技能数量，设置模块启用的技能对所有对话生效
 const enabledSkillsCount = computed(() =>
@@ -122,7 +130,10 @@ function handleKeydown(e: KeyboardEvent) {
         <button
           class="agent-toggle"
           :class="{ active: chatStore.agentMode }"
-          :title="chatStore.agentMode ? t('agent.agentModeDesc') : t('agent.agentMode')"
+          :disabled="agentUnsupported"
+          :title="agentUnsupported
+            ? t('agent.agentModeAnthropicUnsupported')
+            : (chatStore.agentMode ? t('agent.agentModeDesc') : t('agent.agentMode'))"
           @click="toggleAgentMode"
         >
           <Bot :size="14" />

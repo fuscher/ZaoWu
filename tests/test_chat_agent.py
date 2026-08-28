@@ -262,9 +262,9 @@ async def test_f03_agent_busy_guard(chat_env, monkeypatch):
     app, store = chat_env
     import routes.chat as chat
 
-    # 模拟已有活跃 Agent 注册
-    chat.active_agents['conv-1'] = object()
-    chat.agent_stop_events['conv-1'] = asyncio.Event()
+    # 模拟已有活跃 Agent 注册（S13-P1-1: 经 store 接口）
+    chat.active_agent_store.set('conv-1', object())
+    chat.agent_stop_store.set('conv-1', asyncio.Event())
 
     try:
         async with app.test_client() as client:
@@ -276,8 +276,8 @@ async def test_f03_agent_busy_guard(chat_env, monkeypatch):
             data = await resp.get_json()
             assert data.get('code') == 'AGENT_BUSY'
     finally:
-        chat.active_agents.pop('conv-1', None)
-        chat.agent_stop_events.pop('conv-1', None)
+        chat.active_agent_store.pop('conv-1')
+        chat.agent_stop_store.pop('conv-1')
 
 
 # ── 输入类型校验：agentConfig / 字符串字段（防对话崩溃） ──────
@@ -546,6 +546,79 @@ async def test_agent_messages_without_max_tokens_keeps_conv_value(chat_env, monk
         assert resp.status_code == 200
         stored = await store.get('conv-1')
         assert stored['maxTokens'] == 2048
+
+
+# ── S13-P0-2: maxIterations 链路：/agent-messages 校验 + 落库 ──
+
+@pytest.mark.parametrize('bad', ['abc', True, 0, 101, 1.5, None])
+async def test_agent_messages_rejects_invalid_max_iterations(chat_env, bad):
+    """POST /agent-messages 非法 maxIterations（非 int/越界/bool）应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something', 'maxIterations': bad},
+        )
+        assert resp.status_code == 400
+        assert 'maxIterations' in (await resp.get_json()).get('error', '')
+
+
+async def test_agent_messages_persists_max_iterations(chat_env, monkeypatch):
+    """POST /agent-messages 携带合法 maxIterations → 200 且落库到 agentConfig。"""
+    app, store = chat_env
+    import routes.chat as chat
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something', 'maxIterations': 5},
+        )
+        assert resp.status_code == 200
+    stored = await store.get('conv-1')
+    assert stored['agentConfig']['maxIterations'] == 5
+
+
+async def test_agent_messages_without_max_iterations_keeps_conv_value(chat_env, monkeypatch):
+    """POST /agent-messages 不带 maxIterations → 不覆盖会话既有值（fixture 为 5）。"""
+    app, store = chat_env
+    import routes.chat as chat
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_message(self, conv_id, content):
+            yield 'data: {"id":"x","type":"done","done":true,"content":"ok"}\n\n'
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(chat, 'AgentService', _FakeAgent, raising=False)
+    import agent_modules.agent_core as ac
+    monkeypatch.setattr(ac, 'AgentService', _FakeAgent, raising=False)
+
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/agent-messages',
+            json={'content': 'do something'},
+        )
+        assert resp.status_code == 200
+    stored = await store.get('conv-1')
+    assert stored['agentConfig']['maxIterations'] == 5
 
 
 # ── _pick_context_length 字段名兜底 + /config maxTokensAuto ──────

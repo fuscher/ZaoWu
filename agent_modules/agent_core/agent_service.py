@@ -7,6 +7,7 @@
 """
 import os
 import json
+import time
 import uuid
 import hashlib
 import asyncio
@@ -28,6 +29,7 @@ from services.agent_presets import (
 )
 from agent_modules.agent_core.sandbox import SkillSandbox
 from agent_modules.agent_core.llm_stream import llm_stream, LLMError
+from agent_modules.agent_core.events import serialize_event, EventType
 from zaowu_paths import get_project_root
 
 logger = logging.getLogger('agent_modules.agent_core.agent_service')
@@ -131,6 +133,14 @@ class AgentService:
 
     async def process_message(self, conv_id: str, content: str) -> AsyncGenerator[str, None]:
         """处理消息，执行智能体循环，yield SSE 事件字符串"""
+        # S13-P1-2: 遥测聚合 — duration_ms 以入口为起点（wall-clock，含 LLM+工具+审批等待）
+        _start_ms = time.monotonic()
+        _quality: Optional[str] = None
+        _error_code: Optional[str] = None
+        self._tokens_in = 0
+        self._tokens_out = 0
+        self._iteration_count = 0
+        self._tool_count = 0
         try:
             conv = await self._get_conversation(conv_id)
             if not conv:
@@ -139,6 +149,8 @@ class AgentService:
                 # 不再依赖 _error_event（type:"done" 旧通道）。
                 from agent_modules.agent_core.error_classifier import classify
                 payload = classify(RuntimeError('conversation not found'))
+                _quality = 'error_fallback'
+                _error_code = payload['code']
                 yield self._error_event_v2(
                     'agent-error-early', code=payload['code'],
                     message='对话不存在或已被删除',
@@ -152,6 +164,8 @@ class AgentService:
                 # L136 偏差修复（阶段 B 补充）：同上的结构化 error 事件
                 from agent_modules.agent_core.error_classifier import classify
                 payload = classify(RuntimeError('provider not configured'))
+                _quality = 'error_fallback'
+                _error_code = payload['code']
                 yield self._error_event_v2(
                     'agent-error-early', code=payload['code'],
                     message='未配置 Provider，请先在设置中添加',
@@ -178,7 +192,15 @@ class AgentService:
 
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
-            max_iterations = agent_config.get('maxIterations', 10)
+            # S13-P0-2: 读取处兜底钳制 — 防御历史脏数据（非 int 回退默认 10，
+            # 越界钳制 1~100），与路由层 maxIterations 校验配合消除无钳制循环。
+            _raw_max_iterations = agent_config.get('maxIterations', 10)
+            max_iterations = (
+                max(1, min(100, _raw_max_iterations))
+                if isinstance(_raw_max_iterations, int)
+                and not isinstance(_raw_max_iterations, bool)
+                else 10
+            )
             # P0-4：max_tokens 语义解耦 — 拆为 contextBudget（压缩预算）与
             # maxGenerationTokens（LLM 生成上限）。旧 maxTokens 回退两者。
             global_cfg = self._read_global_config()
@@ -224,7 +246,7 @@ class AgentService:
                 compacted_once = True
                 yield self._notice_event(
                     'info', 'compacted',
-                    '[系统] 上下文较长，已自动压缩早期对话',
+                    '[系统] 上下文较长，已自动压缩早期对话（早期工具执行细节已摘要化）',
                 )
                 yield self._phase_event(assistant_msg_id, 'compacting',
                                         detail='预算触发主动压缩')
@@ -232,8 +254,10 @@ class AgentService:
                 phase_nodes.append('compacting')
 
             for iteration in range(max_iterations):
+                self._iteration_count += 1
                 # 检查停止事件
                 if self.stop_event.is_set():
+                    _quality = 'stopped'
                     yield self._notice_event(
                         'warn', 'user_stopped', '[系统] 生成已被用户终止', recoverable=True,
                     )
@@ -310,7 +334,8 @@ class AgentService:
                                 compacted_once = True
                                 yield self._notice_event(
                                     'info', 'compacted',
-                                    '[系统] 上下文过长，已自动压缩早期对话并重试',
+                                    '[系统] 上下文过长，已自动压缩早期对话并重试'
+                                    '（早期工具执行细节已摘要化）',
                                 )
                                 yield self._phase_event(
                                     assistant_msg_id, 'compacting',
@@ -325,6 +350,8 @@ class AgentService:
                         classify, new_trace_id,
                     )
                     payload = classify(e)
+                    _quality = 'error_fallback'
+                    _error_code = payload['code']
                     yield self._error_event_v2(
                         assistant_msg_id,
                         code=payload['code'],
@@ -356,6 +383,7 @@ class AgentService:
                     # 流式期间用户点停止时，llm_stream 仍会 yield 已积累的 tool_call_part；
                     # 回到此处 collected_tool_calls 非空，但应立即终止，不再执行任何工具。
                     if self.stop_event.is_set():
+                        _quality = 'stopped'
                         yield self._notice_event(
                             'warn', 'user_stopped', '[系统] 生成已被用户终止', recoverable=True,
                         )
@@ -416,6 +444,7 @@ class AgentService:
                             last_key = key
                             streak = 1
                         if streak >= self.LOOP_THRESHOLD:
+                            _quality = 'stopped'
                             yield self._notice_event(
                                 'warn', 'loop_interrupted',
                                 f'[系统] 检测到连续重复调用 `{key[0]}` 已达 '
@@ -579,6 +608,8 @@ class AgentService:
                     executed_tool_names.extend(
                         tc['name'] for tc in collected_tool_calls
                     )
+                    # S13-P1-2: 遥测累计实际执行工具次数（含 ask 拒绝/截断场景）
+                    self._tool_count += len(collected_tool_calls)
 
                     # F13: 批量注入消息历史（合并为一条 assistant 消息 + N 条 tool 结果，符合 OpenAI 格式）
                     await self._inject_tool_results_batch(
@@ -634,6 +665,7 @@ class AgentService:
                 quality = 'incomplete'
             else:
                 quality = terminal_quality
+            _quality = quality
             # P0-3：满轮次无收敛时通知前端
             if quality == 'incomplete':
                 yield self._notice_event(
@@ -706,6 +738,8 @@ class AgentService:
             payload = classify(e)
             trace_id = new_trace_id()
             err_id = f'agent-error-{_now_ts()}-{uuid.uuid4().hex[:6]}'
+            _quality = 'error_fallback'
+            _error_code = payload['code']
             yield self._error_event_v2(
                 err_id,
                 code=payload['code'],
@@ -732,7 +766,26 @@ class AgentService:
             except Exception:
                 logger.exception('failed to persist error message for %s', conv_id)
         finally:
-            pass  # 统一由路由层的 finally await agent.close() 处理
+            # S13-P1-2: 遥测收尾（不阻断主流程）。duration_ms = 入口到此处 wall-clock
+            # （含 LLM 调用 + 工具执行 + 审批等待），由入口 _start_ms 起算。
+            try:
+                from services.agent_telemetry import record_agent_run
+                record_agent_run(
+                    conv_id=conv_id,
+                    model=self._model_id or '',
+                    tokens_in=self._tokens_in,
+                    tokens_out=self._tokens_out,
+                    tool_count=self._tool_count,
+                    iterations=self._iteration_count,
+                    quality=_quality,
+                    error_code=_error_code,
+                    duration_ms=int((time.monotonic() - _start_ms) * 1000),
+                )
+            except Exception:
+                logger.warning(
+                    'agent telemetry write failed for conv %s', conv_id,
+                    exc_info=True,
+                )
 
     # ── 工具结果注入与持久化 ─────────────────────────────────
 
@@ -1178,6 +1231,12 @@ class AgentService:
                 stop_event=stop_event,
                 http_client=self.http_client,
             ):
+                # S13-P1-2: 遥测累计 usage；usage 事件不转发（现状消费端即忽略，
+                # 保持 SSE 输出逐字节不变）。
+                if event.get('type') == 'usage':
+                    self._tokens_in += event.get('tokens_in', 0) or 0
+                    self._tokens_out += event.get('tokens_out', 0) or 0
+                    continue
                 yield event
         except LLMError as e:
             # 已压缩过仍 overflow 等场景：保留 LLMError 原样抛出（kind 不丢失）
@@ -1205,23 +1264,30 @@ class AgentService:
         existing.append(new)
         return existing
 
-    # ── SSE 事件格式化 ──────────────────────────────────────
+    # ── SSE 事件格式化（S13-P1-3: 收敛到 events.serialize_event，输出逐字节不变）──
 
     @staticmethod
     def _delta_event(msg_id: str, delta: str) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "delta", "delta": delta, "done": False}, ensure_ascii=False)}\n\n'
+        return serialize_event(EventType.DELTA, id=msg_id, delta=delta)
 
     @staticmethod
     def _tool_call_start_event(msg_id: str, tc: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_start", "toolCall": tc}, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.TOOL_CALL_START, id=msg_id, tool_call=tc,
+        )
 
     @staticmethod
     def _requires_confirmation_event(msg_id: str, tc: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "requires_confirmation", "toolCall": tc}, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.REQUIRES_CONFIRMATION, id=msg_id, tool_call=tc,
+        )
 
     @staticmethod
     def _tool_call_end_event(msg_id: str, request_id: str, result: dict) -> str:
-        return f'data: {json.dumps({"id": msg_id, "type": "tool_call_end", "toolResult": {**result, "requestId": request_id}}, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.TOOL_CALL_END, id=msg_id,
+            tool_result={**result, 'requestId': request_id},
+        )
 
     @staticmethod
     def _done_event(msg_id: str, content: str, quality: str = 'success',
@@ -1231,28 +1297,18 @@ class AgentService:
         """完成事件。quality 枚举见设计文档 §3.3.1/§5.5：
         success | idle | constrained | empty | stopped | error_fallback | incomplete。
         recovery 为 [{label, action}] CTA 列表（constrained 交接等场景）。"""
-        payload = {
-            'id': msg_id, 'type': 'done', 'content': content,
-            'done': True, 'quality': quality,
-        }
-        if summary is not None:
-            payload['summary'] = summary
-        if phase_history:
-            payload['phase_history'] = phase_history
-        if recovery is not None:
-            payload['recovery'] = recovery
-        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.DONE, id=msg_id, content=content, quality=quality,
+            summary=summary, phase_history=phase_history, recovery=recovery,
+        )
 
     @staticmethod
     def _phase_event(msg_id: str, phase: str, detail: Optional[str] = None) -> str:
         """阶段事件（驱动前端 PhaseStrip）。phase 枚举：
         thinking | tool | compacting | retrying | handoff | done。"""
-        payload = {
-            'id': msg_id, 'type': 'phase', 'phase': phase, 'ts': _now_ts(),
-        }
-        if detail is not None:
-            payload['detail'] = detail
-        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.PHASE, id=msg_id, phase=phase, detail=detail,
+        )
 
     @staticmethod
     def _tool_part_event(msg_id: str, request_id: str, part: str,
@@ -1261,13 +1317,10 @@ class AgentService:
         generating | permission_pending | running | success | denied | failed。
         reason（denied/failed 时）：plan_mode_readonly | preset_deny |
         user_rejected | user_stopped | timeout | execute_error | <异常类名>。"""
-        payload = {
-            'id': msg_id, 'type': 'tool_part', 'requestId': request_id,
-            'part': part, 'ts': _now_ts(),
-        }
-        if reason is not None:
-            payload['reason'] = reason
-        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.TOOL_PART, id=msg_id, request_id=request_id,
+            part=part, reason=reason,
+        )
 
     @staticmethod
     def _notice_event(level: str, code: str, message: str,
@@ -1275,13 +1328,10 @@ class AgentService:
         """系统通知（压缩/重试/循环中断等）。level: info|warn|blocked；
         code 枚举：intent_not_executed | loop_interrupted | compacted |
         retrying_empty | plan_ready_for_build | user_stopped。"""
-        payload = {
-            'id': 'system', 'type': 'notice', 'level': level,
-            'code': code, 'message': message, 'ts': _now_ts(),
-        }
-        if recoverable is not None:
-            payload['recoverable'] = recoverable
-        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.NOTICE, level=level, code=code, message=message,
+            recoverable=recoverable,
+        )
 
     @staticmethod
     def _error_event_v2(msg_id: str, code: str, message: str,
@@ -1290,17 +1340,10 @@ class AgentService:
                         trace_id: Optional[str] = None) -> str:
         """结构化错误事件（替代 done 通道承载语义错误）。code 见
         error_classifier.classify；recovery 为 [{label, action}] CTA 列表。"""
-        payload = {
-            'id': msg_id, 'type': 'error', 'code': code,
-            'message': message, 'ts': _now_ts(),
-        }
-        if kind is not None:
-            payload['kind'] = kind
-        if recovery is not None:
-            payload['recovery'] = recovery
-        if trace_id is not None:
-            payload['traceId'] = trace_id
-        return f'data: {json.dumps(payload, ensure_ascii=False)}\n\n'
+        return serialize_event(
+            EventType.ERROR, id=msg_id, code=code, message=message,
+            kind=kind, recovery=recovery, trace_id=trace_id,
+        )
 
     async def close(self):
         if self._http_client:
