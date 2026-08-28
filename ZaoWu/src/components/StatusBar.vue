@@ -173,9 +173,6 @@ onUnmounted(() => {
 .model-badge {
   font-size: 10px;
   color: var(--text-tertiary);
-  background: var(--bg-glass);
-  padding: 2px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--border-glass);
+  /* 矩形容器透明：移除背景/边框/圆角/内边距，仅保留文本 */
 }
 </style>

@@ -552,8 +552,9 @@ watch(
       <div class="footer-right">
         <!-- S14-P0-1: 项目指示器（仅 agent 模式显示） -->
         <ProjectIndicator v-if="chatStore.agentMode" />
-        <span v-if="chatStore.isStreaming || !chatStore.agentMode" class="hint">
-          {{ chatStore.isStreaming ? t('agent.agentThinking') : t('chat.shortcutHint') }}
+        <!-- 非 agent 模式显示快捷键提示；agent 模式下隐藏，避免流式期间该行变宽破坏单行布局 -->
+        <span v-if="!chatStore.agentMode" class="hint">
+          {{ t('chat.shortcutHint') }}
         </span>
       </div>
     </div>
@@ -657,15 +658,19 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 强制单行：6 个控件 + 项目指示器全部在同一行；
+     空间不足时由 model-name 等可收缩项（ellipsis）吸收，避免整体断裂换行 */
+  flex-wrap: nowrap;
+  gap: 4px 8px;
   margin-top: 6px;
 }
 
 .footer-left {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 .footer-right {
@@ -673,7 +678,6 @@ textarea::placeholder {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  margin-left: 8px;
 }
 
 .hint {
@@ -685,7 +689,7 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border-glass);
   background: var(--bg-glass);
@@ -716,12 +720,12 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border-glass);
   background: var(--bg-glass);
   color: var(--text-tertiary);
-  font-size: 11.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -729,8 +733,8 @@ textarea::placeholder {
 .preset-switcher {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
+  gap: 1px;
+  padding: 1px;
   border-radius: 6px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
@@ -741,7 +745,7 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 2px 6px;
   border: none;
   border-radius: 4px;
   background: transparent;
@@ -766,7 +770,7 @@ textarea::placeholder {
 .auto-approve-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   cursor: pointer;
   user-select: none;
   white-space: nowrap;

@@ -59,7 +59,9 @@ function afterLeave() {
 .title {
   font-size: 28px;
   font-weight: 700;
-  color: var(--text-primary);
+  /* 明暗主题统一为白色，配合阴影保证丝绸底上可读 */
+  color: #ffffff;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.28);
   letter-spacing: -0.5px;
   margin: 0;
 }

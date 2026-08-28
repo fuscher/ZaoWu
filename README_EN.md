@@ -4,7 +4,7 @@
 
 A desktop AI Agent application for software development. It combines chat, coding toolchains, workflow orchestration, and real-time collaboration, bringing LLM capabilities into everyday development flows in a local-first way.
 
-- Current version: `0.2.0` ｜ License: Apache-2.0
+- Current version: `0.3.0` ｜ License: Apache-2.0
 
 ---
 

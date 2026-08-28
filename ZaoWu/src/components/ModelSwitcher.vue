@@ -117,7 +117,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   background: var(--bg-glass);
   border: 1px solid var(--border-glass);
   border-radius: 8px;
@@ -134,7 +134,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
 }
 
 .model-name {
-  max-width: 140px;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

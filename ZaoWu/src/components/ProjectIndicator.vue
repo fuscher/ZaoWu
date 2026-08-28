@@ -150,7 +150,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 10px;
+  padding: 4px 8px;
   background: var(--bg-glass);
   border: 1px solid var(--border-glass);
   border-radius: 8px;
@@ -159,7 +159,7 @@ onUnmounted(() => {
   font-size: 11.5px;
   transition: all var(--transition);
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 150px;
 }
 
 .indicator-trigger:hover {
