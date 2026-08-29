@@ -132,3 +132,52 @@ class ConclusiveSignalMatcher:
                 and sum(text.count(c) for c in _SENTENCE_END_CHARS) >= self._min_sentence_ends):
             return True
         return False
+
+
+# ── ToolTextMatcher：工具调用文本化检测（E9，S15-E-P0-6）──────────────
+# 模型把工具调用输出成文本（XML/JSON 片段或伪函数调用）而未实际发起结构化
+# 调用 → 任务静默失败。命中后由 IdleDetector 注入纠正重试一次（复用
+# intent_not_executed 通道，不落库、不新增事件类型）。
+
+# 已知工具名（弱信号：伪函数调用式文本 "write_file(path)" 的收窄白名单）
+_KNOWN_TOOL_NAMES = (
+    'read_file', 'write_file', 'edit_file', 'list_files', 'search_code',
+    'web_search', 'git_status', 'git_diff', 'git_log', 'run_command',
+)
+
+# 强信号：XML 标签 / JSON 结构（无需工具名，防泛泛误配）
+# 用 \b 而非 \s+：`<function=write_file>` 在 function 后直接是 =（无空白）
+_TOOL_TEXT_XML_RE = re.compile(
+    r'<\s*(?:function|tool_call|tool)\b[^>]*>', re.IGNORECASE,
+)
+_TOOL_TEXT_JSON_RE = re.compile(
+    r'"type"\s*:\s*"function"|"tool_calls"\s*:', re.IGNORECASE,
+)
+# 弱信号：已知工具名 + 括号的伪函数调用
+_TOOL_TEXT_CALL_RE = re.compile(
+    r'\b(?:' + '|'.join(_KNOWN_TOOL_NAMES) + r')\s*\(', re.IGNORECASE,
+)
+
+
+class ToolTextMatcher:
+    """检测「工具调用以文本形式输出」的信号。
+
+    - 强信号（XML/JSON）直接命中（形态足够独特，不受建议性负则影响）；
+    - 弱信号（已知工具名 + 括号）需同时不含建议性负则（"你可以调用 X" 是建议）。
+    """
+
+    def __init__(self,
+                 advisory_patterns: Optional[List[str]] = None) -> None:
+        self._advisory_re = re.compile(
+            '|'.join(f'(?:{p})' for p in (advisory_patterns or _ADVISORY_PATTERNS)),
+            re.IGNORECASE,
+        )
+
+    def matches(self, text: str) -> bool:
+        if not text:
+            return False
+        if _TOOL_TEXT_XML_RE.search(text) or _TOOL_TEXT_JSON_RE.search(text):
+            return True
+        if self._advisory_re.search(text):
+            return False  # 建议性弱信号整段排除
+        return bool(_TOOL_TEXT_CALL_RE.search(text))

@@ -460,6 +460,174 @@ async def test_patch_conversations_persists_max_tokens(chat_env):
         assert stored['maxTokens'] == 1024
 
 
+# ── S15-P0-2：contextBudget/maxGenerationTokens 链路（POST/PATCH 会话 + POST /config）──
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_post_conversations_rejects_invalid_context_budget(chat_env, bad):
+    """POST /conversations 非法 contextBudget（bool/越界/非 int）应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'contextBudget': bad},
+        )
+        assert resp.status_code == 400
+        assert 'contextBudget' in (await resp.get_json()).get('error', '')
+
+
+async def test_post_conversations_persists_new_fields(chat_env):
+    """POST /conversations 携带 contextBudget/maxGenerationTokens → 响应与 store 均含。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations',
+            json={'contextBudget': 9000, 'maxGenerationTokens': 8192},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['contextBudget'] == 9000
+        assert conv['maxGenerationTokens'] == 8192
+        stored = await store.get(conv['id'])
+        assert stored['contextBudget'] == 9000
+        assert stored['maxGenerationTokens'] == 8192
+
+
+async def test_post_conversations_defaults_new_fields_to_global(chat_env):
+    """POST /conversations 不带新字段 → 回退全局 config 值（chat_env 预写）。"""
+    app, store = chat_env
+    import routes.chat as chat
+    chat._write_json(chat.CONFIG_FILE, {
+        'defaultProviderId': '', 'defaultModelId': '',
+        'temperature': 0.7, 'maxTokens': 4096,
+        'contextBudget': 7000, 'maxGenerationTokens': 5000,
+        'topP': 1.0,
+    })
+    async with app.test_client() as client:
+        resp = await client.post('/api/chat/conversations', json={'title': 'x'})
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['contextBudget'] == 7000
+        assert conv['maxGenerationTokens'] == 5000
+
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_patch_conversations_rejects_invalid_new_fields(chat_env, bad):
+    """PATCH /conversations 非法 maxGenerationTokens 应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'maxGenerationTokens': bad},
+        )
+        assert resp.status_code == 400
+        assert 'maxGenerationTokens' in (await resp.get_json()).get('error', '')
+
+
+async def test_patch_conversations_persists_new_fields(chat_env):
+    """PATCH /conversations 携带 contextBudget/maxGenerationTokens → 200 且持久化。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.patch(
+            '/api/chat/conversations/conv-1',
+            json={'contextBudget': 9000, 'maxGenerationTokens': 8192},
+        )
+        assert resp.status_code == 200
+        conv = (await resp.get_json()).get('conversation', {})
+        assert conv['contextBudget'] == 9000
+        assert conv['maxGenerationTokens'] == 8192
+        stored = await store.get('conv-1')
+        assert stored['contextBudget'] == 9000
+        assert stored['maxGenerationTokens'] == 8192
+
+
+async def test_save_config_persists_new_fields(chat_env):
+    """POST /config 携带 contextBudget/maxGenerationTokens → 落盘 chat_config.json 可见。"""
+    app, store = chat_env
+    import routes.chat as chat
+    async with app.test_client() as client:
+        resp = await client.post('/api/chat/config', json={
+            'contextBudget': 9000, 'maxGenerationTokens': 8192,
+        })
+        assert resp.status_code == 200
+    cfg = json.loads(open(chat.CONFIG_FILE, encoding='utf-8').read())
+    assert cfg['contextBudget'] == 9000
+    assert cfg['maxGenerationTokens'] == 8192
+
+
+@pytest.mark.parametrize('bad', [True, 0, 1000001, 'abc', 1.5, None])
+async def test_save_config_rejects_invalid_new_fields(chat_env, bad):
+    """POST /config 非法 contextBudget 应返回 400。"""
+    app, store = chat_env
+    async with app.test_client() as client:
+        resp = await client.post('/api/chat/config', json={'contextBudget': bad})
+        assert resp.status_code == 400
+        assert 'contextBudget' in (await resp.get_json()).get('error', '')
+
+
+async def test_init_data_files_writes_new_fields(chat_env):
+    """S15-P1-2: 初始化 chat_config.json 含 contextBudget/maxGenerationTokens。"""
+    import routes.chat as chat
+    chat._init_data_files()
+    cfg = chat._read_json(chat.CONFIG_FILE, {})
+    assert cfg['contextBudget'] == 131072
+    assert cfg['maxGenerationTokens'] == 16384
+
+
+# ── S15-P0-3：send_message 生成上限回退链 ────────────────────
+
+async def _capture_send_message_payload(app, monkeypatch, body_json, config_data):
+    """POST /messages 并返回发送给 LLM 的 payload（捕获 httpx stream）。"""
+    import routes.chat as chat
+    chat._write_json(chat.CONFIG_FILE, config_data)
+    fake_resp = _FakeHttpxStreamResponse(
+        b'\n'.join([_make_sse('ok'), b'data: [DONE]'])
+    )
+    holder = {}
+
+    def make_client(**kw):
+        c = _CapturingHttpxClient(fake_resp, **kw)
+        holder['client'] = c
+        return c
+
+    monkeypatch.setattr(chat.httpx, 'AsyncClient', make_client)
+    async with app.test_client() as client:
+        resp = await client.post(
+            '/api/chat/conversations/conv-1/messages', json=body_json,
+        )
+        assert resp.status_code == 200
+    return holder['client'].captured_json
+
+
+async def test_send_message_cap_prefers_max_generation_tokens(chat_env, monkeypatch):
+    """S15-P0-3: 配置 maxGenerationTokens=8192 且 maxTokens=4096 → max_tokens 取 8192。"""
+    app, store = chat_env
+    payload = await _capture_send_message_payload(app, monkeypatch,
+        {'content': 'hi'},
+        {'maxTokens': 4096, 'maxGenerationTokens': 8192},
+    )
+    assert payload['max_tokens'] == 8192
+
+
+async def test_send_message_cap_falls_back_to_max_tokens(chat_env, monkeypatch):
+    """S15-P0-3: 仅配置 maxTokens → 回退生效。"""
+    app, store = chat_env
+    payload = await _capture_send_message_payload(app, monkeypatch,
+        {'content': 'hi'},
+        {'maxTokens': 6144},
+    )
+    assert payload['max_tokens'] == 6144
+
+
+async def test_send_message_cap_body_precedes_config(chat_env, monkeypatch):
+    """S15-P0-3: 请求体 maxGenerationTokens 优先于全局 config。"""
+    app, store = chat_env
+    payload = await _capture_send_message_payload(app, monkeypatch,
+        {'content': 'hi', 'maxGenerationTokens': 5000},
+        {'maxTokens': 4096, 'maxGenerationTokens': 8192},
+    )
+    assert payload['max_tokens'] == 5000
+
+
 @pytest.mark.parametrize('bad', [True, 1, [], {}])
 async def test_patch_conversations_rejects_invalid_project_path(chat_env, bad):
     """S14 (G2): agentConfig.projectPath 非字符串 → 400（写入侧类型校验）。

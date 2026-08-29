@@ -16,10 +16,11 @@ export const useChatStore = defineStore('chat', () => {
     temperature: 0.7,
     maxTokens: 4096,
     maxTokensAuto: true,
-    contextBudget: 4096,
-    maxGenerationTokens: 4096,
+    // S15-E-P0-1: contextBudget 默认与 P1-2 初始化一致（不再 4096 过激压缩）
+    contextBudget: 131072,
+    // S15-E-P1-1: maxGenerationTokens 默认 16384（E3 大文件/长回复不截断）
+    maxGenerationTokens: 16384,
     topP: 1.0,
-    systemPrompt: 'You are a helpful assistant.',
   })
   const isLoading = ref(false)
   const isStreaming = ref(false)
@@ -135,8 +136,9 @@ export const useChatStore = defineStore('chat', () => {
   // 设置模块启用的技能对所有对话默认生效，故移除 selectedSkill computed。
   const availableSkills = ref<Skill[]>([])
 
-  // F04: 自动批准写入文件 — 仅影响 write_file，run_command 仍需手动确认。
-  // 与 agentMode 一样绑定到当前对话的 agentConfig，切换时自动持久化。
+  // F04/S15-E-P0-2: 自动批准执行 — 覆盖 write_file/edit_file（file:*）与 run_command
+  // （command:*，命令由安全白名单兜底）。与 agentMode 一样绑定到当前对话的
+  // agentConfig，切换时自动持久化。
   const autoApproveWrites = computed<boolean>({
     get: () => currentConversation.value?.agentConfig?.autoApproveWrites ?? false,
     set: async (value) => {
@@ -432,7 +434,7 @@ export const useChatStore = defineStore('chat', () => {
   async function confirmTool(
     requestId: string,
     approved: boolean,
-    scope: 'once' | 'always' = 'once',
+    scope: 'once' | 'always' | 'never' = 'once',
     feedback?: string,
   ) {
     const conv = currentConversation.value

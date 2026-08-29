@@ -314,7 +314,7 @@ export async function confirmToolCall(
   convId: string,
   requestId: string,
   approved: boolean,
-  scope: 'once' | 'always' = 'once',
+  scope: 'once' | 'always' | 'never' = 'once',
   feedback?: string,
 ): Promise<void> {
   const url = `${BASE}/conversations/${convId}/confirm-tool`

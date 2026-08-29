@@ -11,9 +11,9 @@ const isOpen = ref(false)
 const temperature = ref(chatStore.config.temperature)
 const maxTokens = ref(chatStore.config.maxTokens)
 const maxTokensAuto = ref(chatStore.config.maxTokensAuto ?? true)
-const maxGenerationTokens = ref(chatStore.config.maxGenerationTokens ?? 4096)
+// S15-E-P1-1: maxGenerationTokens 默认 16384（E3 大文件/长回复不截断）
+const maxGenerationTokens = ref(chatStore.config.maxGenerationTokens ?? 16384)
 const topP = ref(chatStore.config.topP)
-const systemPrompt = ref(chatStore.config.systemPrompt)
 
 watch(
   () => chatStore.config,
@@ -21,9 +21,8 @@ watch(
     temperature.value = c.temperature
     maxTokens.value = c.maxTokens
     maxTokensAuto.value = c.maxTokensAuto ?? true
-    maxGenerationTokens.value = c.maxGenerationTokens ?? 4096
+    maxGenerationTokens.value = c.maxGenerationTokens ?? 16384
     topP.value = c.topP
-    systemPrompt.value = c.systemPrompt
   }
 )
 
@@ -60,7 +59,6 @@ function apply() {
     contextBudget: maxTokens.value,
     maxGenerationTokens: maxGenerationTokens.value,
     topP: topP.value,
-    systemPrompt: systemPrompt.value,
   })
   isOpen.value = false
 }
@@ -69,9 +67,8 @@ function reset() {
   temperature.value = 0.7
   maxTokens.value = 4096
   maxTokensAuto.value = true
-  maxGenerationTokens.value = 4096
+  maxGenerationTokens.value = 16384
   topP.value = 1.0
-  systemPrompt.value = 'You are a helpful assistant.'
   apply()
 }
 </script>
@@ -89,18 +86,6 @@ function reset() {
           <button class="reset-btn" :title="t('chat.resetParams')" @click="reset">
             <RotateCcw :size="12" />
           </button>
-        </div>
-
-        <div class="param-group">
-          <label class="param-label">
-            {{ t('chat.systemPrompt') }}
-          </label>
-          <textarea
-            v-model="systemPrompt"
-            class="param-textarea"
-            rows="3"
-            :placeholder="t('chat.systemPromptPlaceholder')"
-          />
         </div>
 
         <div class="param-group">
@@ -318,27 +303,6 @@ function reset() {
   background: var(--accent);
   cursor: pointer;
   border: 2px solid var(--border-subtle);
-}
-
-.param-textarea {
-  width: 100%;
-  background: var(--bg-glass);
-  border: 1px solid var(--border-glass);
-  border-radius: 8px;
-  padding: 8px;
-  color: var(--text-primary);
-  font-size: 12px;
-  font-family: inherit;
-  resize: vertical;
-  outline: none;
-}
-
-.param-textarea::placeholder {
-  color: var(--text-tertiary);
-}
-
-.param-textarea:focus {
-  border-color: var(--accent);
 }
 
 .apply-btn {

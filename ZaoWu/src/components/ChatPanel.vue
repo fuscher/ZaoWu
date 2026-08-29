@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { MessageSquarePlus } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
@@ -10,6 +10,12 @@ import MessageBubble from './MessageBubble.vue'
 const chatStore = useChatStore()
 const { t } = useI18n()
 const messagesRef = ref<HTMLElement | null>(null)
+
+// S15-E-P0-3（E6）：隐藏 role:'tool' 消息（重载后避免空气泡）；
+// 配对遍历仍读 chatStore.currentMessages 全量数据（MessageBubble 数据层不受影响）
+const visibleMessages = computed(() =>
+  chatStore.currentMessages.filter((m) => m.role !== 'tool')
+)
 
 function scrollToBottom() {
   nextTick(() => {
@@ -51,7 +57,7 @@ onMounted(() => {
 
     <div v-else ref="messagesRef" class="chat-messages">
       <MessageBubble
-        v-for="msg in chatStore.currentMessages"
+        v-for="msg in visibleMessages"
         :key="msg.id"
         :message="msg"
         :is-streaming="chatStore.isStreaming && chatStore.streamingMessageId === msg.id && msg.role === 'assistant'"

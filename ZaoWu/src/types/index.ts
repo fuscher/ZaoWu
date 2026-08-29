@@ -185,7 +185,6 @@ export interface LLMConfig {
   /** P0-4: LLM 生成上限，独立于压缩预算 */
   maxGenerationTokens?: number
   topP: number
-  systemPrompt: string
 }
 
 export interface LLMPreset {

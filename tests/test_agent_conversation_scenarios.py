@@ -185,10 +185,10 @@ def test_scenario1_build_mode_write_file(scenario_env):
     types = [p.get('type') for p in parsed]
     assert 'requires_confirmation' in types, 'write_file 需确认'
     assert (env.project_path / 'new.txt').read_text(encoding='utf-8') == 'approved content'
-    # 无正文有工具 → 摘要收尾
+    # 无正文有工具 → 自然语言总结收尾（S15-E-P1-2 替换机器摘要）
     done = parsed[-1]
     assert done['type'] == 'done'
-    assert done['content'] == '已执行工具：write_file'
+    assert done['content'] == '已为你完成，共执行 1 次工具操作：write_file。'
 
 
 # ── 场景 2：plan 模式只读约束 ────────────────────────────────
@@ -553,3 +553,88 @@ def test_scenario11_retry_network_error_persists_closing_message(scenario_env):
     assert last['role'] == 'assistant'
     assert last.get('content'), '失败收尾消息 content 不应为 NULL'
     assert '请求失败' in last['content'], '收尾消息应含失败原因'
+
+
+# ── 场景 8（S15-E-P1-3）：纯工具轮耗尽 → 总结收尾 ────────────
+
+class _ExhaustThenSummarize:
+    """首轮产出工具调用；第二轮（tools=None）产出总结正文。"""
+
+    def __init__(self, tool_event, summary_text):
+        self._tool_event = tool_event
+        self._summary_text = summary_text
+        self.calls = 0
+        self.summary_call_tools = 'unset'
+
+    async def __call__(self, provider, messages, tools, **kwargs):
+        self.calls += 1
+        if tools is None:
+            self.summary_call_tools = tools
+            yield {'type': 'delta', 'delta': self._summary_text}
+        else:
+            yield self._tool_event
+        yield {'type': 'usage', 'prompt_tokens': 10, 'completion_tokens': 5}
+
+
+def test_s15_e10_exhaust_produces_summary(scenario_env):
+    """max_iterations=1 且首轮纯工具调用 → 耗尽后注入总结（tools=None），终态自然语言。"""
+    env = scenario_env
+    _new_conv(env, preset='build', agent_config={'maxIterations': 1})
+    file_path = str(env.project_path / 'new.txt')
+    service = env.make_service()
+    mock_llm = _ExhaustThenSummarize(
+        _tool_call('write_file', file_path, 'approved content'),
+        '已达最大轮次。已完成文件写入，未完成的部分为后续校验，建议下一步运行测试。',
+    )
+    service._stream_llm = mock_llm
+
+    parsed = _run_dialog(
+        service, 'conv-1', 'Create new.txt',
+        confirm=lambda s, rid: _confirm(s, rid, approved=True),
+    )
+    done = parsed[-1]
+    assert done['type'] == 'done'
+    assert done['quality'] == 'incomplete'
+    assert '已完成文件写入' in done['content'], f"got {done['content']!r}"
+    # 总结轮以 tools=None 纯文本调用（不再发起工具），且只重试一次
+    assert mock_llm.calls == 2
+    assert mock_llm.summary_call_tools is None
+
+
+# ── 场景 9（S15-E-P2-2）：始终拒绝（scope=never）────────────────
+
+def test_s15_e11_always_deny_persists_and_applies(scenario_env):
+    """用户「始终拒绝」write_file → 同资源后续直接 deny（不再 ask）且规则落库。"""
+    env = scenario_env
+    _new_conv(env, preset='build')
+    file_path = str(env.project_path / 'new.txt')
+    service = env.make_service()
+    service._stream_llm = ScriptedLLM([
+        [_tool_call('write_file', file_path, 'first', request_id='call_1')],
+        [_tool_call('write_file', file_path, 'second', request_id='call_2')],
+        [],
+    ])
+
+    parsed = _run_dialog(
+        service, 'conv-1', 'Write twice',
+        confirm=lambda s, rid: _confirm(s, rid, approved=False, scope='never'),
+    )
+
+    # 首轮 ask → 始终拒绝 → 第二轮同资源直接 deny（不再 requires_confirmation）
+    confirm_count = sum(1 for p in parsed if p.get('type') == 'requires_confirmation')
+    assert confirm_count == 1, '第二轮不应再发确认'
+    denied_parts = [
+        p for p in parsed
+        if p.get('type') == 'tool_part' and p.get('part') == 'denied'
+    ]
+    assert len(denied_parts) == 2, '两轮 write_file 均应为 denied'
+    # 会话级 deny 规则落库
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    rules = loop.run_until_complete(env.store.list_approval_rules('conv-1'))
+    loop.close()
+    deny_rules = [
+        r for r in rules
+        if r['effect'] == 'deny' and r['action'] == 'write_file'
+    ]
+    assert deny_rules, '始终拒绝应持久化会话级 deny 规则'

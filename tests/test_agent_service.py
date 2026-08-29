@@ -540,6 +540,10 @@ def test_telemetry_records_aggregated_fields(agent_service, monkeypatch):
         counter['n'] += 1
         service._tokens_in += 100
         service._tokens_out += 50
+        if tools is None:
+            # S15-E-P1-3（E10）：耗尽总结重试走 tools=None 纯文本
+            yield {'type': 'delta', 'delta': f'summary-{n}'}
+            return
         yield {
             'type': 'tool_call_part',
             'tool_call': _make_tool_call(
@@ -599,8 +603,8 @@ def test_telemetry_records_aggregated_fields(agent_service, monkeypatch):
     rec = calls[0]
     assert rec['conv_id'] == 'conv-telemetry'
     assert rec['model'] == 'test-model'
-    assert rec['tokens_in'] == 100 * 10, f"got {rec['tokens_in']}"
-    assert rec['tokens_out'] == 50 * 10, f"got {rec['tokens_out']}"
+    assert rec['tokens_in'] == 100 * 11, f"got {rec['tokens_in']}"
+    assert rec['tokens_out'] == 50 * 11, f"got {rec['tokens_out']}"
     assert rec['tool_count'] == 10, f"got {rec['tool_count']}"
     assert rec['iterations'] == 10, f"got {rec['iterations']}"
     assert rec['quality'] == 'incomplete', f"got {rec['quality']}"
@@ -3232,3 +3236,173 @@ def test_telemetry_defaults_register_ref_fields():
     assert 'ref_tokens' in _DEFAULTS
 
 
+
+
+# ── S15：配置链路与智能体体验（E1/E2/E9）────────────────────
+
+def test_s15_e1_fallback_prefers_conv_new_fields(agent_service, monkeypatch):
+    """S15-E-P0-1（E1）：conv 级 contextBudget/maxGenerationTokens 优先于 maxTokens 回退。
+
+    压缩预算（compact_if_needed 第三参）取 conv.contextBudget，生成上限
+    （_stream_llm max_tokens）取 conv.maxGenerationTokens，不再落回旧 maxTokens。
+    """
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    captured = {'max_tokens': None, 'budget': None}
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        captured['max_tokens'] = kwargs.get('max_tokens')
+        yield {'type': 'delta', 'delta': '任务已完成'}
+
+    async def mock_compact(conv, system_prompt, budget, provider, ref_tokens=0):
+        captured['budget'] = budget
+        return None, None
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'test-provider', 'modelId': 'test-model',
+            'contextBudget': 9000, 'maxGenerationTokens': 5000, 'maxTokens': 4096,
+            'agentConfig': {'enabled': True}, 'messages': [],
+        }
+
+    async def mock_append(conv_id, msg):
+        pass
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'test-model'}],
+    })
+    monkeypatch.setattr(service._context, 'compact_if_needed', mock_compact)
+    monkeypatch.setattr(service, '_stream_llm', mock_stream_llm)
+
+    async def run():
+        async for _ in service.process_message('conv-e1', 'test'):
+            pass
+
+    loop.run_until_complete(run())
+    assert captured['budget'] == 9000, f"got {captured['budget']}"
+    assert captured['max_tokens'] == 5000, f"got {captured['max_tokens']}"
+
+
+def test_s15_e2_auto_approve_allows_run_command_without_ask(agent_service, monkeypatch):
+    """S15-E-P0-2（E2）：autoApproveWrites=true 时 run_command 直接 allow，不发确认。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    events = []
+    executed = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'tool_call_part', 'tool_call': {
+            'requestId': 'call_rc', 'name': 'run_command',
+            'arguments': {'command': 'git status', 'cwd': '/'},
+        }}
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'test-provider', 'modelId': 'test-model',
+            'agentConfig': {'enabled': True, 'autoApproveWrites': True, 'maxIterations': 1},
+            'messages': [],
+        }
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            executed.append((name, args))
+            return {'success': True, 'content': 'ok'}
+
+    async def mock_append(conv_id, msg):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'test-provider', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'test-model'}],
+    })
+    monkeypatch.setattr(service, '_stream_llm', mock_stream_llm)
+
+    async def run():
+        async for ev in service.process_message('conv-e2', 'run it'):
+            events.append(json.loads(ev[6:]))
+
+    loop.run_until_complete(run())
+    types = [e.get('type') for e in events]
+    assert 'requires_confirmation' not in types, 'run_command 不应卡确认'
+    assert executed, 'run_command 应被执行'
+    assert executed[0][0] == 'run_command'
+
+
+def test_s15_e9_tool_text_matcher():
+    """S15-E-P0-6（E9）：ToolTextMatcher 命中 XML/JSON/伪函数调用，建议性负则排除。"""
+    from agent_modules.agent_core.intent_patterns import ToolTextMatcher
+    m = ToolTextMatcher()
+    assert m.matches('<function=write_file path="/a">')
+    assert m.matches('<tool_call>read_file</tool_call>')
+    assert m.matches('<tool name="edit_file">')
+    assert m.matches('{"type": "function"}')
+    assert m.matches('"tool_calls": [{"function": {...}}]')
+    assert m.matches('write_file("/a/b.txt")')
+    assert m.matches('git_status()')
+    # 建议性负则：整段排除（"你可以调用 X" 是建议不是调用）
+    assert not m.matches('你可以调用 write_file(/a) 来写入文件')
+    assert not m.matches('我建议你手动执行 git_status()')
+    # 正常结论文本不误触发
+    assert not m.matches('任务已完成，一切正常')
+
+
+def test_s15_e9_idle_detector_textified_tool_call_injects_correction():
+    """S15-E-P0-6（E9）：文本化工具调用走 inject_correction_retry，一次机会后终态。"""
+    from agent_modules.agent_core.idle_detector import IdleDetector
+    detector = IdleDetector()
+    d = detector.detect(
+        collected_text='<function=write_file path="/a">',
+        full_text='', executed_tool_names=[], preset='build',
+    )
+    assert d.action == 'inject_correction_retry'
+    assert d.notice_code == 'intent_not_executed'
+    assert '文本形式输出' in d.correction
+    # 二次文本化 → 终态（一次纠正机会已消耗）
+    d2 = detector.detect(
+        collected_text='<function=write_file path="/a">',
+        full_text='', executed_tool_names=[], preset='build',
+    )
+    assert d2.action == 'terminal'
+    assert d2.quality == 'idle'
+
+
+def test_s15_e11_build_rules_deny_after_auto_approve(agent_service, monkeypatch):
+    """S15-E-P2-2（G14）：persisted deny 追加在 autoApproveWrites 之后 → 显式拒绝不被自动批准覆盖。"""
+    from services.tool_approval import ApprovalRule, evaluate
+    service = agent_service
+    loop = asyncio.get_event_loop()
+
+    async def fake_load(conv_id):
+        return [
+            ApprovalRule('run_command', 'command:git push*', 'deny'),
+            ApprovalRule('run_command', 'command:git status', 'allow'),
+        ]
+
+    monkeypatch.setattr(service, '_load_persisted_rules', fake_load)
+    rules = loop.run_until_complete(
+        service._build_approval_rules('c1', {'autoApproveWrites': True})
+    )
+    # 自动批准开启时，persisted deny 仍压过 autoApprove allow（D20）
+    assert evaluate('run_command', 'command:git push origin main', rules) == 'deny'
+    # persisted allow 仍生效
+    assert evaluate('run_command', 'command:git status', rules) == 'allow'
+    # 未持久化的命令仍被自动批准 allow
+    assert evaluate('run_command', 'command:ls', rules) == 'allow'

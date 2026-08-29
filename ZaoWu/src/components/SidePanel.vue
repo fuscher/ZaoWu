@@ -16,7 +16,7 @@ import GitProjectSelectDialog from './GitProjectSelectDialog.vue'
 import GitBranchDialog from './GitBranchDialog.vue'
 import GitMissingDialog from './GitMissingDialog.vue'
 import GitNoRepoDialog from './GitNoRepoDialog.vue'
-import { RefreshCw, PackageOpen, Power, Trash2, Upload } from '@lucide/vue'
+import { RefreshCw, PackageOpen, Power, Trash2, Download } from '@lucide/vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import type { ViewType, Project } from '@/types'
 import type { PluginInfo } from '@/stores/plugins'
@@ -282,7 +282,7 @@ watch(
             <span>{{ t('plugins.installed') }}</span>
             <div class="plugin-header-actions">
               <button @click="openInstallDialog" class="icon-btn-sm" :title="t('plugins.install')" :disabled="installing">
-                <Upload :size="14" />
+                <Download :size="14" />
               </button>
               <button @click="pluginsStore.fetchPlugins()" class="icon-btn-sm" :title="t('plugins.refresh')">
                 <RefreshCw :size="14" />

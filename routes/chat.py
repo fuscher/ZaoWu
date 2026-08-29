@@ -94,6 +94,9 @@ def _init_data_files():
             'temperature': 0.7,
             'maxTokens': 4096,
             'maxTokensAuto': True,
+            # S15-P1-2: 新字段初始化 — contextBudget（压缩预算）、maxGenerationTokens（生成上限）
+            'contextBudget': 131072,
+            'maxGenerationTokens': 16384,
             'topP': 1.0,
             'systemPrompt': 'You are a helpful assistant.',
         })
@@ -515,23 +518,28 @@ def get_models(provider_id):
 
     ok, err, models = _fetch_models_sync(api_base, api_key, protocol, auth_type)
     if ok:
-        # 合并语义：保留用户手动添加的模型与编辑过的显示名，仅补充 API 新增项
-        # 并刷新 API 侧字段（与 ProviderDialog 批量导入 importSelected 一致），
-        # 避免「刷新模型列表」静默丢弃手动项/改名。
-        existing = {m.get('id'): m for m in provider.get('models', [])}
-        merged, api_ids = [], set()
-        for m in models:
-            mid = m.get('id')
-            api_ids.add(mid)
-            old = existing.get(mid)
-            if old is not None:
-                merged.append({**old, **{k: v for k, v in m.items() if k != 'name'}})
-            else:
-                merged.append(m)
-        merged.extend(old for mid, old in existing.items() if mid not in api_ids)
-        provider['models'] = merged
+        # S15-P0-1 合并语义（白名单优先）：provider.models 即用户白名单。
+        # - 本地为空 → 拉取结果整列写入（首次填充）
+        # - 本地非空 → 只刷新已存在项的字段：保留用户编辑的 name、跳过 API 的
+        #   null/缺失字段（避免把已填 contextLength 洗成 null）；不新增 API 独有
+        #   模型、不删除本地独有模型；遍历以 existing 为基准保持用户排列顺序。
+        existing = provider.get('models', [])
+        if not existing:
+            provider['models'] = models
+        else:
+            api_by_id = {m.get('id'): m for m in models}
+            merged = []
+            for old in existing:
+                fresh = api_by_id.get(old.get('id'))
+                if fresh is None:
+                    merged.append(old)
+                else:
+                    refresh = {k: v for k, v in fresh.items()
+                               if k != 'name' and v is not None}
+                    merged.append({**old, **refresh})
+            provider['models'] = merged
         _write_json(PROVIDERS_FILE, data)
-        return jsonify({'ok': True, 'models': merged})
+        return jsonify({'ok': True, 'models': provider['models']})
     # 拉取失败（网络/鉴权等）：回退本地已存模型，避免前端报错
     _log.warning('get_models provider=%s fetch failed: %s', provider_id, err)
     return jsonify({'ok': True, 'models': provider.get('models', [])})
@@ -567,6 +575,14 @@ async def create_conversation():
             return jsonify({'ok': False, 'error': 'maxTokens must be an integer'}), 400
         if not (1 <= v <= 1000000):
             return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
+    # S15-P0-2: contextBudget/maxGenerationTokens 同校验（对话级写是 Agent 回退链生效前提）
+    for field in ('contextBudget', 'maxGenerationTokens'):
+        if field in body:
+            v = body[field]
+            if not isinstance(v, int) or isinstance(v, bool):
+                return jsonify({'ok': False, 'error': f'{field} must be an integer'}), 400
+            if not (1 <= v <= 1000000):
+                return jsonify({'ok': False, 'error': f'{field} must be between 1 and 1000000'}), 400
     agent_config = body.get('agentConfig')
     if agent_config is not None and not isinstance(agent_config, dict):
         return jsonify({'ok': False, 'error': 'agentConfig must be an object'}), 400
@@ -582,12 +598,16 @@ async def create_conversation():
         'modelId': body.get('modelId', config.get('defaultModelId', '')),
         'systemPrompt': body.get('systemPrompt', config.get('systemPrompt', '')),
         'maxTokens': body.get('maxTokens', config.get('maxTokens', 4096)),
+        # S15-P0-2: 新字段随会话落库（缺省继承全局 config，回退到初始化默认值）
+        'contextBudget': body.get('contextBudget', config.get('contextBudget', 131072)),
+        'maxGenerationTokens': body.get('maxGenerationTokens', config.get('maxGenerationTokens', 16384)),
         'messages': [],
         'createdAt': now,
         'updatedAt': now,
         'agentConfig': agent_config or {
             'enabled': False,
-            'maxIterations': 10,
+            # S15-E-P1-1: maxIterations 默认 30（E4 复杂多步任务不中断）
+            'maxIterations': 30,
             'requiresApproval': False,
         },
     }
@@ -634,6 +654,16 @@ async def update_conversation(conv_id):
         if not (1 <= v <= 1000000):
             return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
         conv['maxTokens'] = v
+
+    # S15-P0-2: contextBudget/maxGenerationTokens 同校验（对话级写是 Agent 回退链生效前提）
+    for field in ('contextBudget', 'maxGenerationTokens'):
+        if field in body:
+            v = body[field]
+            if not isinstance(v, int) or isinstance(v, bool):
+                return jsonify({'ok': False, 'error': f'{field} must be an integer'}), 400
+            if not (1 <= v <= 1000000):
+                return jsonify({'ok': False, 'error': f'{field} must be between 1 and 1000000'}), 400
+            conv[field] = v
 
     # 支持更新 agentConfig
     if 'agentConfig' in body:
@@ -790,10 +820,15 @@ async def send_message(conv_id):
                 messages.append({'role': role, 'content': msg.get('content')})
 
             temperature = body.get('temperature', config.get('temperature', 0.7))
-            # maxTokens 作为压缩预算可配置到 1M；作为 LLM 生成参数需钳制到 API 上限
-            # （实测 opencode 等 API 拒绝 >131072 的 max_tokens；Anthropic 上限更低）
+            # S15-P0-3: 生成上限回退链（聊天侧约减，D6 无对话级字段）
+            # maxGenerationTokens 优先、旧 maxTokens 兼容回退；作为 LLM 生成参数需
+            # 钳制到 API 上限（实测 opencode 等 API 拒绝 >131072；Anthropic 上限更低）
             max_tokens = min(
-                body.get('maxTokens', config.get('maxTokens', 4096)),
+                body.get('maxGenerationTokens')
+                or config.get('maxGenerationTokens')
+                or body.get('maxTokens')
+                or config.get('maxTokens')
+                or 4096,
                 64000 if protocol == 'anthropic' else 131072,
             )
             top_p = body.get('topP', config.get('topP', 1.0))
@@ -976,6 +1011,16 @@ async def save_config():
         if not (1 <= v <= 1000000):
             return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
         config['maxTokens'] = v
+
+    # S15-P0-2: contextBudget/maxGenerationTokens 同校验与持久化（消除字段静默丢弃，G4）
+    for field in ('contextBudget', 'maxGenerationTokens'):
+        if field in body:
+            v = body[field]
+            if not isinstance(v, int) or isinstance(v, bool):
+                return jsonify({'ok': False, 'error': f'{field} must be an integer'}), 400
+            if not (1 <= v <= 1000000):
+                return jsonify({'ok': False, 'error': f'{field} must be between 1 and 1000000'}), 400
+            config[field] = v
 
     if 'maxTokensAuto' in body:
         v = body['maxTokensAuto']
@@ -1304,8 +1349,8 @@ async def confirm_tool(conv_id):
         return jsonify({'ok': False, 'error': 'missing requestId'}), 400
     if not isinstance(approved, bool):
         return jsonify({'ok': False, 'error': 'approved must be boolean'}), 400
-    if scope not in ('once', 'always'):
-        return jsonify({'ok': False, 'error': "scope must be 'once' or 'always'"}), 400
+    if scope not in ('once', 'always', 'never'):
+        return jsonify({'ok': False, 'error': "scope must be 'once', 'always' or 'never'"}), 400
 
     agent = active_agent_store.get(conv_id)
     if not agent:

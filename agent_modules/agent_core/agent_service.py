@@ -80,6 +80,7 @@ AGENT_SYSTEM_PROMPT = """你是一个专业的 AI 编程助手，运行在 ZaoWu
 - 代码块使用正确的语言标记
 - 直接给出结论和操作，语言随用户（中文/英文），避免不必要的客套话
 - 代码引用用 `file:line` 格式
+- **完成工具调用后，必须用一句自然语言向用户说明你做了什么、结果如何；不要只调用工具不说话**
 
 ## 当前项目
 - 可操作的项目路径（白名单，仅以下目录可读写）:
@@ -201,9 +202,9 @@ class AgentService:
 
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
-            # S13-P0-2: 读取处兜底钳制 — 防御历史脏数据（非 int 回退默认 10，
+            # S15-E-P1-1: 读取处兜底钳制 — 防御历史脏数据（非 int 回退默认 30，
             # 越界钳制 1~100），与路由层 maxIterations 校验配合消除无钳制循环。
-            _raw_max_iterations = agent_config.get('maxIterations', 10)
+            _raw_max_iterations = agent_config.get('maxIterations', 30)
             max_iterations = (
                 max(1, min(100, _raw_max_iterations))
                 if isinstance(_raw_max_iterations, int)
@@ -269,6 +270,8 @@ class AgentService:
             # IdleDetector 终态 quality（None=全工具轮 for 耗尽，兜底 incomplete）
             terminal_quality = None
             terminal_handoff = False  # constrained 交接标志（发 handoff 事件 + recovery CTA）
+            # S15-E-P1-3（E10）：耗尽总结重试计数（一次即止）
+            summary_retry_count = 0
 
             # 5.2 主动压缩（预算触发）：system+历史超 0.8*context_budget 时摘要化早期对话。
             # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
@@ -601,6 +604,15 @@ class AgentService:
                             yield self._requires_confirmation_event(assistant_msg_id, tc)
                             confirmation = await self._wait_for_confirmation(tc['requestId'])
                             if not confirmation or not confirmation.get('approved'):
+                                # S15-E-P2-2（E11）：始终拒绝 → 持久化会话级 deny 规则，
+                                # 并追加本会话规则集（findLast 后声明优先，本轮即生效）
+                                if confirmation and confirmation.get('scope') == 'never':
+                                    await self._persist_approval_rule(
+                                        conv_id, tc['name'], resource, 'deny',
+                                    )
+                                    approval_rules.append(
+                                        ApprovalRule(tc['name'], resource, 'deny')
+                                    )
                                 # 拒绝（可能含 feedback）或超时/停止
                                 feedback = confirmation.get('feedback') if confirmation else None
                                 if feedback:
@@ -708,10 +720,42 @@ class AgentService:
             _quality = quality
             # P0-3：满轮次无收敛时通知前端
             if quality == 'incomplete':
-                yield self._notice_event(
-                    'warn', 'max_iterations_reached',
-                    f'[系统] 已达最大轮次（{max_iterations}），如需继续请发送新消息',
-                )
+                # S15-E-P1-3（E10）：纯工具轮耗尽 → 注入总结 system 消息、
+                # tools=None 强制纯文本重走一次 _stream_llm（summary_retry_count 一次即止）
+                if (executed_tool_names and not full_text
+                        and summary_retry_count < 1):
+                    yield self._notice_event(
+                        'warn', 'max_iterations_reached',
+                        f'[系统] 已达最大轮次（{max_iterations}），正在生成总结…',
+                    )
+                    yield self._phase_event(assistant_msg_id, 'retrying')
+                    phase_nodes.append('retrying')
+                    summary_retry_count += 1
+                    messages.append({
+                        'role': 'system',
+                        'content': (
+                            '已达最大迭代轮次。请用一句自然语言总结已完成的工作、'
+                            '未完成的部分与建议的下一步，**不要再调用工具**。'
+                        ),
+                    })
+                    try:
+                        async for event in self._stream_llm(
+                            provider, messages, None,
+                            temperature=conv.get('temperature', 0.7),
+                            max_tokens=min(max_gen_tokens, MAX_GENERATION_TOKENS),
+                            top_p=conv.get('topP', 1.0),
+                            stop_event=self.stop_event,
+                        ):
+                            if event.get('type') == 'delta':
+                                full_text += event.get('delta', '')
+                                yield self._delta_event(assistant_msg_id, event['delta'])
+                    except LLMError:
+                        logger.warning('agent summary retry failed, using fallback content')
+                else:
+                    yield self._notice_event(
+                        'warn', 'max_iterations_reached',
+                        f'[系统] 已达最大轮次（{max_iterations}），如需继续请发送新消息',
+                    )
             # content 策略（与各终态文案/既有测试断言对齐）：
             # - success + 无文本有工具 → 执行摘要（scenario1）
             # - constrained → plan 只读解释文案（scenario3/4）
@@ -721,9 +765,13 @@ class AgentService:
             if not full_text and executed_tool_names:
                 from collections import Counter
                 counts = Counter(executed_tool_names)
-                final_content = '已执行工具：' + '、'.join(
+                names = '、'.join(
                     f'{name}×{cnt}' if cnt > 1 else name
                     for name, cnt in counts.items()
+                )
+                # S15-E-P1-2（E5）：兜底改自然语言总结（非「已执行工具：…」机器枚举）
+                final_content = (
+                    f'已为你完成，共执行 {len(executed_tool_names)} 次工具操作：{names}。'
                 )
                 summary = final_content
             elif quality == 'constrained' and not full_text:
@@ -958,9 +1006,13 @@ class AgentService:
         4. preset deny 规则（plan 模式）：优先级最高，覆盖 autoApproveWrites。
         """
         rules: List[ApprovalRule] = list(build_default_rules(self.tool_registry))
-        rules.extend(await self._load_persisted_rules(conv_id))
+        # S15-E-P2-2（D20/G14）：持久化规则拆分 allow/deny 两组 —— deny 组追加在
+        # autoApproveWrites 之后、preset 之前，保证「始终拒绝」不被全局自动批准覆盖
+        persisted = await self._load_persisted_rules(conv_id)
+        rules.extend(r for r in persisted if r.effect != 'deny')
         if agent_config.get('autoApproveWrites'):
             rules.extend(build_auto_approve_writes_rules())
+        rules.extend(r for r in persisted if r.effect == 'deny')
         preset = agent_config.get('preset', 'build')
         rules.extend(preset_approval_rules(preset))
         return rules

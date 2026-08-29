@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     agent_config_json TEXT NOT NULL DEFAULT '{}',
     compaction_summary TEXT,
     compacted_until_seq INTEGER NOT NULL DEFAULT -1,
-    max_tokens INTEGER
+    max_tokens INTEGER,
+    context_budget INTEGER,
+    max_generation_tokens INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -79,6 +81,8 @@ _MIGRATION_COLUMNS = {
         ('compaction_summary', 'TEXT'),
         ('compacted_until_seq', 'INTEGER NOT NULL DEFAULT -1'),
         ('max_tokens', 'INTEGER'),
+        ('context_budget', 'INTEGER'),
+        ('max_generation_tokens', 'INTEGER'),
     ],
     'messages': [
         ('metadata_json', 'TEXT'),
@@ -146,6 +150,10 @@ class ConversationStore:
         if 'max_tokens' in keys:
             # None = 会话未显式设置（跟随全局 config 兜底）
             conv['maxTokens'] = row['max_tokens']
+        if 'context_budget' in keys:
+            conv['contextBudget'] = row['context_budget']
+        if 'max_generation_tokens' in keys:
+            conv['maxGenerationTokens'] = row['max_generation_tokens']
         return conv
 
     @staticmethod
@@ -234,8 +242,8 @@ class ConversationStore:
     async def create(self, conv: dict) -> None:
         async with self._connect() as db:
             await db.execute(
-                'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens) '
-                'VALUES(?,?,?,?,?,?,?,?,?)',
+                'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens,context_budget,max_generation_tokens) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                 (
                     conv['id'], conv.get('title', ''),
                     conv.get('providerId', ''), conv.get('modelId', ''),
@@ -243,6 +251,8 @@ class ConversationStore:
                     conv.get('createdAt', ''), conv.get('updatedAt', ''),
                     json.dumps(conv.get('agentConfig', {}), ensure_ascii=False),
                     conv.get('maxTokens'),
+                    conv.get('contextBudget'),
+                    conv.get('maxGenerationTokens'),
                 ),
             )
             await db.commit()
@@ -259,6 +269,8 @@ class ConversationStore:
             'compactionSummary': 'compaction_summary',
             'compactedUntilSeq': 'compacted_until_seq',
             'maxTokens': 'max_tokens',
+            'contextBudget': 'context_budget',
+            'maxGenerationTokens': 'max_generation_tokens',
         }
         for key, col in field_map.items():
             if key in fields:
@@ -416,8 +428,8 @@ class ConversationStore:
                 if not cid or await self._exists_in_db(db, cid):
                     continue
                 await db.execute(
-                    'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens) '
-                    'VALUES(?,?,?,?,?,?,?,?,?)',
+                    'INSERT INTO conversations(id,title,provider_id,model_id,system_prompt,created_at,updated_at,agent_config_json,max_tokens,context_budget,max_generation_tokens) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
                     (
                         cid, conv.get('title', ''),
                         conv.get('providerId', ''), conv.get('modelId', ''),
@@ -425,6 +437,8 @@ class ConversationStore:
                         conv.get('createdAt', ''), conv.get('updatedAt', ''),
                         json.dumps(conv.get('agentConfig', {}), ensure_ascii=False),
                         conv.get('maxTokens'),
+                        conv.get('contextBudget'),
+                        conv.get('maxGenerationTokens'),
                     ),
                 )
                 for i, msg in enumerate(conv.get('messages', [])):

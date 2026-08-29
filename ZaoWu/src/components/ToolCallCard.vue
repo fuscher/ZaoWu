@@ -15,7 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   approve: [requestId: string, scope: 'once' | 'always']
-  reject: [requestId: string, feedback?: string]
+  reject: [requestId: string, scope: 'once' | 'never', feedback?: string]
 }>()
 
 const { t } = useI18n()
@@ -88,28 +88,13 @@ function cancelReject() {
   rejectFeedback.value = ''
 }
 
-function confirmReject() {
+function confirmReject(scope: 'once' | 'never') {
   approved.value = true // 隐藏确认按钮（已响应）
   if (props.toolCall?.requestId) {
-    emit('reject', props.toolCall.requestId, rejectFeedback.value.trim() || undefined)
+    emit('reject', props.toolCall.requestId, scope, rejectFeedback.value.trim() || undefined)
   }
   rejecting.value = false
   rejectFeedback.value = ''
-}
-
-function iconForTool(name: string): string {
-  const map: Record<string, string> = {
-    read_file: '📄',
-    write_file: '✏️',
-    edit_file: '✂️',
-    list_files: '📁',
-    search_code: '🔍',
-    git_status: '📊',
-    git_diff: '📋',
-    git_log: '📜',
-    run_command: '💻',
-  }
-  return map[name] || '🔧'
 }
 
 function summaryForResult(result: ToolResult): string {
@@ -170,7 +155,6 @@ function summaryForResult(result: ToolResult): string {
     pending: requiresApproval && !approved,
   }">
     <div class="tool-call-header" @click="toggle">
-      <span class="tool-icon">{{ iconForTool(toolResult?.tool || toolCall?.name || 'unknown') }}</span>
       <span class="tool-name">{{ toolCall?.name || toolResult?.tool }}</span>
       <span v-if="toolResult && !isExpanded" class="tool-summary">
         {{ toolResult.success ? summaryForResult(toolResult) : toolResult.error }}
@@ -241,8 +225,12 @@ function summaryForResult(result: ToolResult): string {
             rows="2"
           />
           <div class="reject-actions">
-            <button class="btn-reject" @click.stop="confirmReject">
+            <button class="btn-reject" @click.stop="confirmReject('once')">
               {{ t('agent.reject') }}
+            </button>
+            <!-- S15-E-P2-2（E11）：始终拒绝 — 持久化会话级 deny 规则 -->
+            <button class="btn-reject-always" @click.stop="confirmReject('never')">
+              {{ t('agent.rejectAlways') }}
             </button>
             <button class="btn-cancel" @click.stop="cancelReject">
               {{ t('common.cancel') }}
@@ -324,11 +312,6 @@ function summaryForResult(result: ToolResult): string {
 
 .tool-call-header:hover {
   background: var(--bg-secondary);
-}
-
-.tool-icon {
-  font-size: 14px;
-  flex-shrink: 0;
 }
 
 .tool-name {
@@ -446,6 +429,7 @@ function summaryForResult(result: ToolResult): string {
 .btn-approve,
 .btn-approve-always,
 .btn-reject,
+.btn-reject-always,
 .btn-cancel {
   display: flex;
   align-items: center;
@@ -485,6 +469,18 @@ function summaryForResult(result: ToolResult): string {
 
 .btn-reject:hover {
   filter: brightness(0.88);
+}
+
+/* S15-E-P2-2（E11）：始终拒绝 — 与"仅本次拒绝"区分（danger 描边样式） */
+.btn-reject-always {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-reject-always:hover {
+  background: var(--danger);
+  color: #fff;
 }
 
 /* 6.3.2: 拒绝原因输入区 */

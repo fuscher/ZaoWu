@@ -3,7 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ChevronDown, Cpu, RefreshCw } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
 import { useI18n } from '@/i18n'
-import { updateConversation } from '@/services/ai'
+import { updateConversation, fetchModelsByConfig } from '@/services/ai'
+import type { ModelFetchConfig } from '@/services/ai'
 
 const chatStore = useChatStore()
 const { t } = useI18n()
@@ -24,27 +25,52 @@ function toggle() {
 }
 
 async function selectModel(providerId: string, modelId: string) {
+  // S15-E-P0-1: 先解析模型上下文，再写会话级与全局——自动派生值必须落到回退链
+  // 首层（conv 级），否则被 conv.maxTokens（创建时旧值）遮蔽（G16）。
+  let ctxLen = findModelContextLength(providerId, modelId)
+  if (ctxLen == null) {
+    // S15-P1-1: 不落盘预览拉取 contextLength（复用 POST /models/fetch，只读不改写）
+    ctxLen = await previewContextLength(providerId, modelId)
+  }
+  // 自动模式两字段公式（D14）：maxGenerationTokens = ctxLen ?? 131072、
+  // contextBudget = 0.7 × (ctxLen ?? 131072)；maxTokens 同步（旧字段兼容回退）。
+  const derived = chatStore.config.maxTokensAuto
+    ? {
+        maxTokens: ctxLen ?? 131072,
+        contextBudget: Math.round(0.7 * (ctxLen ?? 131072)),
+        maxGenerationTokens: ctxLen ?? 131072,
+      }
+    : {}
   if (chatStore.currentConversation) {
     chatStore.currentConversation.providerId = providerId
     chatStore.currentConversation.modelId = modelId
-    await updateConversation(chatStore.currentConversation.id, { providerId, modelId })
+    await updateConversation(chatStore.currentConversation.id, { providerId, modelId, ...derived })
   } else {
     // 与 toggleAgentMode 行为一致：无当前对话时创建新对话
-    await chatStore.createNewConversation({ providerId, modelId })
+    await chatStore.createNewConversation({ providerId, modelId, ...derived })
   }
-  // 自动获取模型最大上下文：若本地 models 已带 contextLength 直接用；
-  // 否则尝试调一次 /models 拉取（contextLength 未命中时补全）。
-  let ctxLen = findModelContextLength(providerId, modelId)
-  if (ctxLen == null) {
-    await chatStore.refreshModels(providerId)
-    ctxLen = findModelContextLength(providerId, modelId)
-  }
-  // 自动模式：取到模型上下文 → 写入 config；取不到（供应商不提供）→
-  // 写入 128K 回退值，保证自动模式的值真正落到后端生效。
   if (chatStore.config.maxTokensAuto) {
-    await chatStore.updateConfig({ maxTokens: ctxLen ?? 131072 })
+    await chatStore.updateConfig(derived)
   }
   isOpen.value = false
+}
+
+/** S15-P1-1: 拉取供应商模型上下文长度（只读预览，不写 providers.json）。 */
+async function previewContextLength(providerId: string, modelId: string): Promise<number | undefined> {
+  const provider = chatStore.providers.find((p) => p.id === providerId)
+  if (!provider?.apiBase) return undefined
+  const cfg: ModelFetchConfig = {
+    apiBase: provider.apiBase,
+    apiKey: provider.apiKey,
+    protocol: provider.protocol,
+    authType: provider.authType,
+  }
+  try {
+    const models = await fetchModelsByConfig(cfg)
+    return models.find((m) => m.id === modelId)?.contextLength
+  } catch {
+    return undefined
+  }
 }
 
 function findModelContextLength(providerId: string, modelId: string): number | undefined {

@@ -145,6 +145,7 @@ def test_provider_presets_endpoint(chat_app):
 # ── B1：GET /models/<id> 合并语义 ───────────────────────────────────
 
 def test_get_models_merge_preserves_manual_and_renamed(chat_app, monkeypatch):
+    """S15-P0-1 白名单优先：只刷新已存在项字段，不新增 API 独有模型（防膨胀）、保序。"""
     app, provider_file = chat_app
     seed = {
         'schemaVersion': 1,
@@ -165,20 +166,19 @@ def test_get_models_merge_preserves_manual_and_renamed(chat_app, monkeypatch):
         True, '',
         [
             {'id': 'gpt-4', 'name': 'gpt-4', 'contextLength': 8192},
-            {'id': 'gpt-5', 'name': 'gpt-5', 'contextLength': 131072},
+            {'id': 'gpt-5', 'name': 'gpt-5', 'contextLength': 131072},  # API 独有，不入白名单
         ]))
 
     code, body = _client_call(app, 'get', '/api/chat/models/p1')
     assert code == 200
-    ids = {m['id'] for m in body['models']}
-    assert ids == {'gpt-4', 'gpt-5', 'local-model'}   # 手动项保留 + API 新增项加入
+    ids = [m['id'] for m in body['models']]
+    assert ids == ['gpt-4', 'local-model']               # 不新增 API 独有模型、保序
     renamed = next(m for m in body['models'] if m['id'] == 'gpt-4')
-    assert renamed['name'] == '我的 GPT-4'             # 用户改名保留
-    assert renamed['contextLength'] == 8192            # API 侧字段刷新
+    assert renamed['name'] == '我的 GPT-4'               # 用户改名保留
+    assert renamed['contextLength'] == 8192              # API 侧字段刷新
     # 落盘结果与服务端返回一致
     on_disk = json.loads(provider_file.read_text(encoding='utf-8'))
-    assert {m['id'] for m in on_disk['providers'][0]['models']} == {
-        'gpt-4', 'gpt-5', 'local-model'}
+    assert [m['id'] for m in on_disk['providers'][0]['models']] == ['gpt-4', 'local-model']
 
 
 def test_get_models_fetch_failure_returns_local_without_write(chat_app, monkeypatch):
@@ -201,6 +201,61 @@ def test_get_models_fetch_failure_returns_local_without_write(chat_app, monkeypa
     assert [m['id'] for m in body['models']] == ['m1']
     # 失败不写盘（文件字节不变）
     assert json.loads(provider_file.read_text(encoding='utf-8')) == seed
+
+
+def test_get_models_local_empty_writes_all(chat_app, monkeypatch):
+    """S15-P0-1: 本地 models 为空 → 拉取结果整列写入（首次填充）。"""
+    app, provider_file = chat_app
+    seed = {
+        'schemaVersion': 1,
+        'providers': [{
+            'id': 'p1',
+            'apiBase': 'https://api.example.com/v1',
+            'apiKey': 'k',
+            'protocol': 'openai',
+            'authType': 'bearer',
+            'models': [],
+        }],
+    }
+    provider_file.write_text(json.dumps(seed), encoding='utf-8')
+    monkeypatch.setattr(chat_mod, '_fetch_models_sync', lambda *a, **kw: (
+        True, '',
+        [
+            {'id': 'a', 'name': 'A', 'contextLength': 8192},
+            {'id': 'b', 'name': 'B', 'contextLength': None},
+        ]))
+
+    code, body = _client_call(app, 'get', '/api/chat/models/p1')
+    assert code == 200
+    assert [m['id'] for m in body['models']] == ['a', 'b']
+    on_disk = json.loads(provider_file.read_text(encoding='utf-8'))
+    assert [m['id'] for m in on_disk['providers'][0]['models']] == ['a', 'b']
+
+
+def test_get_models_null_context_length_not_overwritten(chat_app, monkeypatch):
+    """S15-P0-1: API 返回 null/缺失字段不覆盖用户已填值（contextLength 保留）。"""
+    app, provider_file = chat_app
+    seed = {
+        'schemaVersion': 1,
+        'providers': [{
+            'id': 'p1',
+            'apiBase': 'https://api.example.com/v1',
+            'apiKey': 'k',
+            'protocol': 'openai',
+            'authType': 'bearer',
+            'models': [{'id': 'gpt-4', 'name': 'gpt-4', 'contextLength': 8192}],
+        }],
+    }
+    provider_file.write_text(json.dumps(seed), encoding='utf-8')
+    monkeypatch.setattr(chat_mod, '_fetch_models_sync', lambda *a, **kw: (
+        True, '',
+        [{'id': 'gpt-4', 'name': 'gpt-4', 'contextLength': None}],
+    ))
+
+    code, body = _client_call(app, 'get', '/api/chat/models/p1')
+    assert code == 200
+    model = next(m for m in body['models'] if m['id'] == 'gpt-4')
+    assert model['contextLength'] == 8192, 'API null 不应覆盖用户已填 contextLength'
 
 
 # ── 端点：POST /models/fetch（协议透传 + display_name 映射）──────────

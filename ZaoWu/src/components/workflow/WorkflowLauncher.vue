@@ -2,7 +2,7 @@
 import { ref, computed, nextTick } from 'vue'
 import {
   Plus,
-  Upload,
+  Download,
   Search,
   Clock,
   FolderOpen,
@@ -119,12 +119,12 @@ function cancelCreate() {
         <span>{{ t('workflow.launcherTitle') }}</span>
       </div>
       <div class="launcher-actions">
-        <button class="launcher-btn primary" @click="openCreateDialog">
+        <button class="launcher-btn" @click="openCreateDialog">
           <Plus :size="14" />
           <span>{{ t('workflow.new') }}</span>
         </button>
         <button class="launcher-btn" @click="emit('import')">
-          <Upload :size="14" />
+          <Download :size="14" />
           <span>{{ t('workflow.import') }}</span>
         </button>
       </div>

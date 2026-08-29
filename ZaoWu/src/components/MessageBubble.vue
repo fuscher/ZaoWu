@@ -384,7 +384,7 @@ function handleRecoveryAction(action: string) {
           :part="chatStore.toolPartsFor(message.id).get(requestId)"
           :requires-approval="chatStore.pendingFor(message.id).has(requestId)"
           @approve="(id, scope) => chatStore.confirmTool(id, true, scope)"
-          @reject="(id, feedback) => chatStore.confirmTool(id, false, 'once', feedback)"
+          @reject="(id, scope, feedback) => chatStore.confirmTool(id, false, scope, feedback)"
         />
         <ToolCallCard
           v-for="[requestId, toolCall] in chatStore.pendingFor(message.id)"
@@ -392,7 +392,7 @@ function handleRecoveryAction(action: string) {
           :tool-call="toolCall"
           :requires-approval="true"
           @approve="(id, scope) => chatStore.confirmTool(id, true, scope)"
-          @reject="(id, feedback) => chatStore.confirmTool(id, false, 'once', feedback)"
+          @reject="(id, scope, feedback) => chatStore.confirmTool(id, false, scope, feedback)"
         />
       </div>
       <!-- Stage 9: 历史工具调用配对卡片（合并 call + result） -->

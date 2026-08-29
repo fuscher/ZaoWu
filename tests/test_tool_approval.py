@@ -145,10 +145,13 @@ def test_auto_approve_writes_rules_covers_write_and_edit():
     assert by_action['edit_file'] == ('file:*', 'allow')
 
 
-def test_auto_approve_writes_rules_does_not_cover_run_command():
-    """autoApproveWrites 仅影响写文件，run_command 仍需确认。"""
+def test_auto_approve_writes_rules_covers_run_command():
+    """S15-E-P0-2: autoApproveWrites 覆盖 run_command（命令安全性由白名单兜底）。"""
     rules = build_auto_approve_writes_rules()
-    assert all(r.action != 'run_command' for r in rules)
+    assert any(
+        r.action == 'run_command' and r.resource == 'command:*' and r.effect == 'allow'
+        for r in rules
+    )
 
 
 # ── 组合：默认 + autoApproveWrites + preset deny 优先级 ────────
@@ -172,8 +175,8 @@ def test_priority_auto_approve_overrides_default_ask():
     rules.extend(build_auto_approve_writes_rules())
     assert evaluate('write_file', 'file:/a', rules) == 'allow'
     assert evaluate('edit_file', 'file:/a', rules) == 'allow'
-    # run_command 不受 autoApproveWrites 影响，仍 ask
-    assert evaluate('run_command', 'command:ls', rules) == 'ask'
+    # S15-E-P0-2: run_command 也被 autoApproveWrites allow
+    assert evaluate('run_command', 'command:ls', rules) == 'allow'
 
 
 def test_priority_user_always_overrides_default_ask():

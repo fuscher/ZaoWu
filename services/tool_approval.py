@@ -93,9 +93,11 @@ def build_auto_approve_writes_rules() -> List[ApprovalRule]:
 
     N2-M3：由调用方确保仅作用于当前 conv_id——这些规则追加在默认规则之后、
     preset 之前，且绝不写入 ``tool_approval_rules`` 表，故不会跨会话泄漏。
-    覆盖 ``write_file`` / ``edit_file`` 的所有文件（``file:*``）。
+    S15-E-P0-2：覆盖 ``write_file``/``edit_file`` 的所有文件（``file:*``）与
+    ``run_command`` 的所有命令（``command:*``，命令安全性由命令白名单兜底）。
     """
     return [
         ApprovalRule(action='write_file', resource='file:*', effect='allow'),
         ApprovalRule(action='edit_file', resource='file:*', effect='allow'),
+        ApprovalRule(action='run_command', resource='command:*', effect='allow'),
     ]

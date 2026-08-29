@@ -9,6 +9,7 @@
   build → 未重试过则 empty+重试一次（对齐原 retried_empty 语义），已重试则 empty 终态
 - 有文本 + 写意图：plan → constrained + handoff（交接建议）；build → 首次 idle+纠正重试，
   二次 idle 终态
+- 有文本 + 文本化工具调用（E9）：与「说而不做」同构 → 纠正重试一次，二次 idle 终态
 - 有文本无写意图：结论性信号 → success 终态；否则 idle 终态（软警告，不重试）
 
 **计数设计**：``empty_retry_count`` 与 ``idle_retry_count`` 独立——空响应重试
@@ -23,7 +24,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from agent_modules.agent_core.intent_patterns import (
-    ConclusiveSignalMatcher, IntentMatcher,
+    ConclusiveSignalMatcher, IntentMatcher, ToolTextMatcher,
 )
 
 # 完成质量枚举（与 done.quality / messages.metadata.quality 一致）
@@ -53,6 +54,14 @@ CORRECTION_TEMPLATE = (
     '不要做"先做X"的承诺而不执行。'
 )
 
+# S15-E-P0-6（E9）：工具调用文本化纠正消息（形态与 CORRECTION_TEMPLATE 一致，
+# 仅注入本轮内存 messages，绝不落库；复用 intent_not_executed 通道一次机会）
+TOOL_TEXT_CORRECTION = (
+    '[系统纠正] 检测到工具调用以文本形式输出（如 XML/JSON 片段或伪函数调用），'
+    '但未实际发起结构化工具调用。\n'
+    '请改用结构化的工具调用，或基于已有信息直接给出结论。'
+)
+
 
 @dataclass(frozen=True)
 class IdleDecision:
@@ -70,11 +79,15 @@ class IdleDetector:
                  max_retries: int = 1,
                  intent_matcher: Optional[IntentMatcher] = None,
                  conclusive_matcher: Optional[ConclusiveSignalMatcher] = None,
-                 correction_template: str = CORRECTION_TEMPLATE) -> None:
+                 tool_text_matcher: Optional[ToolTextMatcher] = None,
+                 correction_template: str = CORRECTION_TEMPLATE,
+                 tool_text_correction: str = TOOL_TEXT_CORRECTION) -> None:
         self._max_retries = max_retries
         self._intent_matcher = intent_matcher or IntentMatcher()
         self._conclusive_matcher = conclusive_matcher or ConclusiveSignalMatcher()
+        self._tool_text_matcher = tool_text_matcher or ToolTextMatcher()
         self._correction_template = correction_template
+        self._tool_text_correction = tool_text_correction
         # 独立计数：空响应重试（empty）与说而不做纠正（idle）互不消耗
         self.empty_retry_count = 0
         self.idle_retry_count = 0
@@ -113,6 +126,17 @@ class IdleDetector:
                     QUALITY_EMPTY, ACTION_RETRY_EMPTY, notice_code=NOTICE_RETRYING_EMPTY,
                 )
             return IdleDecision(QUALITY_EMPTY, ACTION_TERMINAL)
+
+        # 有文本：先查文本化工具调用（E9）——模型"以为"调了工具但只输出文本
+        if self._tool_text_matcher.matches(collected_text):
+            if self.idle_retry_count < self._max_retries:
+                self.idle_retry_count += 1
+                return IdleDecision(
+                    QUALITY_IDLE, ACTION_INJECT_CORRECTION,
+                    notice_code=NOTICE_INTENT_NOT_EXECUTED,
+                    correction=self._tool_text_correction,
+                )
+            return IdleDecision(QUALITY_IDLE, ACTION_TERMINAL)
 
         # 有文本：先查写意图（IntentMatcher）
         if self._intent_matcher.matches(collected_text):
