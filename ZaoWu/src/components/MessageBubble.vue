@@ -18,6 +18,8 @@ const props = defineProps<{
   isStreaming?: boolean
   /** Optional collaboration sender name */
   senderName?: string
+  /** 预计算的工具调用配对（由 ChatPanel 传入，避免每个 MessageBubble 独立 O(n) 扫描） */
+  toolPairs?: { toolCall: ToolCall; toolResult?: ToolResult }[]
 }>()
 
 const communityStore = useCommunityStore()
@@ -56,9 +58,23 @@ const md = new MarkdownIt({
   breaks: true,
 })
 
+// FIX-4：markdown 渲染结果按内容缓存（模块级）。切换对话会重建全部 MessageBubble，
+// 长会话反复重解析 markdown 才是切换卡顿的常见瓶颈（配对预计算非主因）；缓存使
+// 二次切换直接复用已渲染 HTML。上限 200 条，满则清空（键为长文本，适度即可）。
+const _mdCache = new Map<string, string>()
+const _MD_CACHE_LIMIT = 200
+function renderMarkdownMemo(content: string): string {
+  const hit = _mdCache.get(content)
+  if (hit !== undefined) return hit
+  const html = md.render(content)
+  if (_mdCache.size >= _MD_CACHE_LIMIT) _mdCache.clear()
+  _mdCache.set(content, html)
+  return html
+}
+
 const renderedContent = computed(() => {
   if (!props.message.content) return ''
-  return md.render(props.message.content)
+  return renderMarkdownMemo(props.message.content)
 })
 
 // ── S14-P2-1: @ 引用标记 chip 渲染（仅用户消息）───────────────
@@ -110,65 +126,10 @@ function removeReference(refText: string) {
 /**
  * Stage 9: 从已持久化的消息中配对还原工具调用+结果卡片。
  *
- * 修复点：
- * - F06: 将分开存储的 tool_call（assistant 消息）和 tool 结果（tool 消息）按
- *   tool_call_id 合并为一张卡片，而非各自独立渲染。
- * - F09: tool 角色消息的 content 不再通过 Markdown 渲染，避免与卡片双重显示。
+ * 配对索引由 ChatPanel 预构建（一次 O(n) 遍历），
+ * 通过 toolPairs prop 传入，此处仅做 O(1) 查询。
  */
-const pairedToolCalls = computed(() => {
-  type Pair = { toolCall: ToolCall; toolResult?: ToolResult }
-  const pairs: Pair[] = []
-
-  if (props.message.role !== 'assistant' || !props.message.tool_calls) return pairs
-
-  // 查找后续的 tool 结果消息（它们紧跟在 assistant 消息后面）
-  const allMessages = chatStore.currentMessages
-  const msgIndex = allMessages.findIndex((m) => m.id === props.message.id)
-  if (msgIndex === -1) return pairs
-
-  for (const tc of props.message.tool_calls) {
-    const fn = (tc as any).function
-    let args: Record<string, unknown> = {}
-    try {
-      args = fn?.arguments ? JSON.parse(fn.arguments) : (tc as any).arguments || {}
-    } catch {
-      args = {}
-    }
-
-    const toolCall: ToolCall = {
-      requestId: tc.id,
-      name: fn?.name || (tc as any).name || 'unknown',
-      arguments: args,
-    }
-
-    // 在后续消息中查找匹配的 tool 结果（按 tool_call_id 配对）
-    let toolResult: ToolResult | undefined
-    for (let i = msgIndex + 1; i < allMessages.length; i++) {
-      const m = allMessages[i]
-      if (!m) break
-      if (m.role !== 'tool') break
-      if (m.tool_call_id === tc.id) {
-        let success = true
-        try {
-          const parsed = JSON.parse(m.content)
-          success = parsed.success !== false
-        } catch {
-          success = true
-        }
-        toolResult = {
-          requestId: m.tool_call_id || '',
-          tool: m.name || 'unknown',
-          success,
-          content: m.content,
-        }
-        break
-      }
-    }
-    pairs.push({ toolCall, toolResult })
-  }
-
-  return pairs
-})
+const pairedToolCalls = computed(() => props.toolPairs ?? [])
 
 const isUser = computed(() => props.message.role === 'user')
 const timeStr = computed(() => {

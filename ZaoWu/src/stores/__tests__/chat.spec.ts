@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+import { nextTick } from 'vue'
 
 // Mock @/services/ai 避免真实 HTTP 调用
 vi.mock('@/services/ai', () => ({
@@ -88,6 +89,27 @@ describe('F02: messageId 两级索引工具 Map', () => {
       expect(store.pendingFor('msg-1').has('req-1')).toBe(true)
       expect(store.pendingFor('msg-1').has('req-2')).toBe(false)
       expect(store.pendingFor('msg-2').has('req-2')).toBe(true)
+    })
+
+    it('pendingApprovals 跨 messageId 聚合（按消息出现顺序，驱动审批浮层）', () => {
+      const tc1: ToolCall = { requestId: 'req-1', name: 'write_file', arguments: {} }
+      const tc2: ToolCall = { requestId: 'req-2', name: 'run_command', arguments: {} }
+
+      // 初始为空
+      expect(store.pendingApprovals).toEqual([])
+
+      store.pendingByMessage.set('msg-1', new Map([['req-1', tc1]]))
+      store.pendingByMessage.set('msg-2', new Map([['req-2', tc2]]))
+
+      // 跨 messageId 聚合，保持插入顺序（msg-1 先于 msg-2）
+      expect(store.pendingApprovals).toEqual([
+        { messageId: 'msg-1', requestId: 'req-1', toolCall: tc1 },
+        { messageId: 'msg-2', requestId: 'req-2', toolCall: tc2 },
+      ])
+
+      // 队列清空 → 回退为空（浮层自动消失）
+      store.pendingByMessage.clear()
+      expect(store.pendingApprovals).toEqual([])
     })
 
     it('不存在的 messageId 返回空 Map（非 undefined）', () => {
@@ -561,10 +583,12 @@ describe('F02: messageId 两级索引工具 Map', () => {
       expect(store.currentConversation!.agentConfig!.projectPath).toBe('D:/x/app')
     })
 
-    it('getter 绑定失效（路径不在 activeProjects）→ null + sandboxInvalidated', () => {
+    it('绑定失效（路径不在 activeProjects）→ null + sandboxInvalidated（watch 驱动）', async () => {
       seedProjects()
       store.currentConversation!.agentConfig!.projectPath = 'D:/gone/old'
       expect(store.sandboxProject).toBeNull()
+      // 失效检测由 watch 承担（getter 无副作用），需 nextTick 后置位
+      await nextTick()
       expect(store.sandboxInvalidated).toBe(true)
       store.ackSandboxInvalidation()
       expect(store.sandboxInvalidated).toBe(false)

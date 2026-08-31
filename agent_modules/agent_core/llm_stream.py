@@ -33,8 +33,14 @@ class LLMError(RuntimeError):
 
 # ── 错误归类 ──────────────────────────────────────────────────
 
+# P2-2 修复：扩展 overflow 错误文本关键词（含常见变体与中文）。
+# 原仅 5 个英文短语，非标准 provider（中文错误文案/自定义措辞）会漏判为
+# unknown 而无法触发「overflow→压缩→重试」兜底。
 _OVERFLOW_HINTS = ('context_length', 'context length', 'maximum context',
-                   'too long', 'token limit', 'reduce the length')
+                   'too long', 'token limit', 'reduce the length',
+                   'context window', 'context_window', 'exceeded the context',
+                   '超出上下文', '超过上下文', '上下文长度', '上下文超长',
+                   '超过最大长度', '输入长度', '超出最大上下文')
 
 
 def _classify_http_error(status: int, body: bytes, headers: httpx.Headers) -> LLMError:

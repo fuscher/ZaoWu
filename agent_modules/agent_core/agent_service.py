@@ -76,6 +76,7 @@ AGENT_SYSTEM_PROMPT = """你是一个专业的 AI 编程助手，运行在 ZaoWu
 ## 输出规范
 - 写入文件内容时不使用 emoji，除非用户明确要求添加
 - 代码注释和文档保持简洁专业，不添加装饰性 emoji
+- 不要进行空回复，若进行了一些工具调用，在调用结束后总结修改内容并回复给用户
 - 使用与用户消息相同的语言（中文或英文）
 - 代码块使用正确的语言标记
 - 直接给出结论和操作，语言随用户（中文/英文），避免不必要的客套话
@@ -202,15 +203,16 @@ class AgentService:
 
             # 死循环检测：记录 (tool_name, args_hash) 调用历史
             tool_call_history: List[tuple] = []
-            # S15-E-P1-1: 读取处兜底钳制 — 防御历史脏数据（非 int 回退默认 30，
-            # 越界钳制 1~100），与路由层 maxIterations 校验配合消除无钳制循环。
-            _raw_max_iterations = agent_config.get('maxIterations', 30)
-            max_iterations = (
-                max(1, min(100, _raw_max_iterations))
-                if isinstance(_raw_max_iterations, int)
-                and not isinstance(_raw_max_iterations, bool)
-                else 10
-            )
+            # S15: 迭代轮次读取 — 0 = 不设上限（「火力」挡：靠 IdleDetector 终态/死循环
+            # 检测/停止兜底）；1~300 钳制；非 int 回退默认 60。与路由层校验配合。
+            _raw_max_iterations = agent_config.get('maxIterations', 60)
+            if _raw_max_iterations == 0:
+                max_iterations = 100_000
+            elif (isinstance(_raw_max_iterations, int)
+                  and not isinstance(_raw_max_iterations, bool)):
+                max_iterations = max(1, min(300, _raw_max_iterations))
+            else:
+                max_iterations = 60
             # P0-4：max_tokens 语义解耦 — 拆为 contextBudget（压缩预算）与
             # maxGenerationTokens（LLM 生成上限）。旧 maxTokens 回退两者。
             global_cfg = self._read_global_config()
@@ -221,6 +223,16 @@ class AgentService:
                 or global_cfg.get('maxTokens')
                 or 4096
             )
+            # P1-1 修复：压缩预算与模型实际上下文窗口对齐 — 取 min(用户预算, 模型窗口)。
+            # 模型窗口从 provider.models 元数据解析（与 routes/chat.py _pick_context_length
+            # 同语义）；无法解析时保持用户预算（兼容旧行为）。防止 contextBudget 配置大于
+            # 模型窗口时，主动压缩阈值（0.8×预算）永远达不到、被动压缩压完仍超窗口，
+            # 导致「模型达到上限自动压缩」整体失效。
+            # FIX-6：钳制到窗口（硬上限），0.8× 仅保留在压缩阈值侧（compact_if_needed），
+            # 避免预算双重乘 0.8 使阈值退化为 0.64×窗口、且与 E1 自动公式（0.7×窗口）冲突。
+            model_window = self._resolve_model_window(provider)
+            if model_window:
+                context_budget = min(int(context_budget), int(model_window))
             max_gen_tokens = (
                 conv.get('maxGenerationTokens')
                 or global_cfg.get('maxGenerationTokens')
@@ -274,9 +286,11 @@ class AgentService:
             summary_retry_count = 0
 
             # 5.2 主动压缩（预算触发）：system+历史超 0.8*context_budget 时摘要化早期对话。
-            # 主动压缩已发生则 compacted_once=True，被动(overflow)不再触发，避免死循环。
             # S14-P0-2: 引用 token 纳入压缩预算（ref_tokens 计入 total 估算）。
-            compacted_once = False
+            # P2-1 修复：防死循环计数拆分 — 主动压缩与 overflow 被动压缩独立计数。
+            # overflow 压缩上限 1 次（overflow_compacted）；主动压缩（估算触发，可能因
+            # estimate_tokens 偏差压不够）后仍可被动兜底一次，不会因主动压缩过而直接失败。
+            overflow_compacted = False
             proactive_msgs, _ = await self._context.compact_if_needed(
                 conv, messages[0]['content'], context_budget, provider,
                 ref_tokens=ref_tokens,
@@ -286,7 +300,6 @@ class AgentService:
                 # S14-P0-2: 压缩重建消息列表后重新注入引用段（不丢失引用上下文）
                 if ref_segments:
                     self._insert_ref_segment(messages, ref_segments)
-                compacted_once = True
                 yield self._notice_event(
                     'info', 'compacted',
                     '[系统] 上下文较长，已自动压缩早期对话（早期工具执行细节已摘要化）',
@@ -366,15 +379,24 @@ class AgentService:
                 except LLMError as e:
                     # N2-I2：overflow→压缩→重试环路。_stream_llm 把 context_overflow
                     # 重新抛出（不转 delta），由此处捕获，压缩后原地重走 _stream_llm。
-                    if e.kind == 'context_overflow' and not compacted_once:
+                    # P2-1 修复：overflow 压缩独立计数（上限 1 次防死循环），
+                    # 主动压缩（估算触发）后仍可被动兜底一次，不再直接失败。
+                    if e.kind == 'context_overflow' and not overflow_compacted:
                         fresh_conv = await self._get_conversation(conv_id)
                         if fresh_conv:
                             retry_msgs, _ = await self._context.compact_if_needed(
                                 fresh_conv, messages[0]['content'], context_budget, provider,
+                                # P1-2 修复：引用 token 计入压缩预算（与主动压缩分支对齐）
+                                ref_tokens=ref_tokens,
                             )
                             if retry_msgs is not None:
                                 messages = retry_msgs
-                                compacted_once = True
+                                overflow_compacted = True
+                                # P1-2 修复：压缩重建消息列表后重新注入引用段，避免
+                                # @ 引用内容在 overflow 重试后从上下文消失（主动压缩
+                                # 分支已有此处理，此处为对应缺口）。
+                                if ref_segments:
+                                    self._insert_ref_segment(messages, ref_segments)
                                 yield self._notice_event(
                                     'info', 'compacted',
                                     '[系统] 上下文过长，已自动压缩早期对话并重试'
@@ -854,6 +876,25 @@ class AgentService:
             except Exception:
                 logger.exception('failed to persist error message for %s', conv_id)
         finally:
+            # S15：取消（GeneratorExit——客户端中断/停止连接）兜底收尾。_quality 未置位
+            # 即未走任何终态路径，补一条非空收尾消息，避免对话停留在 content=NULL 的工具轮
+            # （重载后出现『ZaoWu+时间戳』空回复，且任务中断无任何反馈）。
+            if _quality is None:
+                try:
+                    _done_names = locals().get('executed_tool_names')
+                    _fallback = (
+                        f'任务已中断，已完成 {len(_done_names)} 次工具操作。'
+                        if _done_names else '任务已中断。'
+                    )
+                    await self._append_message(conv_id, {
+                        'role': 'assistant',
+                        'content': _fallback,
+                        'timestamp': _now_ts(),
+                        'model': self._model_id,
+                        'metadata': {'quality': 'interrupted'},
+                    })
+                except Exception:
+                    logger.warning('failed to write interrupted fallback for conv %s', conv_id)
             # S13-P1-2: 遥测收尾（不阻断主流程）。duration_ms = 入口到此处 wall-clock
             # （含 LLM 调用 + 工具执行 + 审批等待），由入口 _start_ms 起算。
             try:
@@ -1068,6 +1109,37 @@ class AgentService:
             return next((p for p in (data.get('providers') or []) if p['id'] == provider_id), None)
         except Exception:
             return None
+
+    # 模型上下文窗口字段名（与 routes/chat.py _CONTEXT_LENGTH_KEYS 对齐，
+    # 保证普通聊天与 Agent 路径的窗口解析语义一致）
+    _CONTEXT_LENGTH_KEYS = (
+        'context_length', 'contextLength', 'context_window',
+        'max_context_length', 'max_model_len', 'max_length', 'context_size',
+    )
+
+    def _resolve_model_window(self, provider: dict) -> Optional[int]:
+        """解析当前模型（self._model_id）的上下文窗口（token 数）。
+
+        支持 int 与 "128K"/"131072" 字符串格式；模型未命中或字段不可解析返回
+        None，调用方保持用户配置预算（兼容旧行为）。供压缩预算对齐模型窗口
+        （P1-1：预算硬钳制为 min(预算, 窗口)；0.8× 仅用于压缩阈值判定）。
+        """
+        model_id = self._model_id
+        for m in (provider.get('models') or []):
+            if m.get('id') != model_id:
+                continue
+            for key in self._CONTEXT_LENGTH_KEYS:
+                v = m.get(key)
+                if v is None:
+                    continue
+                if isinstance(v, int) and not isinstance(v, bool):
+                    return v
+                if isinstance(v, str):
+                    s = v.strip().upper().replace('K', '000')
+                    if s.isdigit():
+                        return int(s)
+            return None
+        return None
 
     def _read_global_config(self) -> dict:
         """读取全局 chat_config.json；不存在/损坏/非 dict 一律回退 {}。"""

@@ -1,10 +1,19 @@
 import { reactive } from 'vue'
 import { defineStore } from 'pinia'
-import type { BackgroundSettings } from '@/types'
+import type { BackgroundSettings, AgentIterationTiers } from '@/types'
 
 function detectLanguage(): string {
   const lang = navigator.language || 'en'
   return lang.startsWith('zh') ? 'zh-CN' : 'en'
+}
+
+/** S15: 迭代挡位默认映射（低耗/经济/默认/性能/火力；0 = 无限） */
+export const AGENT_ITERATION_TIER_DEFAULTS: AgentIterationTiers = {
+  low: 15,
+  mid: 30,
+  std: 60,
+  pro: 100,
+  max: 0,
 }
 
 export const useSettingsStore = defineStore('settings', () => {
@@ -22,12 +31,17 @@ export const useSettingsStore = defineStore('settings', () => {
     communityFileSizeLimitKB: 512,
     communityInactiveTimeoutMinutes: 120,
     autoCheckUpdates: false,
+    agentIterationTiers: { ...AGENT_ITERATION_TIER_DEFAULTS },
   }
 
   const background = reactive<BackgroundSettings>({
     ...defaults,
     ...((window as any).__SETTINGS__ ?? {}),
   })
+  // 深度兜底：旧 settings.json 无 agentIterationTiers 时补默认，避免面板读 undefined
+  if (!background.agentIterationTiers) {
+    background.agentIterationTiers = { ...AGENT_ITERATION_TIER_DEFAULTS }
+  }
 
   async function persist() {
     const payload: Record<string, unknown> = {}
@@ -50,9 +64,19 @@ export const useSettingsStore = defineStore('settings', () => {
     persist()
   }
 
+  // S15: 更新单个迭代挡位的轮次数（0 = 无限），随后持久化
+  function setAgentIterationTier(key: keyof AgentIterationTiers, value: number) {
+    if (!background.agentIterationTiers) {
+      background.agentIterationTiers = { ...AGENT_ITERATION_TIER_DEFAULTS }
+    }
+    const v = Math.max(0, Math.min(300, Math.round(Number(value) || 0)))
+    background.agentIterationTiers[key] = v
+    persist()
+  }
+
   function resetBg() {
     updateBg({ ...defaults })
   }
 
-  return { background, updateBg, resetBg }
+  return { background, updateBg, resetBg, setAgentIterationTier }
 })

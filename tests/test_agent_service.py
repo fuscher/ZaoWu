@@ -441,11 +441,11 @@ def test_f05_alternating_ababa_no_false_positive(agent_service, monkeypatch):
 # ── S13-P0-2: maxIterations 读取处兜底钳制（防御历史脏数据） ─────
 
 @pytest.mark.parametrize('configured, expected', [
-    (0, 1),       # 脏数据 0 → 钳制到下限 1（max(1, min(100, 0))）
-    ('abc', 10),  # 脏数据非 int → 回退默认 10
-    (True, 10),   # bool（int 子类）→ 回退默认 10
-    (200, 100),   # 越界 → 钳制上限 100
-    (5, 5),       # 合法 → 原样
+    ('abc', 60),   # 脏数据非 int → 回退默认 60
+    (True, 60),    # bool（int 子类）→ 回退默认 60
+    (200, 200),    # 200 在 1~300 内 → 原样
+    (400, 300),    # 越界 → 钳制上限 300
+    (5, 5),        # 合法 → 原样
 ])
 def test_max_iterations_clamped_read(agent_service, monkeypatch, configured, expected):
     """S13-P0-2: maxIterations 读取处兜底钳制（防御历史脏数据），
@@ -522,6 +522,62 @@ def test_max_iterations_clamped_read(agent_service, monkeypatch, configured, exp
         if json.loads(ev[6:]).get('type') == 'done'
     ]
     assert done_events and done_events[-1].get('quality') == 'incomplete'
+
+
+def test_max_iterations_zero_means_no_cap(agent_service, monkeypatch):
+    """S15: maxIterations=0 → 不设上限（火力挡）。多轮工具后文本收尾，而非首轮即耗尽。"""
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    round_no = {'n': 0}
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        n = round_no['n']
+        round_no['n'] += 1
+        if n < 3:
+            yield {'type': 'tool_call_part', 'tool_call': _make_tool_call(
+                'read_file', {'path': f'/tmp/t{n}.txt'}, f'call_{n}')}
+        else:
+            yield {'type': 'delta', 'delta': '任务已完成'}
+
+    async def mock_get_conversation(conv_id):
+        return {'id': conv_id, 'providerId': 'p', 'modelId': 'm',
+                'agentConfig': {'enabled': True, 'maxIterations': 0}, 'messages': []}
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    async def mock_append(conv_id, msg):
+        pass
+
+    async def mock_inject_batch(messages, conv_id, calls, results):
+        pass
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append)
+    monkeypatch.setattr(service, '_inject_tool_results_batch', mock_inject_batch)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k', 'models': [{'id': 'm'}]})
+    monkeypatch.setattr(service, '_stream_llm', mock_stream_llm)
+
+    async def run():
+        events = []
+        async for ev in service.process_message('conv-cap0', 'x'):
+            events.append(json.loads(ev[6:]))
+        return events
+
+    events = loop.run_until_complete(run())
+    done = next(e for e in events if e.get('type') == 'done')
+    assert done.get('quality') == 'success', \
+        f'0=不设上限应跑完多轮后成功收尾, got {done.get("quality")}'
+    assert not any(
+        e.get('code') == 'max_iterations_reached'
+        for e in events if e.get('type') == 'notice'
+    ), '不设上限不应触发 max_iterations_reached'
 
 
 # ── S13-P1-2: 遥测聚合（usage/tool_count/iterations/quality/duration） ─────
@@ -3406,3 +3462,237 @@ def test_s15_e11_build_rules_deny_after_auto_approve(agent_service, monkeypatch)
     assert evaluate('run_command', 'command:git status', rules) == 'allow'
     # 未持久化的命令仍被自动批准 allow
     assert evaluate('run_command', 'command:ls', rules) == 'allow'
+
+
+# ── P1-1：压缩预算对齐模型窗口 ─────────────────────────────────
+
+
+def test_resolve_model_window_parses_fields(agent_service):
+    """P1-1：_resolve_model_window 解析 int 与 '128K' 字符串；未命中/无字段返回 None。"""
+    service = agent_service
+    service._model_id = 'deepseek-chat'
+
+    # int 字段
+    provider = {'models': [
+        {'id': 'other', 'context_length': 999},
+        {'id': 'deepseek-chat', 'context_length': 65536},
+    ]}
+    assert service._resolve_model_window(provider) == 65536
+
+    # '128K' 字符串
+    provider2 = {'models': [{'id': 'deepseek-chat', 'context_length': '128K'}]}
+    assert service._resolve_model_window(provider2) == 128000
+
+    # 无窗口字段 → None（保持用户预算，兼容旧行为）
+    provider3 = {'models': [{'id': 'deepseek-chat'}]}
+    assert service._resolve_model_window(provider3) is None
+
+    # 空 models / 模型未命中 → None
+    assert service._resolve_model_window({'models': []}) is None
+    assert service._resolve_model_window({'models': [{'id': 'other'}]}) is None
+
+
+def test_context_budget_clamped_to_model_window(agent_service, monkeypatch):
+    """P1-1：模型窗口 < contextBudget 时，压缩预算硬钳制为 min(预算, 窗口)。
+
+    验证压缩预算不再与模型实际能力脱节（contextBudget=131072 > 窗口 65536 时
+    预算收敛为 65536；0.8× 仅用于压缩阈值判定，阈值随预算对齐窗口内可触发）。
+    """
+    service = agent_service
+    captured_budgets = []
+    conv_payload = {
+        'id': 'c', 'providerId': 'p', 'modelId': 'm',
+        'contextBudget': 131072,
+        'agentConfig': {'enabled': True, 'maxIterations': 5},
+        'messages': [{'role': 'user', 'content': 'x'}],
+    }
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        yield {'type': 'delta', 'delta': 'ok'}
+
+    _stub_agent_env(service, monkeypatch, conv_payload, mock_stream_llm)
+    # 覆盖 _get_provider：模型带窗口 65536（_stub_agent_env 默认无窗口字段）
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm', 'context_length': 65536}],
+    })
+    # 捕获 compact_if_needed 收到的压缩预算
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider,
+                           ref_tokens=0):
+        captured_budgets.append(max_tokens)
+        return None, None
+
+    async def mock_build(self, conv):
+        return 'system prompt'
+
+    monkeypatch.setattr(service, '_context', type('Ctx', (), {
+        'compact_if_needed': mock_compact,
+        'build': mock_build,
+    })())
+
+    async def run():
+        async for _ in service.process_message('conv-budget', 'test'):
+            pass
+
+    asyncio.get_event_loop().run_until_complete(run())
+
+    assert captured_budgets, 'compact_if_needed should be invoked'
+    # FIX-6：钳制到模型窗口（硬上限），不再双重乘 0.8 → min(131072, 65536) = 65536
+    assert captured_budgets[0] == 65536
+
+
+# ── P1-2：overflow 被动压缩后引用段重注入 ──────────────────────
+
+
+def test_overflow_compaction_reinjects_ref_segments(agent_service, monkeypatch):
+    """P1-2：overflow 被动压缩后 @ 引用段重新注入（与主动压缩分支对齐）。
+
+    修复前：被动压缩分支无 _insert_ref_segment，引用内容在压缩重试后从上下文
+    消失，LLM 基于不完整上下文工作。
+    """
+    from agent_modules.agent_core.llm_stream import LLMError
+
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    captured_messages = []
+    stream_calls = [0]
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        stream_calls[0] += 1
+        if stream_calls[0] == 1:
+            # 首轮：上下文超限
+            raise LLMError('context_overflow', 400,
+                           'maximum context length exceeded', retryable=False)
+        # 次轮（压缩后）：捕获最终消息列表
+        captured_messages.append(messages)
+        yield {'type': 'delta', 'delta': 'ok'}
+
+    service._stream_llm = mock_stream_llm
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'p', 'modelId': 'm',
+            'agentConfig': {'enabled': True, 'maxIterations': 5},
+            'messages': [{'role': 'user', 'content': 'x'}],
+        }
+
+    # 真实 _resolve_references 会读磁盘/projects.json，此处 stub（同步方法，非 async）
+    def mock_resolve_refs(files, context_budget):
+        return [{
+            'display': '@/proj/file.py',
+            'content': 'def f(): pass',
+            'truncated': False, 'chars': 13,
+        }], 13
+
+    compact_calls = [0]
+
+    async def mock_compact(self, conv, system_prompt, max_tokens, provider,
+                           ref_tokens=0):
+        compact_calls[0] += 1
+        if compact_calls[0] == 1:
+            return None, None  # 主动不压缩
+        # 被动压缩：重建消息（不含引用段——模拟真实 compact_if_needed 返回）
+        return [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'system', 'content': '历史摘要：\n摘要'},
+            {'role': 'user', 'content': 'x'},
+        ], '摘要'
+
+    async def mock_build(self, conv):
+        return 'system prompt'
+
+    async def mock_load_rules(conv_id):
+        return []
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_resolve_references', mock_resolve_refs)
+    monkeypatch.setattr(service, '_load_persisted_rules', mock_load_rules)
+    monkeypatch.setattr(service, '_context', type('Ctx', (), {
+        'compact_if_needed': mock_compact,
+        'build': mock_build,
+    })())
+    monkeypatch.setattr(service, '_append_message', lambda *a, **kw: _async_none())
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: type('S', (), {
+        'build_openai_tools_spec': lambda self: [],
+    })())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm'}],
+    })
+
+    async def run():
+        events = []
+        async for event in service.process_message(
+            'conv-ref-overflow', 'test',
+            files=[{'projectId': 'proj', 'path': 'file.py'}],
+        ):
+            events.append(event)
+        return events
+
+    loop.run_until_complete(run())
+
+    # overflow 压缩后应重走 _stream_llm 一次
+    assert stream_calls[0] == 2
+    assert captured_messages, 'overflow retry should invoke _stream_llm again'
+    retry_msgs = captured_messages[0]
+    ref_msgs = [
+        m for m in retry_msgs
+        if m.get('role') == 'user' and '[文件引用]' in (m.get('content') or '')
+    ]
+    assert ref_msgs, \
+        'ref segment should be reinjected after overflow compaction (P1-2)'
+
+
+def test_s15_cancellation_writes_fallback_final(agent_service, monkeypatch):
+    """取消（GeneratorExit，客户端中断/停止）→ 兜底收尾消息落库，避免空回复。
+
+    修复前：前端 abort 使后端生成器在工具轮 yield 处被关闭，finally 只跑遥测，
+    不写收尾消息 → 对话停留在 content=NULL 的 assistant + tool（『ZaoWu+时间戳』空回复）。
+    """
+    service = agent_service
+    loop = asyncio.get_event_loop()
+    appended = []
+
+    async def mock_stream_llm(provider, messages, tools, **kwargs):
+        # 持续产出工具调用、无正文（模拟模型只调工具不说话）
+        yield {'type': 'tool_call_part', 'tool_call': {
+            'requestId': 'c1', 'name': 'read_file', 'arguments': {'path': '/a'},
+        }}
+
+    async def mock_get_conversation(conv_id):
+        return {
+            'id': conv_id, 'providerId': 'p', 'modelId': 'm',
+            'agentConfig': {'enabled': True, 'maxIterations': 100},
+            'messages': [],
+        }
+
+    class _FakeSandbox:
+        def build_openai_tools_spec(self):
+            return []
+
+        async def execute(self, name, args):
+            return {'success': True, 'content': 'ok'}
+
+    async def mock_append(conv_id, msg):
+        appended.append(dict(msg))
+
+    monkeypatch.setattr(service, '_get_conversation', mock_get_conversation)
+    monkeypatch.setattr(service, '_append_message', mock_append)
+    monkeypatch.setattr(service, '_build_sandbox', lambda conv: _FakeSandbox())
+    monkeypatch.setattr(service, '_get_provider', lambda conv: {
+        'id': 'p', 'apiBase': 'http://localhost', 'apiKey': 'k',
+        'models': [{'id': 'm'}],
+    })
+    monkeypatch.setattr(service, '_stream_llm', mock_stream_llm)
+
+    async def run():
+        agen = service.process_message('c-cancel', 'x')
+        async for _ in agen:
+            break  # 消费一个事件后关闭生成器 → 触发 GeneratorExit
+        await agen.aclose()
+
+    loop.run_until_complete(run())
+
+    finals = [m for m in appended if m.get('role') == 'assistant' and m.get('content')]
+    assert finals, '取消后应写入非空收尾消息'
+    assert '任务已中断' in finals[-1]['content']

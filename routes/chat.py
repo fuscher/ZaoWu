@@ -606,8 +606,8 @@ async def create_conversation():
         'updatedAt': now,
         'agentConfig': agent_config or {
             'enabled': False,
-            # S15-E-P1-1: maxIterations 默认 30（E4 复杂多步任务不中断）
-            'maxIterations': 30,
+            # S15: maxIterations 默认 60（E4 复杂多步任务不中断；0=不设上限「火力」）
+            'maxIterations': 60,
             'requiresApproval': False,
         },
     }
@@ -1158,14 +1158,14 @@ async def send_agent_message(conv_id):
             return jsonify({'ok': False, 'error': 'maxTokens must be between 1 and 1000000'}), 400
         conv['maxTokens'] = v
 
-    # S13-P0-2: maxIterations 类型/范围校验（仿 maxTokens 模式：int、拒绝 bool、1~100）。
+    # S13-P0-2: maxIterations 类型/范围校验（S15：0=不设上限「火力」、1~300 自定义）。
     # 消除无钳制循环：非 int/越界直接 400；通过后写入 agentConfig 随本次消息落库。
     if 'maxIterations' in body:
         v = body['maxIterations']
         if not isinstance(v, int) or isinstance(v, bool):
             return jsonify({'ok': False, 'error': 'maxIterations must be an integer'}), 400
-        if not (1 <= v <= 100):
-            return jsonify({'ok': False, 'error': 'maxIterations must be between 1 and 100'}), 400
+        if not (0 <= v <= 300):
+            return jsonify({'ok': False, 'error': 'maxIterations must be between 0 and 300'}), 400
         agent_config = conv.get('agentConfig') or {}
         agent_config['maxIterations'] = v
         conv['agentConfig'] = agent_config
@@ -1257,16 +1257,37 @@ async def send_agent_message(conv_id):
             return jsonify({'ok': False, 'error': str(e)}), 400
     active_agent_store.set(conv_id, agent)
 
-    async def generate():
+    # S15：把 agent 循环与 SSE 连接解耦——后台任务消费 process_message，SSE 只转发
+    # 队列事件。客户端断开（如环境 ~60s 连接被断）不再取消 agent：任务继续跑完、
+    # 结果逐轮落库，避免「任务频繁中断 + 空回复」；stop 仍通过 stop_event 生效。
+    event_queue = asyncio.Queue()  # 事件字符串；None 为结束哨兵
+
+    async def agent_runner():
         try:
             async for event_str in agent.process_message(
                 conv_id, body['content'], files=files,
             ):
-                yield event_str.encode('utf-8')
+                await event_queue.put(event_str)
         finally:
             await agent.close()
             agent_stop_store.pop(conv_id)
             active_agent_store.pop(conv_id)
+            await event_queue.put(None)  # 哨兵：SSE 结束
+
+    asyncio.create_task(agent_runner())
+
+    async def generate():
+        try:
+            while True:
+                event = await event_queue.get()
+                if event is None:
+                    break
+                yield event.encode('utf-8')
+        except GeneratorExit:
+            # 客户端断开：停止转发即可；agent_runner 后台任务不受影响，继续跑完
+            return
+        except asyncio.CancelledError:
+            raise
 
     return Response(
         generate(),
@@ -1354,9 +1375,17 @@ async def confirm_tool(conv_id):
 
     agent = active_agent_store.get(conv_id)
     if not agent:
+        _log.warning(
+            'confirm_tool conv=%s request_id=%s rejected: no active agent',
+            conv_id, request_id,
+        )
         return jsonify({'ok': False, 'error': 'no active agent for this conversation'}), 404
 
     ok = agent.submit_confirmation(request_id, approved, scope=scope, feedback=feedback)
+    _log.info(
+        'confirm_tool conv=%s request_id=%s approved=%s scope=%s feedback=%r submitted=%s',
+        conv_id, request_id, approved, scope, feedback, ok,
+    )
     if not ok:
         # F17: request_id 既不在待确认集合中，也没有正在等待的 event（已过期/重复/伪造）
         return jsonify({

@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { Conversation, Message, MessageQuality, LLMProvider, LLMConfig, ToolCall, ToolResult, Skill, PhaseNode, ToolPartState, NoticePayload, ErrorPayload, RecoveryAction, ReferenceFile, Project } from '@/types'
 import * as ai from '@/services/ai'
@@ -38,20 +38,18 @@ export const useChatStore = defineStore('chat', () => {
 
   // S14-P0-1: 对话↔项目绑定（沙箱限缩）。持久化到 agentConfig.projectPath。
   // setter 只接受 activeProjects 中已注册、未归档、非虚拟的候选（G1）；
-  // getter 读到失效路径（删除/改名/归档）→ 回退 null（显示「全部文件夹」），
-  // 并置 sandboxInvalidated 供 ProjectIndicator toast（禁止静默保留"已指定"）。
+  // getter 读到失效路径（删除/改名/归档）→ 回退 null（显示「全部文件夹」）。
+  // FIX：getter 必须无副作用——原实现在 getter 内置 sandboxInvalidated，
+  // 与 ProjectIndicator 的 ackSandboxInvalidation watch 形成「置位→ack→重渲染→再置位」
+  // 无限循环；生产构建无 Vue 深度守卫 → 渲染进程 OOM（点击含 projectPath 的对话即卡死）。
+  // 失效检测改由下方 watch 承担（仅在依赖变化时触发，不随每次渲染重入）。
   const sandboxProject = computed<Project | null>({
     get: () => {
       const conv = currentConversation.value
       const pid = conv?.agentConfig?.projectPath
       if (!pid) return null
       const projectsStore = useProjectsStore()
-      const found = projectsStore.activeProjects.find((p) => p.path === pid && !p.virtual)
-      if (!found) {
-        if (!sandboxInvalidated.value) sandboxInvalidated.value = true
-        return null
-      }
-      return found
+      return projectsStore.activeProjects.find((p) => p.path === pid && !p.virtual) ?? null
     },
     set: async (project: Project | null) => {
       let conv = currentConversation.value
@@ -83,6 +81,17 @@ export const useChatStore = defineStore('chat', () => {
   function ackSandboxInvalidation() {
     sandboxInvalidated.value = false
   }
+
+  // 失效检测（原在 sandboxProject getter 内）：projectPath 已设置但 activeProjects
+  // 找不到 → 置 sandboxInvalidated 一次，供 ProjectIndicator toast。同时 watch projectPath
+  // （仅 watch 结果会在「null→null」的失效切换时不触发），ack 不会反向触发（getter 不再读该标志）。
+  watch(
+    [sandboxProject, () => currentConversation.value?.agentConfig?.projectPath],
+    ([proj, pid]) => {
+      if (pid && !proj && !sandboxInvalidated.value) sandboxInvalidated.value = true
+    },
+    { immediate: true }
+  )
 
   // S14-P2-2: 统一引用插入（@ 浮层与 FileTree 均调用此单一实现）
   function insertReference(projectId: string, relpath: string, focus = true) {
@@ -123,6 +132,9 @@ export const useChatStore = defineStore('chat', () => {
   const toolCallsByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
   const toolResultsByMessage = ref<Map<string, Map<string, ToolResult>>>(new Map())
   const pendingByMessage = ref<Map<string, Map<string, ToolCall>>>(new Map())
+  // FIX-3：pending 请求发起时间（requestId → 毫秒时间戳），供审批浮层倒计时对齐后端超时
+  //（后端 CONFIRMATION_TIMEOUT 自 ask 时刻起算；队列后续项的真实剩余时间应据此推算）
+  const pendingRequestedAt = ref<Map<string, number>>(new Map())
 
   // ── Agent UX (阶段 C) ───────────────────────────────────
   // 结构化事件状态：phaseHistory 驱动 PhaseStrip；toolParts 驱动 ToolCallCard 状态机；
@@ -178,6 +190,24 @@ export const useChatStore = defineStore('chat', () => {
       return true
     } catch {
       conv.agentConfig = { ...conv.agentConfig, preset: value === 'build' ? 'plan' : 'build' }
+      return false
+    }
+  }
+
+  // S15: 迭代轮次挡位 — 仿 setPreset，切换即持久化 conv.agentConfig.maxIterations。
+  // 0 = 不设上限（「火力」挡）。失败回退本地状态。
+  async function setMaxIterations(value: number): Promise<boolean> {
+    const conv = currentConversation.value
+    if (!conv) return false
+    const prev = conv.agentConfig?.maxIterations ?? 60
+    if (prev === value) return true
+    const nextConfig = { ...(conv.agentConfig || {}), maxIterations: value }
+    conv.agentConfig = nextConfig
+    try {
+      await ai.updateConversation(conv.id, { agentConfig: nextConfig })
+      return true
+    } catch {
+      conv.agentConfig = { ...(conv.agentConfig || {}), maxIterations: prev }
       return false
     }
   }
@@ -442,6 +472,9 @@ export const useChatStore = defineStore('chat', () => {
     try {
       await ai.confirmToolCall(conv.id, requestId, approved, scope, feedback)
     } catch (err) {
+      // 失败必须可见：确认请求失败（404 无活跃 agent / 410 已解决 / 网络错）时
+      // 打印到控制台并置 error，避免用户点击后「无响应」却无任何提示。
+      console.error('[confirmTool] failed', { convId: conv.id, requestId, approved, scope }, err)
       error.value = err instanceof Error ? err.message : 'confirm failed'
     }
   }
@@ -468,6 +501,7 @@ export const useChatStore = defineStore('chat', () => {
     toolCallsByMessage.value.clear()
     toolResultsByMessage.value.clear()
     pendingByMessage.value.clear()
+    pendingRequestedAt.value.clear()
   }
   // 阶段 C：清空结构化事件状态（切换对话 / 停止生成时调用，与 clearToolMaps 同步）。
   function clearAgentUXMaps() {
@@ -475,6 +509,42 @@ export const useChatStore = defineStore('chat', () => {
     toolPartsByMessage.value.clear()
     lastError.value = null
   }
+  // FIX-1：清空单条消息的结构化状态（工具调用/结果/pending/phase/parts）。
+  // 供流错误路径使用——否则残留 pending 会让审批浮层永久卡死
+  // （后端 agent 已关闭，confirm-tool 将 404，pending 永不消失）。
+  function clearMessageState(mid: string) {
+    const pend = pendingByMessage.value.get(mid)
+    if (pend) for (const rid of pend.keys()) pendingRequestedAt.value.delete(rid)
+    toolCallsByMessage.value.delete(mid)
+    toolResultsByMessage.value.delete(mid)
+    pendingByMessage.value.delete(mid)
+    phaseHistoryByMessage.value.delete(mid)
+    toolPartsByMessage.value.delete(mid)
+  }
+  // FIX-3：防御性移除一个 pending（倒计时归零但后端超时事件未到达时，供审批浮层清理，
+  // 避免残留让浮层卡住；后端 tool_call_end 若随后到达则为无害 no-op）
+  function dismissPending(requestId: string) {
+    for (const [messageId, map] of pendingByMessage.value) {
+      if (map.delete(requestId)) {
+        pendingRequestedAt.value.delete(requestId)
+        if (map.size === 0) pendingByMessage.value.delete(messageId)
+        return
+      }
+    }
+  }
+
+  // ── 审批浮层（阶段 C10）：全局待审批队列 ─────────────────
+  // 跨 messageId 聚合 pendingByMessage（Map 保持插入顺序，即消息出现顺序），
+  // 驱动 PendingApprovalBar（审批浮层）与快捷键 —— 使审批动作不依赖消息气泡位置。
+  const pendingApprovals = computed(() => {
+    const items: { messageId: string; requestId: string; toolCall: ToolCall }[] = []
+    for (const [messageId, map] of pendingByMessage.value) {
+      for (const [requestId, toolCall] of map) {
+        items.push({ messageId, requestId, toolCall })
+      }
+    }
+    return items
+  })
 
   function stopStreaming() {
     if (abortController) {
@@ -552,11 +622,14 @@ export const useChatStore = defineStore('chat', () => {
           toolCallsByMessage.value.get(mid)?.set(toolCall.requestId, toolCall)
         },
         onRequiresConfirmation(_messageId: string, toolCall: ToolCall) {
+          // FIX-3：记录请求发起时间，供审批浮层倒计时对齐后端超时
+          pendingRequestedAt.value.set(toolCall.requestId, Date.now())
           pendingByMessage.value.get(mid)?.set(toolCall.requestId, toolCall)
         },
         onToolCallEnd(_messageId: string, result: ToolResult) {
           toolResultsByMessage.value.get(mid)?.set(result.requestId, result)
           pendingByMessage.value.get(mid)?.delete(result.requestId)
+          pendingRequestedAt.value.delete(result.requestId)
         },
         onDone(
           messageId: string,
@@ -592,12 +665,24 @@ export const useChatStore = defineStore('chat', () => {
             phaseHistoryByMessage.value.delete(mid)
             toolPartsByMessage.value.delete(mid)
           }
+          // FIX-5：把工具调用写回消息对象（持久化格式），使 ChatPanel 配对索引覆盖刚完成的
+          // 消息——工具卡片会话内常驻，无需重载即显示（与重载后渲染一致）。
+          const doneCalls = toolCallsByMessage.value.get(messageId) ?? toolCallsByMessage.value.get(mid)
+          if (doneCalls && doneCalls.size > 0) {
+            assistantMessage.tool_calls = Array.from(doneCalls.values()).map((tc) => ({
+              id: tc.requestId,
+              type: 'function',
+              function: { name: tc.name, arguments: JSON.stringify(tc.arguments ?? {}) },
+            }))
+          }
           isStreaming.value = false
           streamingMessageId.value = null
         },
         onError(err: string) {
           // 修复（D 阶段 code-review）：agent 流错误不再追加 ⚠️ 进正文——
           // 错误由 onErrorPayload → ErrorCard 独立渲染；追加会双显示且污染落库 content。
+          // FIX-1：错误路径清理本消息 maps（残留 pending 会让审批浮层永久卡死）
+          clearMessageState(mid)
           isStreaming.value = false
           streamingMessageId.value = null
           error.value = err
@@ -627,6 +712,8 @@ export const useChatStore = defineStore('chat', () => {
           }
         },
         onErrorPayload(_messageId: string, payload: ErrorPayload) {
+          // FIX-1：结构化错误同样清理本消息 maps（残留 pending 会让审批浮层卡死）
+          clearMessageState(mid)
           lastError.value = payload
           // 终态错误写入消息 metadata（历史加载时 ErrorCard 可恢复渲染）
           // 必须保留 recovery：错误事件到达时流已结束（isStreaming=false），
@@ -689,6 +776,7 @@ export const useChatStore = defineStore('chat', () => {
     autoApproveWrites,
     preset,
     setPreset,
+    setMaxIterations,
     switchToBuildAndResend,
     toolCallsByMessage,
     toolResultsByMessage,
@@ -706,6 +794,11 @@ export const useChatStore = defineStore('chat', () => {
     clearAgentUXMaps,
     sendAgentMessage,
     confirmTool,
+    // 审批浮层（阶段 C10）：全局待审批队列
+    pendingApprovals,
+    // FIX-3：审批超时对齐（发起时间 + 防御性移除）
+    pendingRequestedAt,
+    dismissPending,
     // Skills
     availableSkills,
     loadSkills,

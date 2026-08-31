@@ -191,7 +191,11 @@ class ContextService:
         if not history:
             return None, None
 
-        total = estimate_tokens(system_prompt) + sum(
+        # P2-3 修复：历史摘要（第二条 system 消息，compactionSummary）计入预算估算。
+        # _build_messages 会把它注入消息列表；history 已过滤 role=system，漏算会
+        # 低估已压缩会话的二次压缩阈值（摘要 ≤500 字，影响小但估算语义应完整）。
+        summary_tokens = estimate_tokens(existing_summary or '')
+        total = estimate_tokens(system_prompt) + summary_tokens + sum(
             estimate_message_tokens(m) for m in history
         ) + int(ref_tokens or 0)
         if total <= int(max_tokens * 0.8):

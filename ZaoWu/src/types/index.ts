@@ -202,6 +202,15 @@ export interface ViewItem {
   icon: string
 }
 
+/** S15: 智能体迭代轮次挡位 → 对应轮次（0 = 无限迭代「火力」）。低耗/经济/默认/性能/火力 */
+export interface AgentIterationTiers {
+  low: number
+  mid: number
+  std: number
+  pro: number
+  max: number
+}
+
 export interface BackgroundSettings {
   enabled: boolean
   effect: string
@@ -216,6 +225,8 @@ export interface BackgroundSettings {
   communityFileSizeLimitKB: number
   communityInactiveTimeoutMinutes: number
   autoCheckUpdates: boolean
+  /** S15: 智能体迭代挡位 → 轮次映射（0 = 无限）。缺省时用 settings store 默认 */
+  agentIterationTiers?: AgentIterationTiers
 }
 
 export interface Project {

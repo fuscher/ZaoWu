@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Loader, AlertCircle, Check, ChevronRight, X, Ban, Clock } from '@lucide/vue'
 import { useI18n } from '@/i18n'
 import type { ToolCall, ToolResult, ToolPartState } from '@/types'
@@ -24,6 +24,16 @@ const approved = ref(false)
 // 6.3.2: 三态确认 — reject 展开原因输入框
 const rejecting = ref(false)
 const rejectFeedback = ref('')
+
+// 阶段 C10: 待确认时自动展开 — 审批按钮直接可见，用户无需先点 header。
+// 仅在 pending 出现/挂载时强制展开一次，之后折叠/展开交由用户控制。
+watch(
+  () => props.requiresApproval,
+  (needs) => {
+    if (needs) isExpanded.value = true
+  },
+  { immediate: true }
+)
 
 /** 阶段 C6: 展示态 = part 状态机优先，回退到 props 推断（历史消息无 part） */
 const displayState = computed<{
@@ -207,13 +217,13 @@ function summaryForResult(result: ToolResult): string {
       <!-- 6.3.2: 三态确认 — 仅本次/始终允许/拒绝(带原因) -->
       <div v-if="requiresApproval && !approved" class="tool-actions">
         <template v-if="!rejecting">
-          <button class="btn-approve" @click.stop="approve('once')">
+          <button class="btn-approve" @click="approve('once')">
             <Check :size="14" /> {{ t('agent.approve') }}
           </button>
-          <button class="btn-approve-always" @click.stop="approve('always')">
+          <button class="btn-approve-always" @click="approve('always')">
             <Check :size="14" /> {{ t('agent.approveAlways') }}
           </button>
-          <button class="btn-reject" @click.stop="startReject">
+          <button class="btn-reject" @click="startReject">
             <X :size="14" /> {{ t('agent.reject') }}
           </button>
         </template>
@@ -225,14 +235,14 @@ function summaryForResult(result: ToolResult): string {
             rows="2"
           />
           <div class="reject-actions">
-            <button class="btn-reject" @click.stop="confirmReject('once')">
+            <button class="btn-reject" @click="confirmReject('once')">
               {{ t('agent.reject') }}
             </button>
             <!-- S15-E-P2-2（E11）：始终拒绝 — 持久化会话级 deny 规则 -->
-            <button class="btn-reject-always" @click.stop="confirmReject('never')">
+            <button class="btn-reject-always" @click="confirmReject('never')">
               {{ t('agent.rejectAlways') }}
             </button>
-            <button class="btn-cancel" @click.stop="cancelReject">
+            <button class="btn-cancel" @click="cancelReject">
               {{ t('common.cancel') }}
             </button>
           </div>
@@ -426,61 +436,34 @@ function summaryForResult(result: ToolResult): string {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* 配色统一：批准/始终允许/拒绝/始终拒绝/取消 同一中性主题色
+   （参考工作流 .launcher-btn：--bg-tertiary/--border-subtle/--text-primary/--bg-hover），
+   随明暗主题自适应；语义差异由文字表达，不再用 success/accent/danger 三色。 */
 .btn-approve,
 .btn-approve-always,
 .btn-reject,
 .btn-reject-always,
 .btn-cancel {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 14px;
+  gap: 5px;
+  padding: 8px 14px;
   border-radius: 6px;
-  border: none;
-  font-size: 12.5px;
-  font-weight: 500;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: background 0.15s, opacity 0.15s;
 }
 
-.btn-approve {
-  background: var(--success);
-  color: #fff;
-}
-
-.btn-approve:hover {
-  filter: brightness(0.88);
-}
-
-/* 6.3.2: 始终允许 — 用 accent 色与"仅本次"区分 */
-.btn-approve-always {
-  background: var(--accent);
-  color: #fff;
-}
-
-.btn-approve-always:hover {
-  filter: brightness(0.88);
-}
-
-.btn-reject {
-  background: var(--danger);
-  color: #fff;
-}
-
-.btn-reject:hover {
-  filter: brightness(0.88);
-}
-
-/* S15-E-P2-2（E11）：始终拒绝 — 与"仅本次拒绝"区分（danger 描边样式） */
-.btn-reject-always {
-  background: transparent;
-  color: var(--danger);
-  border: 1px solid var(--danger);
-}
-
-.btn-reject-always:hover {
-  background: var(--danger);
-  color: #fff;
+.btn-approve:hover:not(:disabled),
+.btn-approve-always:hover:not(:disabled),
+.btn-reject:hover:not(:disabled),
+.btn-reject-always:hover:not(:disabled),
+.btn-cancel:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 
 /* 6.3.2: 拒绝原因输入区 */

@@ -14,6 +14,8 @@ const props = withDefaults(defineProps<{
   unit?: string
   placeholder?: string
   variant?: 'stepper' | 'input'
+  /** stepper 变体下值可手动键入（+/- 仍可用），默认仅按钮步进 */
+  editable?: boolean
   disabled?: boolean
 }>(), {
   step: 1,
@@ -24,6 +26,7 @@ const props = withDefaults(defineProps<{
   unit: '',
   placeholder: '',
   variant: 'stepper',
+  editable: false,
   disabled: false,
 })
 
@@ -150,8 +153,23 @@ function handleKeydown(event: KeyboardEvent) {
       <button class="stepper-btn decrease" :disabled="disabled || (min != null && modelValue != null && modelValue <= min)" @click="handleDecrease">
         <Minus :size="12" />
       </button>
-      <div class="stepper-display">
-        <span class="stepper-value">{{ displayValue }}</span>
+      <div class="stepper-display" :class="{ editable }">
+        <template v-if="editable">
+          <input
+            type="text"
+            inputmode="numeric"
+            class="stepper-value-input"
+            :value="rawInput"
+            :disabled="disabled"
+            @input="handleInput"
+            @blur="onBlur"
+            @focus="handleFocus"
+            @keydown="handleKeydown"
+          />
+        </template>
+        <template v-else>
+          <span class="stepper-value">{{ displayValue }}</span>
+        </template>
         <span v-if="unit" class="stepper-unit">{{ unit }}</span>
       </div>
       <button class="stepper-btn increase" :disabled="disabled || (max != null && modelValue != null && modelValue >= max)" @click="handleIncrease">
@@ -262,6 +280,25 @@ function handleKeydown(event: KeyboardEvent) {
   line-height: 1;
   color: var(--text-primary);
   font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* editable：值区域为文本输入，可手动键入（保留 +/- 步进） */
+.stepper-value-input {
+  width: 100%;
+  min-width: 30px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  text-align: center;
+  padding: 0 2px;
+  outline: none;
+}
+
+.stepper-value-input:disabled {
+  color: var(--text-tertiary);
 }
 
 .stepper-unit {

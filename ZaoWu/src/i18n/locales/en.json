@@ -182,6 +182,8 @@
     "startupViewDesc": "Default module after launch",
     "appearance": "Appearance",
     "aiModels": "AI Models",
+    "agentIterationTierTitle": "Agent iteration tiers",
+    "agentIterationTierHint": "Rounds per tier; 0 = unlimited (Max)",
     "community": "Community",
     "communityMaxUsers": "Max room users",
     "communityDefaultRole": "Default role",
@@ -568,6 +570,25 @@
     "approve": "Approve",
     "reject": "Reject",
     "rejectAlways": "Always deny",
+    "approvalBar": {
+      "title": "Awaiting approval",
+      "toolRequest": "Agent requests to",
+      "countdown": "auto-reject in {n}s",
+      "timeout": "Timed out waiting, action will be rejected",
+      "queue": "{current} / {total}",
+      "hint": "Enter approve · 2 always allow · Esc reject",
+      "params": "Arguments",
+      "approveOnceShort": "Approve",
+      "approveAlwaysShort": "Always allow",
+      "rejectShort": "Reject",
+      "submitted": "Submitted…"
+    },
+    "maxIterations": {
+      "label": "Max iterations",
+      "tiers": { "low": "Eco", "mid": "Mid", "std": "Std", "pro": "Pro", "max": "Max" },
+      "round": "rounds",
+      "unlimited": "unlimited"
+    },
     "summary": {
       "created": "created",
       "written": "written",

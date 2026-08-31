@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { Palette, Bot, Plus, Pencil, Trash2, Server, Users, Puzzle, Sparkles, Download, RefreshCw } from '@lucide/vue'
-import { useSettingsStore } from '@/stores/settings'
+import { useSettingsStore, AGENT_ITERATION_TIER_DEFAULTS } from '@/stores/settings'
 import { useChatStore } from '@/stores/chat'
 import { usePluginsStore } from '@/stores/plugins'
 import { PluginHost } from '@/plugin-system'
@@ -39,6 +39,16 @@ watch(() => props.highlightSection, (val) => {
     }
   }
 })
+
+// ── S15: 智能体迭代挡位配置（键值对；0 = 无限） ───────────
+const TIER_KEYS = ['low', 'mid', 'std', 'pro', 'max'] as const
+const tierCounts = computed(() => {
+  const map = settingsStore.background.agentIterationTiers ?? AGENT_ITERATION_TIER_DEFAULTS
+  return TIER_KEYS.map((key) => ({ key, count: map[key] }))
+})
+function onTierCountUpdate(key: (typeof TIER_KEYS)[number], value: number | undefined) {
+  settingsStore.setAgentIterationTier(key, value ?? 0)
+}
 
 // ── Provider dialog state ─────────────────────────────────
 const providerDialogOpen = ref(false)
@@ -326,6 +336,26 @@ onMounted(() => {
           <Plus :size="14" />
           {{ t('settings.addProvider') }}
         </button>
+
+        <!-- S15: 智能体迭代挡位配置（水平一行，键值对；0 = 无限迭代） -->
+        <div class="tier-config">
+          <div class="tier-config-title">{{ t('settings.agentIterationTierTitle') }}</div>
+          <div class="tier-config-row">
+            <div v-for="row in tierCounts" :key="row.key" class="tier-config-cell">
+              <span class="tier-config-name">{{ t(`agent.maxIterations.tiers.${row.key}`) }}</span>
+              <NumberInput
+                :model-value="row.count"
+                :min="0"
+                :max="300"
+                :step="1"
+                variant="stepper"
+                editable
+                @update:model-value="onTierCountUpdate(row.key, $event)"
+              />
+            </div>
+          </div>
+          <p class="tier-config-hint">{{ t('settings.agentIterationTierHint') }}</p>
+        </div>
 
         <!-- Provider edit/create dialog -->
         <ProviderDialog
@@ -969,6 +999,46 @@ onMounted(() => {
   font-size: 13px;
   cursor: pointer;
   transition: all var(--transition);
+}
+
+/* S15: 智能体迭代挡位配置（键值对） */
+.tier-config {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tier-config-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.tier-config-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.tier-config-cell {
+  flex: 1;
+  min-width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.tier-config-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tier-config-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 .add-provider-btn:hover {

@@ -756,9 +756,12 @@ async def test_agent_messages_without_max_tokens_keeps_conv_value(chat_env, monk
 
 # ── S13-P0-2: maxIterations 链路：/agent-messages 校验 + 落库 ──
 
-@pytest.mark.parametrize('bad', ['abc', True, 0, 101, 1.5, None])
+@pytest.mark.parametrize('bad', ['abc', True, -1, 301, 1.5, None])
 async def test_agent_messages_rejects_invalid_max_iterations(chat_env, bad):
-    """POST /agent-messages 非法 maxIterations（非 int/越界/bool）应返回 400。"""
+    """POST /agent-messages 非法 maxIterations（非 int/越界/bool）应返回 400。
+
+    S15: 合法域改为 0（不设上限）~ 300；0/101 均为合法值，故不入参。
+    """
     app, store = chat_env
     async with app.test_client() as client:
         resp = await client.post(

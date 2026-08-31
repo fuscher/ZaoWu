@@ -2,6 +2,7 @@
 import { ref, watch, computed } from 'vue'
 import { Settings2, RotateCcw } from '@lucide/vue'
 import { useChatStore } from '@/stores/chat'
+import { useSettingsStore, AGENT_ITERATION_TIER_DEFAULTS } from '@/stores/settings'
 import { useI18n } from '@/i18n'
 
 const chatStore = useChatStore()
@@ -49,6 +50,30 @@ function onAutoToggle(v: boolean) {
     // 切到手动：以模型自动值为起点
     maxTokens.value = autoMaxTokens.value
   }
+}
+
+// S15: 迭代轮次挡位（仅智能体模式）。滑块式分段控件：仅显示挡位名，
+// 悬停提示对应轮次（0=无限）；点击把「设置里配置的轮次」写入会话 maxIterations。
+const ITER_KEYS = ['low', 'mid', 'std', 'pro', 'max'] as const
+const settingsStore = useSettingsStore()
+const tiers = computed(() =>
+  ITER_KEYS.map((key, index) => ({
+    key,
+    index,
+    name: t(`agent.maxIterations.tiers.${key}`),
+    count: settingsStore.background.agentIterationTiers?.[key] ?? AGENT_ITERATION_TIER_DEFAULTS[key],
+  }))
+)
+const currentIter = computed(() => chatStore.currentConversation?.agentConfig?.maxIterations ?? 60)
+// 活跃挡位 = 配置轮次与会话当前值匹配的挡位；无匹配（自定义值）→ -1 不亮
+const activeTierIndex = computed(() => {
+  const i = tiers.value.findIndex((x) => x.count === currentIter.value)
+  return i >= 0 ? i : -1
+})
+
+function selectTier(key: (typeof ITER_KEYS)[number]) {
+  const tier = tiers.value.find((x) => x.key === key)
+  if (tier) chatStore.setMaxIterations(tier.count)
 }
 
 function apply() {
@@ -145,6 +170,32 @@ function reset() {
             <span class="param-value">{{ topP.toFixed(2) }}</span>
           </label>
           <input v-model.number="topP" type="range" min="0" max="1" step="0.01" class="param-slider" />
+        </div>
+
+        <!-- S15: 迭代轮次挡位（仅智能体模式）— 滑块式，仅显挡位名，悬停提示轮次 -->
+        <div v-if="chatStore.agentMode" class="param-group">
+          <label class="param-label">
+            {{ t('agent.maxIterations.label') }}
+          </label>
+          <div class="iter-slider">
+            <span
+              v-if="activeTierIndex >= 0"
+              class="iter-thumb"
+              :style="{ transform: `translateX(${activeTierIndex * 100}%)` }"
+            />
+            <button
+              v-for="tier in tiers"
+              :key="tier.key"
+              class="iter-btn"
+              :class="{ active: activeTierIndex === tier.index }"
+              @click="selectTier(tier.key)"
+            >
+              <span class="iter-tip">
+                {{ tier.count === 0 ? `∞ ${t('agent.maxIterations.unlimited')}` : `${tier.count} ${t('agent.maxIterations.round')}` }}
+              </span>
+              <span class="iter-name">{{ tier.name }}</span>
+            </button>
+          </div>
         </div>
 
         <button class="apply-btn" @click="apply">{{ t('chat.apply') }}</button>
@@ -303,6 +354,78 @@ function reset() {
   background: var(--accent);
   cursor: pointer;
   border: 2px solid var(--border-subtle);
+}
+
+/* S15: 迭代轮次挡位 — 滑块式分段控件（仅挡位名，悬停提示轮次） */
+.iter-slider {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
+  padding: 3px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.iter-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 5);
+  border-radius: 8px;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.3, 1);
+  pointer-events: none;
+}
+
+.iter-btn {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.15s;
+}
+
+.iter-btn:hover {
+  color: var(--text-primary);
+}
+
+.iter-btn.active {
+  color: #fff;
+}
+
+/* 悬停提示：挡位名上方显示对应轮次（仅悬停，不常驻——用户已知当前挡位） */
+.iter-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+  z-index: 6;
+}
+
+.iter-btn:hover .iter-tip {
+  opacity: 1;
 }
 
 .apply-btn {
