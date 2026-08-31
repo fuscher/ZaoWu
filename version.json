@@ -1,14 +1,14 @@
 {
-  "version": "0.2.2",
-  "notes": "",
+  "version": "0.3.0",
+  "notes": "ZaoWu v0.3.0 主要更新：\n\n【智能体 Agent】\n- @ 引用与项目沙箱：新增项目指示器、引用注入、浮层与 chip；send_agent_message 支持 files:[{projectId,path}] 结构校验，引用按 token 截断并纳入压缩预算\n- 迭代挡位（0~300）+ 审批浮层（PendingApprovalBar），SSE 解耦、取消兜底、沙箱 OOM 修复、Markdown 缓存\n- 上下文预算硬钳制对齐模型窗口\n\n【LLM 供应商配置】\n- 预设快捷配置、弹窗化交互、模型双字段批量导入\n- 修复数据安全与协议健壮性缺陷（Anthropic 协议头、消息归一化）\n\n【Git 模块】\n- 全面重构：asyncio 异步化、安全加固、功能补全；未安装 Git 时统一防护与提示\n\n【工具执行】\n- 工具并行执行、截断判失败、终态语义修正、max_tokens 解耦",
   "assets": {
     "win64": {
       "urls": [
-        "https://github.com/fuscher/ZaoWu/releases/download/v0.2.2/ZaoWu-0.2.2-win64.zip",
-        "https://gitee.com/fuscher/ZaoWu/releases/download/v0.2.2/ZaoWu-0.2.2-win64.zip"
+        "https://github.com/fuscher/ZaoWu/releases/download/v0.3.0/ZaoWu-0.3.0-win64.zip",
+        "https://gitee.com/fuscher/ZaoWu/releases/download/v0.3.0/ZaoWu-0.3.0-win64.zip"
       ],
-      "size": 23044505,
-      "sha256": "a15a81499a33852f74a0f27029738d8e3f2af918d8970e24e331198e64c83a2c"
+      "size": 23136109,
+      "sha256": "59c3f249236457819c6797b1fb01ec3eab26725ed6545a443510729256792b76"
     }
   }
 }

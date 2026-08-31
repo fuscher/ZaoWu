@@ -12,13 +12,13 @@ A desktop AI Agent application for software development. It combines chat, codin
 
 | Capability | Description |
 | --- | --- |
-| AI Chat & Agent | OpenAI-compatible provider support with streaming output, multi-turn conversations, model switching, and tunable generation parameters; Agent mode supports tool calling, sandboxed execution, and human approval |
+| AI Chat & Agent | OpenAI-compatible provider support with streaming output, multi-turn conversations, model switching, and tunable generation parameters; Agent mode supports tool calling, sandboxed execution, and human approval; supports @ file/project citation and project sandbox, with citations truncated by token and counted into the context-compression budget |
 | Workflow Engine | Visually orchestrate LLM, tool, condition, loop, and subgraph nodes; SSE pushes real-time execution progress |
 | Real-time Collaboration | Multi-client synchronized editing based on Yjs CRDT, invite-based rooms with host / collaborator / observer role permissions |
 | Coding Toolchain | Project explorer, full-text search, Git panel (changes, commit graph, branch management), built-in terminal |
 | Plugin System | Dual-layer plugin architecture (Python backend + Vue frontend) with event bus and hooks, hot-reload and marketplace installation |
 | Skills Module | Code review, refactoring, doc generation and other skill packages loaded on demand, integrated with the Agent toolchain |
-| Updates & Distribution | Dual-source version detection, streaming download, Go launcher for seamless version switching with rollback on failure |
+| Updates & Distribution | Three-source version detection, streaming download, Go launcher for seamless version switching with rollback on failure |
 
 ## Architecture
 
